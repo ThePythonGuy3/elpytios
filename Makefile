@@ -2,6 +2,7 @@
 
 all: src/main.rs
 	cargo build --release
+	mkdir -p ./esp/EFI/BOOT/
 	cp ./target/x86_64-unknown-uefi/release/kernel.efi ./esp/EFI/BOOT/BOOTX64.EFI
 
 run:
