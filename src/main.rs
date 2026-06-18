@@ -7,12 +7,12 @@ use uefi::{Status, boot, entry, helpers, mem::memory_map::MemoryMapOwned, printl
 
 #[derive(Clone, Copy)]
 struct GraphicsInfo {
-    pub w:                 usize,
-    pub h:                 usize,
-    pub stride:            usize,
-    pub pixel_format:      PixelFormat,
-    pub frame_buffer:     *mut u8,
-    pub frame_buffer_size: usize
+    pub w: usize,
+    pub h: usize,
+    pub stride: usize,
+    pub pixel_format: PixelFormat,
+    pub frame_buffer: *mut u8,
+    pub frame_buffer_size: usize,
 }
 
 fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
@@ -33,15 +33,16 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
                 boot::OpenProtocolParams {
                     handle: graphics_output_protocol_handle,
                     agent: boot::image_handle(),
-                    controller: None
+                    controller: None,
                 },
-                boot::OpenProtocolAttributes::GetProtocol
-            ).expect("Error opening Graphics Output Protocol");
+                boot::OpenProtocolAttributes::GetProtocol,
+            )
+            .expect("Error opening Graphics Output Protocol");
         }
 
-        let mut max_area: usize            = 0;
-        let mut max_mode: Option<Mode>     = None;
-        let mut info:     Option<ModeInfo> = None;
+        let mut max_area: usize = 0;
+        let mut max_mode: Option<Mode> = None;
+        let mut info: Option<ModeInfo> = None;
         for possible_mode in graphics_output_protocol.modes() {
             let _info = possible_mode.info();
 
@@ -55,17 +56,17 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
             }
         }
 
-        let mode:      &Mode     = &max_mode.unwrap();
+        let mode: &Mode = &max_mode.unwrap();
         let mode_info: &ModeInfo = &info.unwrap();
 
         graphics_output_protocol.set_mode(mode).unwrap();
 
-        frame_buffer       = graphics_output_protocol.frame_buffer();
-        frame_buffer_size  = frame_buffer.size();
-        (w, h)             = mode_info.resolution();
-        stride             = mode_info.stride();
-        pixel_format       = mode_info.pixel_format();
-        frame_buffer_ptr   = frame_buffer.as_mut_ptr();
+        frame_buffer = graphics_output_protocol.frame_buffer();
+        frame_buffer_size = frame_buffer.size();
+        (w, h) = mode_info.resolution();
+        stride = mode_info.stride();
+        pixel_format = mode_info.pixel_format();
+        frame_buffer_ptr = frame_buffer.as_mut_ptr();
     }
 
     let memory_map;
@@ -73,14 +74,17 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
         memory_map = boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA));
     }
 
-    (GraphicsInfo {
-        w: w,
-        h: h,
-        stride: stride,
-        pixel_format: pixel_format,
-        frame_buffer: frame_buffer_ptr,
-        frame_buffer_size: frame_buffer_size
-    }, memory_map)
+    (
+        GraphicsInfo {
+            w: w,
+            h: h,
+            stride: stride,
+            pixel_format: pixel_format,
+            frame_buffer: frame_buffer_ptr,
+            frame_buffer_size: frame_buffer_size,
+        },
+        memory_map,
+    )
 }
 
 #[entry]
@@ -91,7 +95,11 @@ fn entry() -> Status {
     for y in 0..graphics_info.h {
         for x in 0..graphics_info.w {
             unsafe {
-                graphics_info.frame_buffer.cast::<u32>().add(x + y * graphics_info.stride).write_volatile(i);
+                graphics_info
+                    .frame_buffer
+                    .cast::<u32>()
+                    .add(x + y * graphics_info.stride)
+                    .write_volatile(i);
             }
 
             i += 8;
