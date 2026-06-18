@@ -1,0 +1,8 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.32"
+uefi = { version = "0.37.0", features = ["logger", "panic_handler"] }
