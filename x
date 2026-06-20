@@ -69,7 +69,7 @@ def fetch_std():
 
     packages: dict[str, Package] = {}
     for manifest_file in library_dst_root.rglob("Cargo.toml"):
-        manifest = tomlkit.parse(manifest_file.read_text())
+        manifest = tomlkit.parse(manifest_file.read_text(encoding="utf-8"))
         if (package := manifest.get("package")):
             if "edition" not in package:
                 package["edition"] = "2024"
@@ -83,11 +83,11 @@ def fetch_std():
     # Copy `std` into a more visible folder for neatness purposes
     for item in std_dir_items:
         shutil.move(Path(packages["std"].path) / item, elpytios_std_root / item)
-    (elpytios_std_root / "build.rs").write_text((elpytios_std_root / "build.rs").read_text().replace(
+    (elpytios_std_root / "build.rs").write_text((elpytios_std_root / "build.rs").read_text(encoding="utf-8").replace(
         'if target_os == "linux"',
         'if target_os == "linux" || target_os == "elpytios"',
         1
-    ))
+    ), encoding="utf-8")
 
     packages["std"].path = str(elpytios_std_root)
     packages["std"].file = elpytios_std_root / "Cargo.toml"
@@ -103,14 +103,14 @@ def fetch_std():
 
     for file in (elpytios_std_root / "src").rglob("*.rs"):
         current_path = libstd_dir / "src" / file.parent.relative_to(elpytios_std_root / "src")
-        file_rs = file.read_text()
+        file_rs = file.read_text(encoding="utf-8")
         file_rs = path_attr_re.sub(lambda m: f'#[path = "{to_abs(current_path, m.group(1))}"]', file_rs)
         file_rs = include_re.sub(lambda m: f'{m.group(1)}!("{to_abs(current_path, m.group(2))}"', file_rs)
 
         if file == elpytios_std_root / "src" / "lib.rs":
             file_rs = file_rs.replace("mod sys;", '#[path = "../sys-src/mod.rs"]\nmod sys;', 1)
 
-        file.write_text(file_rs)
+        file.write_text(file_rs, encoding="utf-8")
 
     for package in packages.values():
         def visit_deps(dependencies):
@@ -175,13 +175,13 @@ def fetch_std():
     }
 
     # `rust-analyzer` *really* hates `compile_error!`s
-    (library_dst_root / "windows-sys" / "src" / "lib.rs").write_text("#![no_std]")
+    (library_dst_root / "windows-sys" / "src" / "lib.rs").write_text("#![no_std]", encoding="utf-8")
 
     # Manually add OS-specific dependencies after filtering
     packages["std"].manifest["dependencies"]["elpytios-abi"] = { "path": str(elpytios_abi_root) }
 
     for package in packages.values():
-        package.file.write_text(package.manifest.as_string())
+        package.file.write_text(package.manifest.as_string(), encoding="utf-8")
 
 def build_std():
     if not (elpytios_std_root / "Cargo.toml").exists():
