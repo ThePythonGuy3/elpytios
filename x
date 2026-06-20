@@ -216,7 +216,7 @@ def main():
     std_sub = std.add_subparsers(dest="std_cmd", required=True)
 
     std_sub.add_parser("fetch")
-    std_build = std_sub.add_parser("build")
+    std_sub.add_parser("build")
     std_sub.add_parser("clean")
 
     args = parser.parse_args()
