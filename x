@@ -217,6 +217,7 @@ def build_std():
             "--package", "std",
             "--target", root / "target-specs" / "x86_64-unknown-elpytios.json",
             "--release",
+            "--features", "backtrace,panic-unwind",
             "--target-dir", tmp,
         ],
         cwd=root,

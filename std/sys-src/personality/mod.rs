@@ -11,3 +11,8 @@
 //! backtraces.
 
 mod dwarf;
+
+#[lang = "eh_personality"]
+fn rust_eh_personality() {
+    crate::intrinsics::abort()
+}
