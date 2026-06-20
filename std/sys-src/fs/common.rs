@@ -1,11 +1,13 @@
-#![allow(dead_code)] // not used on all platforms
-
-use crate::io::{self, Error, ErrorKind};
-use crate::path::{Path, PathBuf};
-use crate::sys::IntoInner;
-use crate::sys::fs::{File, FileAttr, OpenOptions};
-use crate::sys::helpers::ignore_notfound;
-use crate::{fmt, fs};
+use crate::{
+    fmt, fs,
+    io::{self, Error, ErrorKind},
+    path::{Path, PathBuf},
+    sys::{
+        IntoInner,
+        fs::{File, FileAttr, OpenOptions},
+        helpers::ignore_notfound,
+    },
+};
 
 pub(crate) const NOT_FILE_ERROR: Error = io::const_error!(
     ErrorKind::InvalidInput,
