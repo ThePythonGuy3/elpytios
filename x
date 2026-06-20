@@ -3,6 +3,7 @@
 import argparse
 import re
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ except ImportError:
 from pathlib import Path
 
 root = Path(__file__).resolve().parent
+
 elpytios_std_root = root / "std"
 library_dst_root = elpytios_std_root / "rust-src"
 
@@ -68,6 +70,9 @@ def fetch_std():
     for manifest_file in library_dst_root.rglob("Cargo.toml"):
         manifest = tomlkit.parse(manifest_file.read_text())
         if (package := manifest.get("package")):
+            if "edition" not in package:
+                package["edition"] = "2024"
+
             manifest.pop("dev-dependencies", None)
             manifest.pop("profile", None)
             package.pop("resolver", None)
@@ -175,6 +180,9 @@ def fetch_std():
         package.file.write_text(package.manifest.as_string())
 
 def build_std():
+    if not (elpytios_std_root / "Cargo.toml").exists():
+        fetch_std()
+
     env = os.environ.copy()
     if (rustflags := env.get("RUSTFLAGS")):
         rustflags += " -Awarnings -Zforce-unstable-if-unmarked"
@@ -197,7 +205,7 @@ def build_std():
             stderr=None,
         ).returncode != 0:
             sys.exit(1)
-    
+
 def clean_std():
     shutil.rmtree(library_dst_root, ignore_errors=True)
     for item in std_dir_items:
@@ -208,24 +216,91 @@ def clean_std():
             else:
                 path.unlink()
 
+runner_root = root / "runner"
+runner_esp = runner_root / "esp"
+runner_boot_dir = runner_esp / "EFI" / "BOOT"
+runner_boot_file = runner_boot_dir / "BOOTX64.efi"
+runner_fs = runner_root / "disk.qcow2"
+runner_ovmf = runner_root / "OVMF"
+
+def create_file_qemu():
+    if subprocess.run(
+        [
+            "qemu-img", "create",
+            "-f", "qcow2",
+            runner_fs, "10G",
+        ],
+        stdout=None,
+        stderr=None,
+    ).returncode != 0:
+        sys.exit(1)
+
+    runner_esp.mkdir(parents=True, exist_ok=True)
+
+def run_qemu():
+    if not runner_fs.exists():
+        create_file_qemu()
+
+    accel = "tcg"
+    match sys.platform:
+        case "win32": accel = "whpx"
+        case "linux": accel = "kvm"
+
+    if subprocess.run(
+        [
+            "cargo", "rustc",
+            "--package", "elpytios-bootloader",
+            "--bin", "elpytios-bootloader",
+            "--target", "x86_64-unknown-uefi",
+            "--release",
+        ],
+        cwd=root,
+        stdout=None,
+        stderr=None,
+    ).returncode != 0:
+        sys.exit(1)
+
+    runner_boot_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(root / "target" / "x86_64-unknown-uefi" / "release" / "elpytios-bootloader.efi", runner_boot_file)
+
+    if subprocess.run(
+        [
+            f"qemu-system-{platform.machine()}",
+            "-accel", accel,
+            "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_CODE.4m.fd"}",
+            "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_VARS.4m.fd"}",
+            "-drive", f"format=raw,file=fat:rw:{runner_esp}",
+            "-drive", f"format=qcow2,file={runner_fs}",
+            "-machine", "q35",
+            "-m", "4830196K",
+        ],
+        stdout=None,
+        stderr=None,
+    ).returncode != 0:
+        sys.exit(1)
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    # `x std`
     std = sub.add_parser("std")
     std_sub = std.add_subparsers(dest="std_cmd", required=True)
 
-    std_sub.add_parser("fetch")
-    std_sub.add_parser("build")
-    std_sub.add_parser("clean")
+    std_sub.add_parser("fetch").set_defaults(func=fetch_std)
+    std_sub.add_parser("build").set_defaults(func=build_std)
+    std_sub.add_parser("clean").set_defaults(func=clean_std)
+
+    # `x qemu`
+    qemu = sub.add_parser("qemu")
+    qemu.set_defaults(func=run_qemu) # Default to `x qemu run`
+    qemu_sub = qemu.add_subparsers(dest="qemu_cmd")
+
+    qemu_sub.add_parser("create-file").set_defaults(func=create_file_qemu)
+    qemu_sub.add_parser("run").set_defaults(func=run_qemu)
 
     args = parser.parse_args()
-    match args.cmd:
-        case "std":
-            match args.std_cmd:
-                case "fetch": fetch_std()
-                case "build": build_std()
-                case "clean": clean_std()
+    args.func()
 
 if __name__ == "__main__":
     main()

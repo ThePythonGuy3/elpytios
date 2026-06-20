@@ -14,7 +14,7 @@ uefi = { version = "0.37", features = ["logger", "panic_handler"] }
 
 [workspace]
 resolver = "3"
-members = ["runner", "std"]
+members = ["std"]
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
