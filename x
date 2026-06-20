@@ -24,6 +24,18 @@ elpytios_abi_root = root / "abi"
 elpytios_std_root = root / "std"
 library_dst_root = elpytios_std_root / "rust-src"
 
+sysroot = elpytios_std_root / "sysroot"
+sysroot_crates = [
+    "core",
+    "alloc",
+    "std",
+    "compiler_builtins",
+    "panic_abort",
+    #"panic_unwind",
+    "unwind",
+]
+sysroot_libdir = sysroot / "lib" / "rustlib" / "x86_64-unknown-elpytios" / "lib"
+
 libstd_dir = library_dst_root / "std"
 std_dir_items = ["benches", "src", "tests", "build.rs", "Cargo.toml"]
 
@@ -178,7 +190,10 @@ def fetch_std():
     (library_dst_root / "windows-sys" / "src" / "lib.rs").write_text("#![no_std]", encoding="utf-8")
 
     # Manually add OS-specific dependencies after filtering
-    packages["std"].manifest["dependencies"]["elpytios-abi"] = { "path": str(elpytios_abi_root) }
+    packages["std"].manifest["dependencies"]["elpytios-abi"] = {
+        "path": str(elpytios_abi_root),
+        "features": ["sysroot-dep"],
+    }
 
     for package in packages.values():
         package.file.write_text(package.manifest.as_string(), encoding="utf-8")
@@ -193,25 +208,42 @@ def build_std():
     else:
         env["RUSTFLAGS"] = "-Awarnings -Zforce-unstable-if-unmarked"
 
-    for profile in ["dev", "release"]:
-        if subprocess.run(
-            [
-                "cargo", "rustc",
-                "--package", "std",
-                "--target", root / "target-specs" / "x86_64-unknown-elpytios.json",
-                "--profile", profile,
-                "--crate-type", "rlib",
-                "--crate-type", "dylib",
-            ],
-            cwd=root,
-            env=env,
-            stdout=None,
-            stderr=None,
-        ).returncode != 0:
-            sys.exit(1)
+    tmp = sysroot / "out"
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    if subprocess.run(
+        [
+            "cargo", "rustc",
+            "--package", "std",
+            "--target", root / "target-specs" / "x86_64-unknown-elpytios.json",
+            "--release",
+            "--target-dir", tmp,
+        ],
+        cwd=root,
+        env=env,
+        stdout=None,
+        stderr=None,
+    ).returncode != 0:
+        sys.exit(1)
+
+    shutil.rmtree(sysroot_libdir, ignore_errors=True)
+    sysroot_libdir.mkdir(parents=True)
+
+    for crate in sysroot_crates:
+        candidates = sorted((tmp / "x86_64-unknown-elpytios" / "release" / "deps").glob(f"libstd.rlib" if crate == "std" else f"lib{crate}-*.rlib"))
+        if not candidates:
+            raise RuntimeError(f"`.rlib` not found for `{crate}`")
+
+        rlib = max(candidates, key=lambda p: p.stat().st_mtime)
+        shutil.copy(
+            rlib,
+            sysroot_libdir,
+        )
 
 def clean_std():
     shutil.rmtree(library_dst_root, ignore_errors=True)
+    shutil.rmtree(sysroot, ignore_errors=True)
+
     for item in std_dir_items:
         path = elpytios_std_root / item
         if path.exists():

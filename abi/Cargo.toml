@@ -7,8 +7,10 @@ rust-version = "1.98"
 [dependencies]
 elpytios-abi-macros = { path = "macros" }
 
-[target.'cfg(target_os = "elpytios")'.dependencies]
 compiler_builtins = { path = "../std/rust-src/compiler-builtins/compiler-builtins", features = [
     "compiler-builtins",
-] }
-core = { path = "../std/rust-src/core" }
+], optional = true }
+core = { path = "../std/rust-src/core", optional = true }
+
+[features]
+sysroot-dep = ["dep:compiler_builtins", "dep:core"]
