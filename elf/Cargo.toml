@@ -1,0 +1,19 @@
+[package]
+name = "elpytios-elf"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+
+[dependencies]
+bitflags = "2"
+bytemuck = { version = "1", features = ["derive", "latest_stable_rust"] }
+derive_more = { version = "2", default-features = false, features = [
+    "deref",
+    "deref_mut",
+] }
+
+[target.'cfg(target_os = "elpytios")'.dependencies]
+compiler_builtins = { path = "../std/rust-src/compiler-builtins/compiler-builtins", features = [
+    "compiler-builtins",
+] }
+core = { path = "../std/rust-src/core" }

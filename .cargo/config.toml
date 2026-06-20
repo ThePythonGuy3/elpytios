@@ -1,7 +1,6 @@
 [unstable]
 codegen-backend = true
 json-target-spec = true
-unstable-options = true
 
 [build]
 target = "target-specs/x86_64-unknown-elpytios.json"
