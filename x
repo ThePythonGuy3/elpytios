@@ -1,19 +1,31 @@
 #!/usr/bin/env python3
 
 import argparse
+import re
+import os
 import shutil
 import subprocess
 import sys
 
+try:
+    import tomlkit
+    from tomlkit import TOMLDocument
+    from tomlkit.items import String as TomlString
+except ImportError:
+    print("Please install `tomlkit`", file=sys.stderr)
+    sys.exit(1)
+
 from pathlib import Path
 
 root = Path(__file__).resolve().parent
-library_dst_root = root / "sys" / "rust-src"
+elpytios_std_root = root / "std"
+library_dst_root = elpytios_std_root / "rust-src"
 
-std_dir = library_dst_root / "std"
-std_manifest = std_dir / "Cargo.toml"
+libstd_dir = library_dst_root / "std"
+std_dir_items = ["benches", "src", "tests", "build.rs", "Cargo.toml"]
 
 def fetch_std():
+    # Copy `rust-src` component to `./std/rust-src`
     sys_root = subprocess.run(
         ["rustc", "--print", "sysroot"],
         cwd=root,
@@ -36,44 +48,165 @@ def fetch_std():
     if not library_src_root.exists():
         raise RuntimeError("Missing `rust-src`, run `rustup component add rust-src`")
 
-    shutil.rmtree(library_dst_root, ignore_errors=True)
+    clean_std()
     shutil.copytree(library_src_root, library_dst_root)
+    (library_dst_root / "Cargo.toml").unlink()
 
-    toml_text = std_manifest.read_text()
+    shutil.rmtree(libstd_dir / "src" / "sys")
 
-    lines = toml_text.splitlines()
-    out = []
-    inserted = False
+    class Package:
+        path: str
+        file: Path
+        manifest: TOMLDocument
 
-    for line in lines:
-        out.append(line)
-        if line.strip() == "[dependencies]" and not inserted:
-            out.append('elpytios-sys = { path = "../../" }')
-            inserted = True
+        def __init__(self, path: str, file: Path, manifest: TOMLDocument):
+            self.path = path
+            self.file = file
+            self.manifest = manifest
 
-    if not inserted:
-        raise RuntimeError("Missing [dependencies] in `std/Cargo.toml`")
-    std_manifest.write_text("\n".join(out) + "\n")
+    packages: dict[str, Package] = {}
+    for manifest_file in library_dst_root.rglob("Cargo.toml"):
+        manifest = tomlkit.parse(manifest_file.read_text())
+        if (package := manifest.get("package")):
+            manifest.pop("dev-dependencies", None)
+            manifest.pop("profile", None)
+            package.pop("resolver", None)
 
-    lib_rs = std_dir / "src" / "lib.rs"
-    lib_rs.write_text(lib_rs.read_text().replace(
-        "mod sys;",
-        "extern crate elpytios_sys as sys;"
+            packages[package["name"]] = Package(str(manifest_file.parent), manifest_file, manifest)
+
+    # Copy `std` into a more visible folder for neatness purposes
+    for item in std_dir_items:
+        shutil.move(Path(packages["std"].path) / item, elpytios_std_root / item)
+    (elpytios_std_root / "build.rs").write_text((elpytios_std_root / "build.rs").read_text().replace(
+        'if target_os == "linux"',
+        'if target_os == "linux" || target_os == "elpytios"',
+        1
     ))
 
-    shutil.rmtree(std_dir / "src" / "sys")
+    packages["std"].path = str(elpytios_std_root)
+    packages["std"].file = elpytios_std_root / "Cargo.toml"
+
+    path_attr_re = re.compile(r'#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]')
+    include_re = re.compile(r'\b(include|include_str|include_bytes|concat)!\s*\(\s*"([^"]+)"\s*')
+    def to_abs(current_path: Path, rel_path: str):
+        abs_path = (current_path / rel_path).resolve()
+        if abs_path.is_relative_to(libstd_dir):
+            return rel_path
+        else:
+            return abs_path.as_posix() + "/" if abs_path.is_dir() else abs_path.as_posix()
+
+    for file in (elpytios_std_root / "src").rglob("*.rs"):
+        current_path = libstd_dir / "src" / file.parent.relative_to(elpytios_std_root / "src")
+        file_rs = file.read_text()
+        file_rs = path_attr_re.sub(lambda m: f'#[path = "{to_abs(current_path, m.group(1))}"]', file_rs)
+        file_rs = include_re.sub(lambda m: f'{m.group(1)}!("{to_abs(current_path, m.group(2))}"', file_rs)
+
+        if file == elpytios_std_root / "src" / "lib.rs":
+            file_rs = file_rs.replace("mod sys;", '#[path = "../sys-src/mod.rs"]\nmod sys;', 1)
+
+        file.write_text(file_rs)
+
+    for package in packages.values():
+        def visit_deps(dependencies):
+            for name, spec in list(dependencies.items()):
+                if (dep_package := packages.get(name)):
+                    if isinstance(spec, TomlString):
+                        dependencies[name] = { "path": dep_package.path }
+                    else:
+                        if name == "core" or name == "alloc" or name == "std":
+                            spec.pop("package", None)
+
+                        spec.pop("version", None)
+                        spec["path"] = dep_package.path
+                else:
+                    # Non-vendored dependency means it's not used *at all* in `std`
+                    del dependencies[name]
+
+        if (deps := package.manifest.get("dependencies")):
+            visit_deps(deps)
+        if (target := package.manifest.get("target")):
+            for _, target_spec in target.items():
+                if (target_deps := target_spec.get("dependencies")):
+                    visit_deps(target_deps)
+
+        if (features := package.manifest.get("features")):
+            for feat_name, feat_deps in list(features.items()):
+                filtered = []
+                for item in feat_deps:
+                    if "/" in item:
+                        dep = item.split("/", 1)[0]
+                    elif "dep:" in item:
+                        dep = item[4:]
+                    else:
+                        dep = item
+
+                    if (dep != feat_name and dep in features) or dep in packages:
+                        filtered.append(item)
+
+                features[feat_name] = filtered
+
+            # Forcibly override the defaults, since `rust-analyzer` is stupid
+            if "rustc-dep-of-std" in features:
+                features["default"] = ["rustc-dep-of-std"]
+            elif "std" in features and (defaults := features.get("default")) and "std" in defaults:
+                defaults.remove("std")
+
+    for name in ["foldhash"]:
+        packages[name].manifest["dependencies"]["core"] = { "path": packages["core"].path }
+
+    for name in ["adler2", "cfg-if", "foldhash", "fortanix-sgx-abi", "hermit-abi", "memchr", "object", "panic_abort", "r-efi", "rustc-demangle", "vex-sdk", "wasip1"]:
+        packages[name].manifest["dependencies"]["compiler_builtins"] = {
+            "path": packages["compiler_builtins"].path,
+            "features": ["compiler-builtins"],
+        }
+
+    packages["windows-sys"].manifest["dependencies"] = {
+        "core": { "path": packages["core"].path },
+        "compiler_builtins": {
+            "path": packages["compiler_builtins"].path,
+            "features": ["compiler-builtins"],
+        }
+    }
+
+    # `rust-analyzer` *really* hates `compile_error!`s
+    (library_dst_root / "windows-sys" / "src" / "lib.rs").write_text("#![no_std]")
+
+    for package in packages.values():
+        package.file.write_text(package.manifest.as_string())
 
 def build_std():
-    build = subprocess.run(
-        ["cargo", "build", "--manifest-path", std_manifest],
-        cwd=root,
-        check=True,
-        stdout=None,
-        stderr=None,
-    )
+    env = os.environ.copy()
+    if (rustflags := env.get("RUSTFLAGS")):
+        rustflags += " -Awarnings -Zforce-unstable-if-unmarked"
+    else:
+        env["RUSTFLAGS"] = "-Awarnings -Zforce-unstable-if-unmarked"
 
-    if build.returncode != 0:
-        raise RuntimeError(build.stderr)
+    for profile in ["dev", "release"]:
+        if subprocess.run(
+            [
+                "cargo", "rustc",
+                "--package", "std",
+                "--target", root / "target-specs" / "x86_64-unknown-elpytios.json",
+                "--profile", profile,
+                "--crate-type", "rlib",
+                "--crate-type", "dylib",
+            ],
+            cwd=root,
+            env=env,
+            stdout=None,
+            stderr=None,
+        ).returncode != 0:
+            sys.exit(1)
+    
+def clean_std():
+    shutil.rmtree(library_dst_root, ignore_errors=True)
+    for item in std_dir_items:
+        path = elpytios_std_root / item
+        if path.exists():
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -83,18 +216,16 @@ def main():
     std_sub = std.add_subparsers(dest="std_cmd", required=True)
 
     std_sub.add_parser("fetch")
-    std_sub.add_parser("build")
+    std_build = std_sub.add_parser("build")
+    std_sub.add_parser("clean")
 
     args = parser.parse_args()
-    try:
-        match args.cmd:
-            case "std":
-                match args.std_cmd:
-                    case "fetch": fetch_std()
-                    case "build": build_std()
-    except Exception as e:
-        print(f"{e}", file=sys.stderr)
-        sys.exit(1)
+    match args.cmd:
+        case "std":
+            match args.std_cmd:
+                case "fetch": fetch_std()
+                case "build": build_std()
+                case "clean": clean_std()
 
 if __name__ == "__main__":
     main()

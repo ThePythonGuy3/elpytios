@@ -1,4 +1,4 @@
-cargo-features = ["per-package-target"]
+cargo-features = ['per-package-target']
 
 [package]
 name = "elpytios-bootloader"
@@ -14,7 +14,7 @@ uefi = { version = "0.37", features = ["logger", "panic_handler"] }
 
 [workspace]
 resolver = "3"
-members = ["runner", "sys"]
+members = ["runner", "std"]
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }

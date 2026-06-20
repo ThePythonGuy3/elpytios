@@ -3,6 +3,25 @@
 version = 4
 
 [[package]]
+name = "addr2line"
+version = "0.25.1"
+dependencies = [
+ "alloc",
+ "core",
+ "gimli",
+ "object",
+ "rustc-demangle",
+]
+
+[[package]]
+name = "adler2"
+version = "2.0.1"
+dependencies = [
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
 name = "alloc"
 version = "0.0.0"
 dependencies = [
@@ -24,12 +43,20 @@ checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 
 [[package]]
 name = "cc"
-version = "1.2.64"
+version = "1.2.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dad887fd958be91b5098c0248def011f4523ab786cd411be668777e55063501f"
+checksum = "e228eec9be7c17ccb640b59b36a5cd805ea2a564a4c5e162c2f659fea30d3b96"
 dependencies = [
  "find-msvc-tools",
  "shlex",
+]
+
+[[package]]
+name = "cfg-if"
+version = "1.0.4"
+dependencies = [
+ "compiler_builtins",
+ "core",
 ]
 
 [[package]]
@@ -51,6 +78,16 @@ name = "core"
 version = "0.0.0"
 
 [[package]]
+name = "dlmalloc"
+version = "0.2.13"
+dependencies = [
+ "cfg-if 1.0.4",
+ "core",
+ "libc 0.2.185",
+ "windows-sys",
+]
+
+[[package]]
 name = "elpytios-bootloader"
 version = "0.1.0"
 dependencies = [
@@ -63,8 +100,48 @@ name = "elpytios-runner"
 version = "0.1.0"
 
 [[package]]
-name = "elpytios-sys"
-version = "0.1.0"
+name = "find-msvc-tools"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "foldhash"
+version = "0.2.0"
+dependencies = [
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
+name = "fortanix-sgx-abi"
+version = "0.6.1"
+dependencies = [
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
+name = "gimli"
+version = "0.32.3"
+dependencies = [
+ "alloc",
+ "core",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.17.1"
+dependencies = [
+ "alloc",
+ "core",
+ "foldhash",
+ "libc 0.2.186",
+]
+
+[[package]]
+name = "hermit-abi"
+version = "0.5.2"
 dependencies = [
  "alloc",
  "compiler_builtins",
@@ -72,16 +149,79 @@ dependencies = [
 ]
 
 [[package]]
-name = "find-msvc-tools"
-version = "0.1.9"
+name = "libc"
+version = "0.2.185"
+dependencies = [
+ "rustc-std-workspace-core",
+]
+
+[[package]]
+name = "libc"
+version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "log"
 version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
+
+[[package]]
+name = "memchr"
+version = "2.7.6"
+dependencies = [
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+dependencies = [
+ "adler2",
+ "alloc",
+ "core",
+]
+
+[[package]]
+name = "moto-rt"
+version = "0.16.0"
+dependencies = [
+ "alloc",
+ "core",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+dependencies = [
+ "alloc",
+ "compiler_builtins",
+ "core",
+ "hashbrown",
+ "memchr",
+]
+
+[[package]]
+name = "panic_abort"
+version = "0.0.0"
+dependencies = [
+ "alloc",
+ "compiler_builtins",
+ "core",
+ "libc 0.2.185",
+]
+
+[[package]]
+name = "panic_unwind"
+version = "0.0.0"
+dependencies = [
+ "alloc",
+ "core",
+ "libc 0.2.185",
+ "unwind",
+]
 
 [[package]]
 name = "proc-macro2"
@@ -122,10 +262,81 @@ dependencies = [
 ]
 
 [[package]]
+name = "r-efi"
+version = "5.3.0"
+dependencies = [
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
+name = "r-efi-alloc"
+version = "2.1.0"
+dependencies = [
+ "core",
+ "r-efi",
+]
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.27"
+dependencies = [
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
+name = "rustc-std-workspace-core"
+version = "1.99.0"
+dependencies = [
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "std"
+version = "0.0.0"
+dependencies = [
+ "addr2line",
+ "alloc",
+ "cfg-if 1.0.4",
+ "core",
+ "dlmalloc",
+ "fortanix-sgx-abi",
+ "hashbrown",
+ "hermit-abi",
+ "libc 0.2.185",
+ "miniz_oxide",
+ "moto-rt",
+ "object",
+ "panic_abort",
+ "panic_unwind",
+ "r-efi",
+ "r-efi-alloc",
+ "rustc-demangle",
+ "std_detect",
+ "unwind",
+ "vex-sdk",
+ "wasip1",
+ "wasip2",
+ "wasip3",
+ "windows-link",
+]
+
+[[package]]
+name = "std_detect"
+version = "0.1.5"
+dependencies = [
+ "alloc",
+ "core",
+ "libc 0.2.185",
+]
 
 [[package]]
 name = "syn"
@@ -154,7 +365,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66ab9569afdd1e33a31d8002343aa1df594f055347b1a66136bf9dd6cbc3ec37"
 dependencies = [
  "bitflags",
- "cfg-if",
+ "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "ptr_meta",
  "ucs2",
@@ -195,3 +406,76 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unwind"
+version = "0.0.0"
+dependencies = [
+ "core",
+ "libc 0.2.185",
+ "unwinding",
+]
+
+[[package]]
+name = "unwinding"
+version = "0.2.8"
+dependencies = [
+ "core",
+ "gimli",
+ "libc 0.2.185",
+]
+
+[[package]]
+name = "vex-sdk"
+version = "0.27.1"
+dependencies = [
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
+name = "wasip1"
+version = "1.0.0"
+dependencies = [
+ "alloc",
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
+name = "wasip2"
+version = "1.0.3+wasi-0.2.9"
+dependencies = [
+ "alloc",
+ "core",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "wasip3"
+version = "0.6.0+wasi-0.3.0-rc-2026-03-15"
+dependencies = [
+ "alloc",
+ "core",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "windows-link"
+version = "0.0.0"
+
+[[package]]
+name = "windows-sys"
+version = "0.61.100"
+dependencies = [
+ "compiler_builtins",
+ "core",
+]
+
+[[package]]
+name = "wit-bindgen"
+version = "0.57.1"
+dependencies = [
+ "alloc",
+ "core",
+]
