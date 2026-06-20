@@ -20,6 +20,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parent
 
+elpytios_abi_root = root / "abi"
 elpytios_std_root = root / "std"
 library_dst_root = elpytios_std_root / "rust-src"
 
@@ -175,6 +176,9 @@ def fetch_std():
 
     # `rust-analyzer` *really* hates `compile_error!`s
     (library_dst_root / "windows-sys" / "src" / "lib.rs").write_text("#![no_std]")
+
+    # Manually add OS-specific dependencies after filtering
+    packages["std"].manifest["dependencies"]["elpytios-abi"] = { "path": str(elpytios_abi_root) }
 
     for package in packages.values():
         package.file.write_text(package.manifest.as_string())
