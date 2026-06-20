@@ -1,14 +1,12 @@
-#![feature(custom_inner_attributes)]
-#![rustfmt::skip]
-
 #![no_std]
 #![no_main]
 
-use core::{ptr::null_mut, time::Duration};
+use core::time::Duration;
 
-use uefi::{Status, boot, entry, helpers, mem::memory_map::MemoryMapOwned, println, proto::console::gop::*};
+use uefi::{Status, boot, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, println, proto::console::gop::*};
 
 #[derive(Clone, Copy)]
+#[allow(unused)]
 struct GraphicsInfo {
     pub w:                 usize,
     pub h:                 usize,
@@ -73,6 +71,11 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
 
     let memory_map;
     unsafe {
+        let mem = boot::memory_map(boot::MemoryType::LOADER_DATA).unwrap();
+        for i in 0..(mem.len()) {
+            println!("{:?}", mem.get(i).unwrap());
+        }
+        boot::stall(Duration::from_secs(501));
         memory_map = boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA));
     }
 
@@ -97,7 +100,7 @@ fn entry() -> Status {
                 graphics_info.frame_buffer.cast::<u32>().add(x + y * graphics_info.stride).write_volatile(i);
             }
 
-            i += 8;
+            i += 4;
         }
     }
 
