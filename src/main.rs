@@ -3,10 +3,10 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, fmt::{Write, write}};
+use core::{arch::asm, fmt::Write};
 
 use elpytios_bootloader::{page_alloc::PhysicalPageAllocator, rendering::{DisplayWriter, GraphicsInfo}};
-use uefi::{Status, boot::{self, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
+use uefi::{Status, boot::{self, MemoryType, OpenProtocolAttributes, OpenProtocolParams}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, println, proto::{console::gop::*, loaded_image::LoadedImage}};
 
 fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
     let mut frame_buffer;
@@ -59,6 +59,16 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
         stride             = mode_info.stride();
         pixel_format       = mode_info.pixel_format();
         frame_buffer_ptr   = frame_buffer.as_mut_ptr();
+
+        unsafe {
+            let proto = boot::open_protocol::<LoadedImage>(OpenProtocolParams {
+                handle: boot::image_handle(),
+                agent: boot::image_handle(),
+                controller: None
+            }, OpenProtocolAttributes::GetProtocol).unwrap();
+
+            println!("{:?}", proto.info());
+        }
     }
 
     let memory_map;
@@ -87,6 +97,8 @@ fn entry() -> Status {
         line: 0,
         col: 0
     };
+
+    display_writer.line += 10;
 
     for i in memory_map.entries() {
         /*if i.ty == MemoryType::BOOT_SERVICES_CODE || i.ty == MemoryType::BOOT_SERVICES_DATA {
