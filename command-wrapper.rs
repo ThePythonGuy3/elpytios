@@ -8,7 +8,8 @@ fn main() -> ! {
     let file = fs::canonicalize(current_exe().expect("Couldn't get `current_exe()`"))
         .expect("Couldn't canonicalize exe path")
         .with_extension("");
-    let mut command = Command::new(file);
+    let mut command = Command::new("py");
+    command.arg(file);
     for arg in args_os().skip(1) {
         command.arg(arg);
     }
