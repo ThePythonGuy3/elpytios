@@ -1,2 +1,5 @@
 [alias]
 qemu = "run --package elpytios-runner"
+
+[profile.release]
+debug = "full"

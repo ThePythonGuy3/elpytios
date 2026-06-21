@@ -53,6 +53,10 @@ fn main() -> io::Result<()> {
             "q35",
             "-m",
             "4830196K",
+            "-device",
+            "virtio-vga",
+            "-vga",
+            "virtio"
         ])
         .status()?
         .success()

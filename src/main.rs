@@ -3,10 +3,10 @@
 #![no_std]
 #![no_main]
 
-use core::{fmt::Write, time::Duration};
+use core::{arch::asm, fmt::{Write, write}};
 
 use elpytios_bootloader::{page_alloc::PhysicalPageAllocator, rendering::{DisplayWriter, GraphicsInfo}};
-use uefi::{Status, boot, entry, helpers, mem::memory_map::{MemoryMapOwned}, println, proto::console::gop::*};
+use uefi::{Status, boot::{self, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
 
 fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
     let mut frame_buffer;
@@ -64,6 +64,8 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
     let memory_map;
     unsafe {
         memory_map = boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA));
+
+        asm!("cli");
     }
 
     (GraphicsInfo {
@@ -86,6 +88,14 @@ fn entry() -> Status {
         col: 0
     };
 
+    for i in memory_map.entries() {
+        /*if i.ty == MemoryType::BOOT_SERVICES_CODE || i.ty == MemoryType::BOOT_SERVICES_DATA {
+            continue;
+        }*/
+
+        write!(&mut display_writer, "{:x} {:?} / ", i.phys_start, i.ty).unwrap();
+    }
+
     unsafe {
         let allocator = PhysicalPageAllocator::new(&memory_map).unwrap();
 
@@ -99,10 +109,6 @@ fn entry() -> Status {
         writeln!(&mut display_writer, "{:?}", allocator.alloc(60000).unwrap()).unwrap();
         writeln!(&mut display_writer, "{:?}", allocator.alloc(120000).unwrap()).unwrap();
         writeln!(&mut display_writer, "{}", allocator).unwrap();
-    }
-
-    for i in 1..10000000 {
-        writeln!(&mut display_writer, "Hello World {}", i).unwrap();
     }
 
     loop {}

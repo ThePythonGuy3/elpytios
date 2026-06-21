@@ -89,8 +89,8 @@ impl PhysicalPageAllocator {
             let valid;
             let loader_memory;
             match i.ty {
-                /*MemoryType::BOOT_SERVICES_CODE |
-                MemoryType::BOOT_SERVICES_DATA |*/
+                MemoryType::BOOT_SERVICES_CODE |
+                MemoryType::BOOT_SERVICES_DATA |
                 MemoryType::CONVENTIONAL       |
                 MemoryType::PERSISTENT_MEMORY => {
                     valid         = true;
@@ -98,7 +98,7 @@ impl PhysicalPageAllocator {
                 },
                 MemoryType::LOADER_CODE |
                 MemoryType::LOADER_DATA => {
-                    valid         = true;
+                    valid         = false;
                     loader_memory = true;
                 }
                 _ => {
