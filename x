@@ -312,9 +312,22 @@ def run_qemu():
     ).returncode != 0:
         sys.exit(1)
 
+def init_buildsystem():
+    if sys.platform == "win32":
+        for wrap in ["rustc-sysroot"]:
+            if subprocess.run(
+                ["rustc", root / "command-wrapper.rs", "-o", root / f"{wrap}.exe"],
+                cwd=root, stdout=None, stderr=None
+            ).returncode != 0:
+                sys.exit(1)
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # `x init`
+    init = sub.add_parser("init")
+    init.set_defaults(func=init_buildsystem)
 
     # `x std`
     std = sub.add_parser("std")
