@@ -207,7 +207,7 @@ def build_std():
             "cargo", "rustc",
             "--package", "std",
             "--target", root / "target-specs" / "x86_64-unknown-elpytios.json",
-            "--profile", "dev",
+            "--profile", "release",
             "--features", "compiler-builtins-mem",
             "--target-dir", tmp,
         ],
