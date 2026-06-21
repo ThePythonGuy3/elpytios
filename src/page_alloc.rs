@@ -1,134 +1,165 @@
+use core::{fmt::{Display, Formatter}, mem::offset_of, ptr::null_mut};
+
 use uefi::{boot::MemoryType, mem::memory_map::{MemoryMap, MemoryMapOwned}};
 
-#[derive(Clone, Copy)]
-pub struct PhysicalPageMetadata {
-    pub free:     bool, // Is the page free
-    pub locked:   bool, // Is the page not for OS use
-    pub loader:   bool, // Does the page contain UEFI loader ranges
-    pub reserved: bool
-}
+use crate::page_alloc_tree::{BinaryBuddyTree, PAGE_SIZE};
 
-impl PhysicalPageMetadata {
-    fn get_value(&self) -> u8 {
-        ((self.free     as u8) << 3) |
-        ((self.locked   as u8) << 2) |
-        ((self.loader   as u8) << 1) |
-        ((self.reserved as u8))
-    }
+const MINIMUM_PAGES_TO_MANAGE: usize = 4;
 
-    fn from_value(value: u8) -> Self {
-        Self {
-            free:     (value >> 3) & 1 != 0,
-            locked:   (value >> 2) & 1 != 0,
-            loader:   (value >> 1) & 1 != 0,
-            reserved: (value)      & 1 != 0
-        }
-    }
-}
-
+#[repr(C)]
 pub struct PhysicalPageAllocator {
-    base: *mut u8
+    size:            usize,
+    trees: [&'static BinaryBuddyTree; 0]
 }
 
 impl PhysicalPageAllocator {
-    const PAGE_SIZE: u64 = 4096;
-    const UNKNOWN_PAGE_METADATA: PhysicalPageMetadata = PhysicalPageMetadata {
-        free:     false,
-        locked:   true,
-        loader:   false,
-        reserved: false
-    };
-
-    unsafe fn write_entry(&self, entry: usize, metadata: &PhysicalPageMetadata) {
+    unsafe fn push_tree(&mut self, tree: &BinaryBuddyTree) {
         unsafe {
-            let true_entry = self.base.add(entry >> 1);
+            (self as *mut Self)
+                .byte_add(offset_of!(Self, trees))
+                .cast::<&BinaryBuddyTree>()
+                .add(self.size)
+                .write_volatile(tree);
+        }
 
-            let value: u8 = metadata.get_value();
+        self.size += 1;
+    }
 
-            let current_value = true_entry.read_volatile();
+    unsafe fn get_tree(&self, n: usize) -> &mut BinaryBuddyTree {
+        unsafe {
+            (self as *const Self)
+                .byte_add(offset_of!(Self, trees))
+                .cast::<&mut BinaryBuddyTree>()
+                .add(n)
+                .cast_mut()
+                .read_volatile()
+        }
+    }
 
-            let value_to_write: u8;
-            if entry & 1 == 0 {
-                value_to_write = (current_value & 0x0F) | (value << 4);
+    unsafe fn create_trees_(&mut self, start: usize, pages: usize, loader_memory: bool) -> Result<(), ()> {
+        if pages < MINIMUM_PAGES_TO_MANAGE {
+            return Err(());
+        }
+
+        let mut region_size = 1 << (pages.ilog2() as usize);
+        let free_pages = pages - region_size;
+
+        let mut required_pages_for_tree = BinaryBuddyTree::required_pages_for_tree(region_size);
+
+        while required_pages_for_tree > free_pages {
+            region_size >>= 1;
+
+            if region_size < MINIMUM_PAGES_TO_MANAGE {
+                return Err(());
+            }
+
+            required_pages_for_tree = BinaryBuddyTree::required_pages_for_tree(region_size);
+        }
+
+        let memory_region_start = start + required_pages_for_tree * PAGE_SIZE;
+
+        unsafe {
+            if let Some(tree) = BinaryBuddyTree::new(
+                start as *mut BinaryBuddyTree,
+                memory_region_start as *mut u8,
+                region_size,
+                loader_memory
+            ) {
+                self.push_tree(tree);
+
+                if let Ok(_) = self.create_trees_(
+                    memory_region_start + region_size * PAGE_SIZE,
+                    pages - region_size - required_pages_for_tree,
+                    loader_memory
+                ) {
+                    return Ok(());
+                } else {
+                    return Err(());
+                }
             } else {
-                value_to_write = (current_value & 0xF0) | value;
+                return Err(());
             }
-
-            true_entry.write_volatile(value_to_write);
         }
     }
 
-    unsafe fn write_entries(&self, entry: usize, metadata_high: &PhysicalPageMetadata, metadata_low: &PhysicalPageMetadata) {
-        unsafe {
-            let true_entry = self.base.add(entry >> 1);
+    pub fn new(memory_map: &MemoryMapOwned) -> Result<&mut Self, ()> {
+        let mut allocator: *mut Self = null_mut();
 
-            let value = metadata_high.get_value() << 4 | metadata_low.get_value();
-
-            true_entry.write_volatile(value);
-        }
-    }
-
-    unsafe fn read_entry(&self, entry: usize) -> PhysicalPageMetadata {
-        unsafe {
-            let (first, second) = self.read_entries(entry);
-
-            if entry & 1 == 0 { first } else { second }
-        }
-    }
-
-    unsafe fn read_entries(&self, entry: usize) -> (PhysicalPageMetadata, PhysicalPageMetadata) {
-        unsafe {
-            let value = self.base.add(entry >> 1).read_volatile();
-
-            (
-                PhysicalPageMetadata::from_value(value >> 4),
-                PhysicalPageMetadata::from_value(value)
-            )
-        }
-    }
-
-    pub unsafe fn new(memory_map: &MemoryMapOwned) -> Option<Self> {
-        let mut base: u64 = 0;
-        for i in &mut memory_map.entries() {
+        for i in memory_map.entries() {
+            let valid;
+            let loader_memory;
             match i.ty {
-                MemoryType::BOOT_SERVICES_CODE |
-                MemoryType::BOOT_SERVICES_DATA |
+                /*MemoryType::BOOT_SERVICES_CODE |
+                MemoryType::BOOT_SERVICES_DATA |*/
                 MemoryType::CONVENTIONAL       |
-                MemoryType::PERSISTENT_MEMORY if i.phys_start != 0 => {
-                    base = i.phys_start;
-                    break;
+                MemoryType::PERSISTENT_MEMORY => {
+                    valid         = true;
+                    loader_memory = false;
                 },
-                _ => {}
+                MemoryType::LOADER_CODE |
+                MemoryType::LOADER_DATA => {
+                    valid         = true;
+                    loader_memory = true;
+                }
+                _ => {
+                    valid         = false;
+                    loader_memory = false;
+                }
             }
-        }
 
-        if base == 0 {
-            return None;
-        }
+            if valid {
+                let mut start = i.phys_start as usize;
+                let mut size  = i.page_count as usize;
 
-        let allocator = PhysicalPageAllocator {
-            base: base as *mut u8
-        };
+                if allocator.is_null() && start.is_multiple_of(align_of::<Self>()) && size >= 2 {
+                    allocator = start as *mut Self;
 
-        let mut previous_addr: u64 = 0;
-        let mut entry:         u64 = 0;
+                    unsafe {
+                        allocator.write_volatile(PhysicalPageAllocator { size: 0, trees: [] });
+                    }
 
-        let mut entry_type: [&PhysicalPageMetadata; 2] = [&Self::UNKNOWN_PAGE_METADATA, &Self::UNKNOWN_PAGE_METADATA];
-
-        for i in &mut memory_map.entries() {
-            let addr = i.phys_start;
-            let max_addr = addr + i.page_count * Self::PAGE_SIZE;
-
-            while previous_addr < max_addr {
-                if previous_addr < addr {
-                    entry_type[(entry % 2) as usize] = &Self::UNKNOWN_PAGE_METADATA;
+                    start = start + PAGE_SIZE * 2;
+                    size -= 2;
                 }
 
-                previous_addr += Self::PAGE_SIZE;
-                entry += 1;
+                if !allocator.is_null() && size >= MINIMUM_PAGES_TO_MANAGE {
+                    unsafe {
+                        let _ = (&mut*allocator).create_trees_(start, size, loader_memory);
+                    }
+                }
             }
         }
 
-        Some(allocator)
+        unsafe {
+            if allocator.is_null() {
+                Err(())
+            } else {
+                Ok(&mut*allocator)
+            }
+        }
+    }
+
+    pub unsafe fn alloc(&mut self, pages: usize) -> Option<*mut u8> {
+        for i in 0..self.size {
+            unsafe {
+                if let Some(address) = self.get_tree(i).alloc(pages) {
+                    return Some(address);
+                }
+            }
+        }
+
+        return None;
+    }
+}
+
+impl Display for PhysicalPageAllocator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        for i in 0..self.size {
+            unsafe {
+                writeln!(f, "{:?}", self.get_tree(i))?;
+            }
+        }
+
+        Ok(())
     }
 }

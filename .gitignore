@@ -2,4 +2,3 @@
 /esp
 runner/esp
 *.qcow2
-Makefile

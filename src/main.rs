@@ -1,20 +1,12 @@
+//! 
+
 #![no_std]
 #![no_main]
 
-use core::time::Duration;
+use core::{fmt::Write, time::Duration};
 
-use uefi::{Status, boot, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, println, proto::console::gop::*};
-
-#[derive(Clone, Copy)]
-#[allow(unused)]
-struct GraphicsInfo {
-    pub w:                 usize,
-    pub h:                 usize,
-    pub stride:            usize,
-    pub pixel_format:      PixelFormat,
-    pub frame_buffer:     *mut u8,
-    pub frame_buffer_size: usize
-}
+use elpytios_bootloader::{page_alloc::PhysicalPageAllocator, rendering::{DisplayWriter, GraphicsInfo}};
+use uefi::{Status, boot, entry, helpers, mem::memory_map::{MemoryMapOwned}, println, proto::console::gop::*};
 
 fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
     let mut frame_buffer;
@@ -71,11 +63,6 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
 
     let memory_map;
     unsafe {
-        let mem = boot::memory_map(boot::MemoryType::LOADER_DATA).unwrap();
-        for i in 0..(mem.len()) {
-            println!("{:?}", mem.get(i).unwrap());
-        }
-        boot::stall(Duration::from_secs(501));
         memory_map = boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA));
     }
 
@@ -91,17 +78,31 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
 
 #[entry]
 fn entry() -> Status {
-    let (graphics_info, _memory_map) = setup_uefi_and_exit();
+    let (graphics_info, memory_map) = setup_uefi_and_exit();
 
-    let mut i = 0;
-    for y in 0..graphics_info.h {
-        for x in 0..graphics_info.w {
-            unsafe {
-                graphics_info.frame_buffer.cast::<u32>().add(x + y * graphics_info.stride).write_volatile(i);
-            }
+    let mut display_writer = DisplayWriter {
+        graphics_info: &graphics_info,
+        line: 0,
+        col: 0
+    };
 
-            i += 4;
-        }
+    unsafe {
+        let allocator = PhysicalPageAllocator::new(&memory_map).unwrap();
+
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(4).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(120000).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(60000).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(60000).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(120000).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{}", allocator).unwrap();
+    }
+
+    for i in 1..10000000 {
+        writeln!(&mut display_writer, "Hello World {}", i).unwrap();
     }
 
     loop {}
