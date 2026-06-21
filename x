@@ -189,10 +189,11 @@ def fetch_std():
 
     for package in packages.values():
         package.file.write_text(package.manifest.as_string(), encoding="utf-8")
-    (library_dst_root / "fetch_info").write_text(TOMLDocument({
-        "fetcher-version": std_fetcher_version,
-        "rustc-version": rustc_version,
-    }).as_string(), encoding="utf-8")
+
+    info = tomlkit.document()
+    info["fetcher-version"] = std_fetcher_version
+    info["rustc-version"] = rustc_version
+    (library_dst_root / "fetch_info").write_text(info.as_string(), encoding="utf-8")
 
 def needs_fetch_std() -> bool:
     try:
@@ -332,7 +333,6 @@ def init_buildsystem():
                 cwd=root, stdout=None, stderr=None, check=True
             )
 
-    fetch_std()
     build_std()
 
 def main():
