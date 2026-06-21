@@ -1,3 +1,5 @@
 /target
 /esp
 *.qcow2
+
+/rustc-ice-*
