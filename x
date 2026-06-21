@@ -25,15 +25,6 @@ elpytios_std_root = root / "std"
 library_dst_root = elpytios_std_root / "rust-src"
 
 sysroot = elpytios_std_root / "sysroot"
-sysroot_crates = [
-    "core",
-    "alloc",
-    "std",
-    "compiler_builtins",
-    "panic_abort",
-    #"panic_unwind",
-    "unwind",
-]
 sysroot_libdir = sysroot / "lib" / "rustlib" / "x86_64-unknown-elpytios" / "lib"
 
 libstd_dir = library_dst_root / "std"
@@ -230,16 +221,21 @@ def build_std():
     shutil.rmtree(sysroot_libdir, ignore_errors=True)
     sysroot_libdir.mkdir(parents=True)
 
-    for crate in sysroot_crates:
-        candidates = sorted((tmp / "x86_64-unknown-elpytios" / "release" / "deps").glob(f"libstd.rlib" if crate == "std" else f"lib{crate}-*.rlib"))
-        if not candidates:
-            raise RuntimeError(f"`.rlib` not found for `{crate}`")
+    rlibs = (tmp / "x86_64-unknown-elpytios" / "release" / "deps").glob("lib*.rlib")
+    candidates: dict[str, Path] = dict()
 
-        rlib = max(candidates, key=lambda p: p.stat().st_mtime)
-        shutil.copy(
-            rlib,
-            sysroot_libdir,
-        )
+    for rlib in rlibs:
+        name = rlib.name
+        try:
+            name = name[:name.index("-")]
+        except ValueError:
+            name = name[:name.index(".rlib")]
+
+        if name not in candidates or candidates[name].stat().st_mtime < rlib.stat().st_mtime:
+            candidates[name] = rlib
+
+    for rlib in candidates.values():
+        shutil.copy(rlib, sysroot_libdir)
 
 def clean_std():
     shutil.rmtree(library_dst_root, ignore_errors=True)

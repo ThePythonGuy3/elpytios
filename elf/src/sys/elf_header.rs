@@ -1,6 +1,7 @@
-use derive_more::{Deref, DerefMut};
+use bytemuck::{Pod, Zeroable};
 
-#[derive(Debug, Clone, Copy)]
+/// The ELF header is always found at the start of the file.
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct ElfHeaderPrologue {
     /// Magic number - 0x7F, then 'ELF' in ASCII                      0-3
@@ -8,7 +9,7 @@ pub struct ElfHeaderPrologue {
     /// 1 = 32 bit, 2 = 64 bit                                        4
     pub arch: u8,
     /// 1 = little endian, 2 = big endian                             5
-    pub endianness: u8,
+    pub endian: u8,
     /// ELF header version                                            6
     pub header_version: u8,
     /// OS ABI - usually 0 for System V                               7
@@ -23,13 +24,10 @@ pub struct ElfHeaderPrologue {
     pub elf_version: u32,
 }
 
-/// The ELF header is always found at the start of the file.
-#[derive(Debug, Clone, Copy, Deref, DerefMut)]
+/// Continuation of [`ElfHeaderPrologue`] in 64-bit format (arch == 2).
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct ElfHeader64 {
-    #[deref]
-    #[deref_mut]
-    pub prologue: ElfHeaderPrologue,
     /// Program entry offset                                         24-31
     pub program_entry_offset: u64,
     /// Program header table offset                                  32-39
