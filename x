@@ -30,20 +30,21 @@ sysroot_libdir = sysroot / "lib" / "rustlib" / "x86_64-unknown-elpytios" / "lib"
 libstd_dir = library_dst_root / "std"
 std_dir_items = ["benches", "src", "tests", "build.rs", "Cargo.toml"]
 
+std_fetcher_version = 0
+rustc_version = subprocess.run(["rustc", "--version"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
 def fetch_std():
     # Copy `rust-src` component to `./std/rust-src`
-    sys_root = subprocess.run(
+    rustc_sys_root = subprocess.run(
         ["rustc", "--print", "sysroot"],
         cwd=root,
         capture_output=True,
         text=True,
+        check=True
     )
 
-    if sys_root.returncode != 0:
-        raise RuntimeError(sys_root.stderr)
-
     library_src_root = (
-        Path(sys_root.stdout.strip())
+        Path(rustc_sys_root.stdout.strip())
         / "lib"
         / "rustlib"
         / "src"
@@ -188,9 +189,20 @@ def fetch_std():
 
     for package in packages.values():
         package.file.write_text(package.manifest.as_string(), encoding="utf-8")
+    (library_dst_root / "fetch_info").write_text(TOMLDocument({
+        "fetcher-version": std_fetcher_version,
+        "rustc-version": rustc_version,
+    }).as_string(), encoding="utf-8")
+
+def needs_fetch_std() -> bool:
+    try:
+        info = tomlkit.parse((library_dst_root / "fetch_info").read_text(encoding="utf-8"))
+        return info["fetcher-version"] != std_fetcher_version or info["rustc-version"] != rustc_version
+    except:
+        return True
 
 def build_std():
-    if not (elpytios_std_root / "Cargo.toml").exists():
+    if needs_fetch_std():
         fetch_std()
 
     env = os.environ.copy()
@@ -202,7 +214,7 @@ def build_std():
     tmp = sysroot / "out"
     tmp.mkdir(parents=True, exist_ok=True)
 
-    if subprocess.run(
+    subprocess.run(
         [
             "cargo", "rustc",
             "--package", "std",
@@ -215,8 +227,8 @@ def build_std():
         env=env,
         stdout=None,
         stderr=None,
-    ).returncode != 0:
-        sys.exit(1)
+        check=True
+    )
 
     shutil.rmtree(sysroot_libdir, ignore_errors=True)
     sysroot_libdir.mkdir(parents=True)
@@ -257,7 +269,7 @@ runner_fs = runner_root / "disk.qcow2"
 runner_ovmf = runner_root / "OVMF"
 
 def create_file_qemu():
-    if subprocess.run(
+    subprocess.run(
         [
             "qemu-img", "create",
             "-f", "qcow2",
@@ -265,8 +277,8 @@ def create_file_qemu():
         ],
         stdout=None,
         stderr=None,
-    ).returncode != 0:
-        sys.exit(1)
+        check=True
+    )
 
     runner_esp.mkdir(parents=True, exist_ok=True)
 
@@ -279,7 +291,7 @@ def run_qemu():
         case "win32": accel = "whpx"
         case "linux": accel = "kvm"
 
-    if subprocess.run(
+    subprocess.run(
         [
             "cargo", "rustc",
             "--package", "elpytios-bootloader",
@@ -290,13 +302,13 @@ def run_qemu():
         cwd=root,
         stdout=None,
         stderr=None,
-    ).returncode != 0:
-        sys.exit(1)
+        check=True
+    )
 
     runner_boot_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(root / "target" / "x86_64-unknown-uefi" / "release" / "elpytios-bootloader.efi", runner_boot_file)
 
-    if subprocess.run(
+    subprocess.run(
         [
             f"qemu-system-{platform.machine()}",
             "-accel", accel,
@@ -309,17 +321,19 @@ def run_qemu():
         ],
         stdout=None,
         stderr=None,
-    ).returncode != 0:
-        sys.exit(1)
+        check=True
+    )
 
 def init_buildsystem():
     if sys.platform == "win32":
         for wrap in ["rustc-sysroot"]:
-            if subprocess.run(
+            subprocess.run(
                 ["rustc", root / "command-wrapper.rs", "-o", root / f"{wrap}.exe"],
-                cwd=root, stdout=None, stderr=None
-            ).returncode != 0:
-                sys.exit(1)
+                cwd=root, stdout=None, stderr=None, check=True
+            )
+
+    fetch_std()
+    build_std()
 
 def main():
     parser = argparse.ArgumentParser()
