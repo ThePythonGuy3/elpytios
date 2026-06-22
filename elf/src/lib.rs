@@ -26,15 +26,27 @@
 //! ```
 
 #![no_std]
+#![feature(
+    const_clone,
+    const_convert,
+    const_destruct,
+    const_iter,
+    const_option_ops,
+    const_trait_impl,
+    const_try,
+    const_try_residual,
+    try_blocks
+)]
 
 pub mod sys;
 
-use core::iter::FusedIterator;
+use core::{any::type_name, fmt, iter::FusedIterator, marker::Destruct};
 
-use bytemuck::{AnyBitPattern, pod_read_unaligned};
+use bytemuck::AnyBitPattern;
+use const_panic::PanicFmt;
 use sys::{ElfHeader64, ElfHeaderPrologue, ElfProgramFlags, ElfProgramHeader64};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PanicFmt)]
 pub enum ElfError {
     InvalidMagic([u8; 4]),
     InvalidArch(u8),
@@ -45,19 +57,32 @@ pub enum ElfError {
 }
 
 #[inline]
-fn int_fit<T: TryInto<usize>>(from: T) -> Result<usize, ElfError> {
-    from.try_into().map_err(|_| ElfError::IntDoesntFit)
+const fn int_fit<T: [const] TryInto<usize, Error: [const] Destruct>>(from: T) -> Result<usize, ElfError> {
+    match from.try_into() {
+        Ok(fit) => Ok(fit),
+        Err(..) => Err(ElfError::IntDoesntFit),
+    }
 }
 
+#[derive(Debug)]
 pub enum Elf<'a> {
     N32,
     N64(Elf64<'a>),
 }
 
+const impl Clone for Elf<'_> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::N32 => Self::N32,
+            Self::N64(elf) => Self::N64(elf.clone()),
+        }
+    }
+}
+
 impl<'a> Elf<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, ElfError> {
+    pub const fn from_bytes(bytes: &'a [u8]) -> Result<Self, ElfError> {
         let file_reader = Reader { bytes };
-        let mut header_reader = file_reader.fork(0).ok_or(ElfError::Eof)?;
+        let mut header_reader = file_reader.clone();
 
         let prologue = header_reader.read::<ElfHeaderPrologue>().ok_or(ElfError::Eof)?;
         let [0x7F, b'E', b'L', b'F'] = prologue.magic else { return Err(ElfError::InvalidMagic(prologue.magic)) };
@@ -70,6 +95,7 @@ impl<'a> Elf<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct Elf64<'a> {
     header: ElfHeader64,
     file_reader: Reader<'a>,
@@ -77,9 +103,9 @@ pub struct Elf64<'a> {
 }
 
 impl<'a> Elf64<'a> {
-    fn from_bytes(file_reader: Reader<'a>, mut header_reader: Reader<'a>) -> Result<Self, ElfError> {
+    const fn from_bytes(file_reader: Reader<'a>, mut header_reader: Reader<'a>) -> Result<Self, ElfError> {
         let header = header_reader.read::<ElfHeader64>().ok_or(ElfError::Eof)?;
-        let program_table_reader = file_reader.fork(int_fit(header.program_entry_offset)?).ok_or(ElfError::Eof)?;
+        let program_table_reader = file_reader.fork(int_fit(header.program_header_table_offset)?).ok_or(ElfError::Eof)?;
 
         Ok(Self {
             header,
@@ -87,16 +113,36 @@ impl<'a> Elf64<'a> {
             program_table_reader,
         })
     }
+
+    pub const fn program_entry(&self) -> u64 {
+        self.header.program_entry_offset
+    }
+
+    pub const fn program_header_count(&self) -> usize {
+        self.header.program_header_entry_len as usize
+    }
 }
 
-impl<'a> Iterator for Elf64<'a> {
+const impl Clone for Elf64<'_> {
+    fn clone(&self) -> Self {
+        Self {
+            header: self.header,
+            file_reader: self.file_reader.clone(),
+            program_table_reader: self.program_table_reader.clone(),
+        }
+    }
+}
+
+const impl<'a> Iterator for Elf64<'a> {
     type Item = Result<ElfSegment<'a>, ElfError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.header.program_header_entry_len = self.header.program_header_entry_len.checked_sub(1)?;
-        let program_header = self.program_table_reader.read::<ElfProgramHeader64>()?;
 
-        Some((|| {
+        let program_header = self.program_table_reader.clone().read::<ElfProgramHeader64>()?;
+        self.program_table_reader.take(self.header.program_header_entry_size as usize);
+
+        Some(try {
             let segment_data = self
                 .file_reader
                 .fork(int_fit(program_header.segment_offset)?)
@@ -104,23 +150,26 @@ impl<'a> Iterator for Elf64<'a> {
                 .take(int_fit(program_header.segment_file_size)?)
                 .ok_or(ElfError::Eof)?;
 
-            Ok(ElfSegment {
+            ElfSegment {
                 segment_type: match program_header.segment_type {
                     0 => ElfSegmentType::Null,
                     1 => ElfSegmentType::Load,
                     2 => ElfSegmentType::Dynamic,
                     3 => ElfSegmentType::Interp,
                     4 => ElfSegmentType::Note,
-                    n => Err(ElfError::InvalidSegmentType(n))?,
+                    5 => ElfSegmentType::Shlib,
+                    6 => ElfSegmentType::Header,
+                    7 => ElfSegmentType::Tls,
+                    n => ElfSegmentType::Unknown(n),
                 },
-                segment_data,
+                data: segment_data,
                 flags: program_header.flags,
                 virtual_address: int_fit(program_header.segment_virtual_address)?,
                 physical_address: int_fit(program_header.segment_physical_address)?,
                 memory_size: int_fit(program_header.segment_memory_size)?,
                 alignment: int_fit(program_header.section_alignment)?,
-            })
-        })())
+            }
+        })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -139,7 +188,7 @@ impl FusedIterator for Elf64<'_> {}
 
 pub struct ElfSegment<'a> {
     pub segment_type: ElfSegmentType,
-    pub segment_data: &'a [u8],
+    pub data: &'a [u8],
     pub flags: ElfProgramFlags,
     /// `segment_data` should be copied to this v-address
     pub virtual_address: usize,
@@ -152,7 +201,7 @@ pub struct ElfSegment<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(C)]
+#[repr(u32)]
 pub enum ElfSegmentType {
     /// Ignore the entry
     Null = 0,
@@ -163,28 +212,48 @@ pub enum ElfSegmentType {
     /// Contains a file path to an executable to use as an interpreter for the segment
     Interp = 3,
     /// Note section. There are more values, but mostly contain architecture/environment specific
-    /// information, which is probably not required for the majority of ELF files.
+    /// information, which is probably not required for the majority of ELF files
     Note = 4,
+    /// Reserved/obsolete
+    Shlib = 5,
+    /// The program header table itself
+    Header = 6,
+    /// Thread-local storage
+    Tls = 7,
+    /// Unknown segment type
+    Unknown(u32) = u32::MAX,
 }
 
 struct Reader<'a> {
     bytes: &'a [u8],
 }
 
+const impl Clone for Reader<'_> {
+    fn clone(&self) -> Self {
+        Self { bytes: self.bytes }
+    }
+}
+
 impl<'a> Reader<'a> {
-    fn fork(&self, offset: usize) -> Option<Self> {
+    const fn fork(&self, offset: usize) -> Option<Self> {
         let (.., bytes) = self.bytes.split_at_checked(offset)?;
         Some(Self { bytes })
     }
 
-    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
+    const fn take(&mut self, count: usize) -> Option<&'a [u8]> {
         let (taken, bytes) = self.bytes.split_at_checked(count)?;
         self.bytes = bytes;
         Some(taken)
     }
 
-    fn read<T: AnyBitPattern>(&mut self) -> Option<T> {
+    const fn read<T: AnyBitPattern>(&mut self) -> Option<T> {
         let taken = self.take(size_of::<T>())?;
-        Some(pod_read_unaligned(taken))
+        Some(unsafe { (taken.as_ptr() as *const T).read_unaligned() })
+    }
+}
+
+impl fmt::Debug for Reader<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}({} bytes left)", type_name::<Self>(), self.bytes.len())
     }
 }

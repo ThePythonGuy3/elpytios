@@ -295,6 +295,20 @@ def run_qemu(args):
     subprocess.run(
         [
             "cargo", "rustc",
+            "--package", "elpytios-kernel",
+            "--bin", "elpytios-kernel",
+            "--target", "x86_64-unknown-none",
+            "--profile", "dev" if args.debug else "release",
+        ],
+        cwd=root,
+        stdout=None,
+        stderr=None,
+        check=True
+    )
+
+    subprocess.run(
+        [
+            "cargo", "rustc",
             "--package", "elpytios-bootloader",
             "--bin", "elpytios-bootloader",
             "--target", "x86_64-unknown-uefi",
@@ -321,7 +335,7 @@ def run_qemu(args):
             "-m", "4830196K",
             "-device", "virtio-vga",
             "-vga", "virtio",
-            *(["-s", "-S"] if args.debug else []),
+            #*(["-s", "-S"] if args.debug else []),
         ],
         stdout=None,
         stderr=None,

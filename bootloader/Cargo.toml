@@ -9,5 +9,8 @@ rust-version = "1.98"
 forced-target = "x86_64-unknown-uefi"
 
 [dependencies]
+elpytios-elf = { path = "../elf" }
+
+const_panic = { version = "0.2", features = ["derive", "rust_latest_stable"] }
 log = "0.4"
 uefi = { version = "0.37", features = ["logger", "panic_handler"] }
