@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use core::{mem::{MaybeUninit, transmute}, arch::asm};
+use core::{mem::MaybeUninit, arch::asm};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment, ElfSegmentType};
@@ -60,6 +60,7 @@ fn get_kernel_virtual_base_and_pages() -> Option<(usize, usize)> {
     Some((virt_base, (virt_max - virt_base).div_ceil(PAGE_SIZE)))
 }
 
+// TODO page allocator
 struct UefiInfo {
     pub graphics_info: GraphicsInfo,
 
@@ -202,10 +203,7 @@ fn entry() -> Status {
     }
 
     unsafe {
-        type EntryPoint = unsafe extern "sysv64" fn(graphics_info: GraphicsInfo) -> !;
-
         let entry_point = uefi_info.kernel_mapping.add(KERNEL_BINARY.program_entry() as usize - uefi_info.kernel_virtual_base);
-        let entry_point = transmute::<*mut u8, EntryPoint>(entry_point);
 
         let stack_base = uefi_info.kernel_stack_mapping as usize + uefi_info.kernel_stack_pages * PAGE_SIZE;
 
