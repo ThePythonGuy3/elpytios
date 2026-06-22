@@ -1,22 +1,12 @@
-#![feature(custom_inner_attributes)]
-#![rustfmt::skip]
+//! 
 
 #![no_std]
 #![no_main]
 
-use core::{ptr::null_mut, time::Duration};
+use core::{arch::asm, fmt::Write};
 
-use uefi::{Status, boot, entry, helpers, mem::memory_map::MemoryMapOwned, println, proto::console::gop::*};
-
-#[derive(Clone, Copy)]
-struct GraphicsInfo {
-    pub w:                 usize,
-    pub h:                 usize,
-    pub stride:            usize,
-    pub pixel_format:      PixelFormat,
-    pub frame_buffer:     *mut u8,
-    pub frame_buffer_size: usize
-}
+use elpytios_bootloader::{page_alloc::PhysicalPageAllocator, rendering::{DisplayWriter, GraphicsInfo}};
+use uefi::{Status, boot::{self, MemoryType, OpenProtocolAttributes, OpenProtocolParams}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, println, proto::{console::gop::*, loaded_image::LoadedImage}};
 
 fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
     let mut frame_buffer;
@@ -69,11 +59,23 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
         stride             = mode_info.stride();
         pixel_format       = mode_info.pixel_format();
         frame_buffer_ptr   = frame_buffer.as_mut_ptr();
+
+        unsafe {
+            let proto = boot::open_protocol::<LoadedImage>(OpenProtocolParams {
+                handle: boot::image_handle(),
+                agent: boot::image_handle(),
+                controller: None
+            }, OpenProtocolAttributes::GetProtocol).unwrap();
+
+            println!("{:?}", proto.info());
+        }
     }
 
     let memory_map;
     unsafe {
         memory_map = boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA));
+
+        asm!("cli");
     }
 
     (GraphicsInfo {
@@ -88,17 +90,37 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
 
 #[entry]
 fn entry() -> Status {
-    let (graphics_info, _memory_map) = setup_uefi_and_exit();
+    let (graphics_info, memory_map) = setup_uefi_and_exit();
 
-    let mut i = 0;
-    for y in 0..graphics_info.h {
-        for x in 0..graphics_info.w {
-            unsafe {
-                graphics_info.frame_buffer.cast::<u32>().add(x + y * graphics_info.stride).write_volatile(i);
-            }
+    let mut display_writer = DisplayWriter {
+        graphics_info: &graphics_info,
+        line: 0,
+        col: 0
+    };
 
-            i += 8;
-        }
+    display_writer.line += 10;
+
+    for i in memory_map.entries() {
+        /*if i.ty == MemoryType::BOOT_SERVICES_CODE || i.ty == MemoryType::BOOT_SERVICES_DATA {
+            continue;
+        }*/
+
+        write!(&mut display_writer, "{:x} {:?} / ", i.phys_start, i.ty).unwrap();
+    }
+
+    unsafe {
+        let allocator = PhysicalPageAllocator::new(&memory_map).unwrap();
+
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(4).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(120000).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(60000).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(60000).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{:?}", allocator.alloc(120000).unwrap()).unwrap();
+        writeln!(&mut display_writer, "{}", allocator).unwrap();
     }
 
     loop {}
