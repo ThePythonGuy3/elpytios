@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import re
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +33,7 @@ def main():
         else:
             rustc_args.extend(["--sysroot", str(sysroot)])
 
-    subprocess.run([real_rustc, *rustc_args], shell=False, check=True)
+    subprocess.run([real_rustc, *rustc_args], close_fds=False, shell=False, check=True)
 
 if __name__ == "__main__":
     main()
