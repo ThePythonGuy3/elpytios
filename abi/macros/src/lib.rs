@@ -60,7 +60,7 @@ fn execute(input: TokenStream) -> syn::Result<TokenStream> {
 
     let data_name = data.ident.clone();
     Ok(quote! {
-        #[cfg(target_os = "elpytios")]
+        #[cfg(not(target_os = "none"))]
         impl #data_name {
             #(#functions)*
         }

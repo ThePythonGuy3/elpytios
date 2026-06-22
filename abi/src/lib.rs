@@ -12,7 +12,7 @@ pub enum Syscall {
     Read = 1,
 }
 
-#[cfg(target_os = "elpytios")]
+#[cfg(not(target_os = "none"))]
 #[expect(
     unused,
     reason = "Not all args are used yet, they will be in the future. Remove this `expect()` when that happens."
