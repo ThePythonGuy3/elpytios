@@ -131,6 +131,14 @@ pub struct DisplayWriter<'a> {
 }
 
 impl<'a> DisplayWriter<'a> {
+    pub fn columns(&self) -> usize {
+        self.graphics_info.w / (FONT_WIDTH + HORIZONTAL_SPACING)
+    }
+
+    pub fn lines(&self) -> usize {
+        self.graphics_info.h / (FONT_HEIGHT + VERTICAL_SPACING)
+    }
+
     pub fn advance_line(&mut self) {
         self.col = 0;
         self.line += 1;

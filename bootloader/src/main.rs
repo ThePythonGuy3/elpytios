@@ -1,10 +1,10 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, fmt::Write};
+use core::fmt::Write;
 
 use elpytios_bootloader::{page_alloc::PhysicalPageAllocator, rendering::{DisplayWriter, GraphicsInfo}};
-use uefi::{Status, boot, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
+use uefi::{Status, boot, entry, helpers, mem::memory_map::{MemoryMapOwned}, proto::console::gop::*};
 
 fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
     let mut frame_buffer;
@@ -84,11 +84,10 @@ fn entry() -> Status {
         col: 0
     };
 
-    writeln!(&mut display_writer, "{:?}", (&memory_map) as *const MemoryMapOwned).unwrap();
+    let a = display_writer.columns();
+    let b = display_writer.lines();
 
-    for i in memory_map.entries() {
-        write!(&mut display_writer, "[{:x}-{:x}) {:?} / ", i.phys_start, i.phys_start + i.page_count * 4096, i.ty).unwrap();
-    }
+    writeln!(&mut display_writer, "{}x{}", a, b).unwrap();
 
     unsafe {
         let allocator = PhysicalPageAllocator::new(&memory_map).unwrap();

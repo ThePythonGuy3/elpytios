@@ -4,20 +4,21 @@ use uefi::{boot::MemoryType, mem::memory_map::{MemoryMap, MemoryMapOwned}};
 
 use crate::page_alloc_tree::{BinaryBuddyTree, PAGE_SIZE};
 
-const MINIMUM_PAGES_TO_MANAGE: usize = 4;
+const MINIMUM_PAGES_TO_MANAGE:          usize = 4;
+const PAGES_RESERVED_FOR_TREE_POINTERS: usize = 2; // TODO Fix, This is STUPID
 
 #[repr(C)]
 pub struct PhysicalPageAllocator {
-    size:            usize,
-    trees: [&'static BinaryBuddyTree; 0]
+    size:        usize,
+    trees: [*mut BinaryBuddyTree; 0]
 }
 
 impl PhysicalPageAllocator {
-    unsafe fn push_tree(&mut self, tree: &BinaryBuddyTree) {
+    unsafe fn push_tree(&mut self, tree: *mut BinaryBuddyTree) {
         unsafe {
             (self as *mut Self)
                 .byte_add(offset_of!(Self, trees))
-                .cast::<&BinaryBuddyTree>()
+                .cast::<*mut BinaryBuddyTree>()
                 .add(self.size)
                 .write_volatile(tree);
         }
@@ -25,11 +26,11 @@ impl PhysicalPageAllocator {
         self.size += 1;
     }
 
-    unsafe fn get_tree(&self, n: usize) -> &mut BinaryBuddyTree {
+    unsafe fn get_tree(&self, n: usize) -> *mut BinaryBuddyTree {
         unsafe {
             (self as *const Self)
                 .byte_add(offset_of!(Self, trees))
-                .cast::<&mut BinaryBuddyTree>()
+                .cast::<*mut BinaryBuddyTree>()
                 .add(n)
                 .cast_mut()
                 .read_volatile()
@@ -111,15 +112,16 @@ impl PhysicalPageAllocator {
                 let mut start = i.phys_start as usize;
                 let mut size  = i.page_count as usize;
 
-                if allocator.is_null() && start.is_multiple_of(align_of::<Self>()) && size >= 2 {
+                if allocator.is_null() && start.is_multiple_of(align_of::<Self>()) &&
+                    size == PAGES_RESERVED_FOR_TREE_POINTERS {
                     allocator = start as *mut Self;
 
                     unsafe {
                         allocator.write_volatile(PhysicalPageAllocator { size: 0, trees: [] });
                     }
 
-                    start = start + PAGE_SIZE * 2;
-                    size -= 2;
+                    start = start + PAGE_SIZE * PAGES_RESERVED_FOR_TREE_POINTERS;
+                    size -= PAGES_RESERVED_FOR_TREE_POINTERS;
                 }
 
                 if !allocator.is_null() && size >= MINIMUM_PAGES_TO_MANAGE {
@@ -142,13 +144,17 @@ impl PhysicalPageAllocator {
     pub unsafe fn alloc(&mut self, pages: usize) -> Option<*mut u8> {
         for i in 0..self.size {
             unsafe {
-                if let Some(address) = self.get_tree(i).alloc(pages) {
+                if let Some(address) = (*self.get_tree(i)).alloc(pages) {
                     return Some(address);
                 }
             }
         }
 
         return None;
+    }
+
+    pub unsafe fn free(&mut self, _region: *mut u8) -> Result<(), ()> {
+        Ok(())
     }
 }
 
