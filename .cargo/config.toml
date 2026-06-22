@@ -9,3 +9,6 @@ target = "target-specs/x86_64-unknown-elpytios.json"
 # My usual setup uses `cranelift` for development; disable it for this project.
 [profile.dev]
 codegen-backend = "llvm"
+
+[target.x86_64-unknown-none]
+rustflags = ["-C", "relocation-model=static"]

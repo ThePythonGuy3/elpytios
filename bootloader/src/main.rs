@@ -1,10 +1,43 @@
+#![feature(const_clone, const_iter, const_trait_impl, custom_inner_attributes)]
+#![rustfmt::skip]
+
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, fmt::Write};
+use core::{fmt::Write, mem::{MaybeUninit, transmute}};
 
-use elpytios_bootloader::{page_alloc::PhysicalPageAllocator, rendering::{DisplayWriter, GraphicsInfo}};
+use const_panic::concat_panic;
+use elpytios_bootloader::{page_alloc::PhysicalPageAllocator, page_alloc_tree::PAGE_SIZE, rendering::{DisplayWriter, GraphicsInfo}};
+use elpytios_elf::{Elf, Elf64, ElfSegment, ElfSegmentType};
 use uefi::{Status, boot, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
+
+static KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
+    debug_assertions => "debug",
+    _ => "release",
+}, "/elpytios-kernel"))) {
+    Ok(Elf::N32) => panic!("Expected 64-bit kernel ELF"),
+    Ok(Elf::N64(elf)) => elf,
+    Err(e) => concat_panic!(e),
+};
+
+const KERNEL_SEGMENTS: [ElfSegment; KERNEL_BINARY.program_header_count()] = {
+    let mut out: MaybeUninit<[ElfSegment; _]> = MaybeUninit::uninit();
+    let mut ptr = out.as_mut_ptr() as *mut ElfSegment;
+
+    for segment in KERNEL_BINARY.clone() {
+        let segment = match segment {
+            Ok(segment) => segment,
+            Err(e) => concat_panic!(e),
+        };
+
+        unsafe {
+            ptr.write(segment);
+            ptr = ptr.add(1);
+        }
+    }
+
+    unsafe { out.assume_init() }
+};
 
 fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
     let mut frame_buffer;
@@ -90,9 +123,8 @@ fn entry() -> Status {
         write!(&mut display_writer, "[{:x}-{:x}) {:?} / ", i.phys_start, i.phys_start + i.page_count * 4096, i.ty).unwrap();
     }
 
+    let allocator = PhysicalPageAllocator::new(&memory_map).unwrap();
     unsafe {
-        let allocator = PhysicalPageAllocator::new(&memory_map).unwrap();
-
         writeln!(&mut display_writer, "{:?}", allocator.alloc(4).unwrap()).unwrap();
         writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
         writeln!(&mut display_writer, "{:?}", allocator.alloc(1).unwrap()).unwrap();
@@ -105,5 +137,29 @@ fn entry() -> Status {
         writeln!(&mut display_writer, "{}", allocator).unwrap();
     }
 
-    loop {}
+    let mut virt_base = usize::MAX;
+    let mut virt_max = usize::MIN;
+
+    for segment in KERNEL_SEGMENTS {
+        if segment.segment_type != ElfSegmentType::Load { continue }
+        virt_base = virt_base.min(segment.virtual_address);
+        virt_max = virt_max.max(virt_base + segment.memory_size);
+    }
+
+    let kernel_memory = unsafe { allocator.alloc((virt_max - virt_base).div_ceil(PAGE_SIZE)) }.unwrap();
+    for segment in KERNEL_SEGMENTS {
+        if segment.segment_type != ElfSegmentType::Load { continue }
+        unsafe {
+            kernel_memory.add(segment.virtual_address - virt_base).copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
+            kernel_memory.add(segment.data.len()).write_bytes(0, segment.memory_size - segment.data.len());
+        }
+    }
+
+    unsafe {
+        type EntryPoint = unsafe extern "sysv64" fn() -> !;
+
+        let entry_point = kernel_memory.add(KERNEL_BINARY.program_entry() as usize);
+        let entry_point = transmute::<*mut u8, EntryPoint>(entry_point);
+        entry_point()
+    }
 }

@@ -152,6 +152,8 @@ dependencies = [
 name = "elpytios-bootloader"
 version = "0.1.0"
 dependencies = [
+ "const_panic",
+ "elpytios-elf",
  "log",
  "uefi",
 ]
