@@ -285,7 +285,7 @@ def create_file_qemu(_args):
 
 def run_qemu(args):
     if not runner_fs.exists():
-        create_file_qemu()
+        create_file_qemu(args)
 
     accel = "tcg"
     match sys.platform:
