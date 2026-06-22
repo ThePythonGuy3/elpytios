@@ -335,7 +335,7 @@ def run_qemu(args):
             "-m", "4830196K",
             "-device", "virtio-vga",
             "-vga", "virtio",
-            #*(["-s", "-S"] if args.debug else []),
+            *(["-s", "-S"] if args.debug else []),
         ],
         stdout=None,
         stderr=None,

@@ -149,10 +149,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "elpytios-bootinfo"
+version = "0.1.0"
+
+[[package]]
 name = "elpytios-bootloader"
 version = "0.1.0"
 dependencies = [
  "const_panic",
+ "elpytios-bootinfo",
  "elpytios-elf",
  "log",
  "uefi",
@@ -172,6 +177,7 @@ name = "elpytios-kernel"
 version = "0.1.0"
 dependencies = [
  "elpytios-abi",
+ "elpytios-bootinfo",
 ]
 
 [[package]]

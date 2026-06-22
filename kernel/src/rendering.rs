@@ -1,16 +1,6 @@
 use core::fmt::Write;
 
-use uefi::proto::console::gop::PixelFormat;
-
-#[derive(Clone, Copy)]
-pub struct GraphicsInfo {
-    pub w:                 usize,
-    pub h:                 usize,
-    pub stride:            usize,
-    pub pixel_format:      PixelFormat,
-    pub frame_buffer:     *mut u8,
-    pub frame_buffer_size: usize
-}
+use elpytios_bootinfo::*;
 
 const FONT_HEIGHT: usize = 13;
 const FONT_WIDTH:  usize = 8;
@@ -167,7 +157,7 @@ impl<'a> DisplayWriter<'a> {
                 let paint_pixel = (character[(FONT_HEIGHT - 1) - y] & (0b1000_0000 >> x)) != 0;
 
                 unsafe {
-                    self.graphics_info.frame_buffer.cast::<u32>().add((base_x + x) + (base_y + y) * self.graphics_info.stride).write_volatile(if paint_pixel { 0xBBBBBBBB } else { 0x00000000 });
+                    self.graphics_info.frame_buffer.cast::<u32>().add((base_x + x) + (base_y + y) * self.graphics_info.stride).write_volatile(if paint_pixel { 0xBBBBBBBB } else { 0xFF00FFFF });
                 }
             }
         }

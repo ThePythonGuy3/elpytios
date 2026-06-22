@@ -10,6 +10,7 @@ forced-target = "x86_64-unknown-uefi"
 
 [dependencies]
 elpytios-elf = { path = "../elf" }
+elpytios-bootinfo = { path = "../bootinfo" }
 
 const_panic = { version = "0.2", features = ["derive", "rust_latest_stable"] }
 log = "0.4"

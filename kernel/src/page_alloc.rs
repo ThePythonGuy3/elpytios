@@ -1,4 +1,4 @@
-use core::{fmt::{Display, Formatter}, mem::offset_of, ptr::null_mut};
+/*use core::{fmt::{Display, Formatter}, mem::offset_of, ptr::null_mut};
 
 use uefi::{boot::MemoryType, mem::memory_map::{MemoryMap, MemoryMapOwned}};
 
@@ -168,4 +168,4 @@ impl Display for PhysicalPageAllocator {
 
         Ok(())
     }
-}
+}*/
