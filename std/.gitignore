@@ -1,0 +1,12 @@
+# `rust-src` component installed in toolchain
+/rust-src
+
+# Flattened `std` files
+/benches
+/src
+/tests
+/build.rs
+/Cargo.toml
+
+# Custom sysroot target
+/sysroot

@@ -1,0 +1,28 @@
+{
+    "arch": "x86_64",
+    "cpu": "x86-64",
+    "crt-static-respected": true,
+    "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+    "llvm-target": "x86_64-unknown-none",
+    "max-atomic-width": 64,
+    "has-thread-local": false,
+    "metadata": {
+        "description": "64-bit Elpytios",
+        "host_tools": false,
+        "std": true,
+        "tier": 3
+    },
+    "os": "elpytios",
+    "target-pointer-width": 64,
+    "linker-flavor": "ld.lld",
+    "linker": "rust-lld",
+    "panic-strategy": "abort",
+    "pre-link-args": {
+        "gnu-cc": [
+            "-m64"
+        ],
+        "gnu-lld-cc": [
+            "-m64"
+        ]
+    }
+}

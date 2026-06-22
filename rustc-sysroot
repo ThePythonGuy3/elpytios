@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+
+import re
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+target = "x86_64-unknown-elpytios"
+
+def main():
+    if len(sys.argv) < 2:
+        print("rustc-sysroot: expected rustc path as first argument", file=sys.stderr)
+        sys.exit(1)
+
+    real_rustc = sys.argv[1]
+    rustc_args = sys.argv[2:]
+
+    root = Path(__file__).resolve().parent
+    sysroot = root / "std" / "sysroot"
+
+    should_inject = False
+
+    for i, arg in enumerate(rustc_args):
+        if arg == "--target" and i + 1 < len(rustc_args) and (rustc_args[i + 1] == target or rustc_args[i + 1].endswith(f"{target}.json")):
+            should_inject = True
+            break
+
+    if should_inject:
+        for i, arg in enumerate(rustc_args):
+            if arg == "--sysroot" or arg.startswith("--sysroot="):
+                break
+        else:
+            rustc_args.extend(["--sysroot", str(sysroot)])
+
+    subprocess.run([real_rustc, *rustc_args], close_fds=False, shell=False, check=True)
+
+if __name__ == "__main__":
+    main()

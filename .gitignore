@@ -1,4 +1,8 @@
+/*.exe
+/*.pdb
+
 /target
 /esp
-runner/esp
 *.qcow2
+
+/rustc-ice-*
