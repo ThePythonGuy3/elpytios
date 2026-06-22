@@ -117,11 +117,10 @@ fn entry() -> Status {
         col: 0
     };
 
-    writeln!(&mut display_writer, "{:?}", (&memory_map) as *const MemoryMapOwned).unwrap();
+    let a = display_writer.columns();
+    let b = display_writer.lines();
 
-    for i in memory_map.entries() {
-        write!(&mut display_writer, "[{:x}-{:x}) {:?} / ", i.phys_start, i.phys_start + i.page_count * 4096, i.ty).unwrap();
-    }
+    writeln!(&mut display_writer, "{}x{}", a, b).unwrap();
 
     let allocator = PhysicalPageAllocator::new(&memory_map).unwrap();
     unsafe {
