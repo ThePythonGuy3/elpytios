@@ -6,7 +6,7 @@
 use core::{arch::asm, fmt::Write};
 
 use elpytios_bootloader::{page_alloc::PhysicalPageAllocator, rendering::{DisplayWriter, GraphicsInfo}};
-use uefi::{Status, boot::{self, MemoryType, OpenProtocolAttributes, OpenProtocolParams}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, println, proto::{console::gop::*, loaded_image::LoadedImage}};
+use uefi::{Status, boot, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
 
 fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
     let mut frame_buffer;
@@ -59,23 +59,11 @@ fn setup_uefi_and_exit() -> (GraphicsInfo, MemoryMapOwned) {
         stride             = mode_info.stride();
         pixel_format       = mode_info.pixel_format();
         frame_buffer_ptr   = frame_buffer.as_mut_ptr();
-
-        unsafe {
-            let proto = boot::open_protocol::<LoadedImage>(OpenProtocolParams {
-                handle: boot::image_handle(),
-                agent: boot::image_handle(),
-                controller: None
-            }, OpenProtocolAttributes::GetProtocol).unwrap();
-
-            println!("{:?}", proto.info());
-        }
     }
 
     let memory_map;
     unsafe {
         memory_map = boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA));
-
-        asm!("cli");
     }
 
     (GraphicsInfo {
@@ -98,14 +86,20 @@ fn entry() -> Status {
         col: 0
     };
 
-    display_writer.line += 10;
+    writeln!(&mut display_writer, "{:?}", (&memory_map) as *const MemoryMapOwned).unwrap();
+
+    unsafe {
+        let mut x: usize = 0;
+        asm!(
+            "mov {x}, cr3",
+            x = out(reg) x
+        );
+
+        writeln!(&mut display_writer, "{:x}", x).unwrap();
+    }
 
     for i in memory_map.entries() {
-        /*if i.ty == MemoryType::BOOT_SERVICES_CODE || i.ty == MemoryType::BOOT_SERVICES_DATA {
-            continue;
-        }*/
-
-        write!(&mut display_writer, "{:x} {:?} / ", i.phys_start, i.ty).unwrap();
+        write!(&mut display_writer, "[{:x}-{:x}) {:?} / ", i.phys_start, i.phys_start + i.page_count * 4096, i.ty).unwrap();
     }
 
     unsafe {

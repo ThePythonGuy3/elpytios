@@ -33,7 +33,7 @@ std_dir_items = ["benches", "src", "tests", "build.rs", "Cargo.toml"]
 std_fetcher_version = 0
 rustc_version = subprocess.run(["rustc", "--version"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
 
-def fetch_std():
+def fetch_std(_args):
     # Copy `rust-src` component to `./std/rust-src`
     rustc_sys_root = subprocess.run(
         ["rustc", "--print", "sysroot"],
@@ -55,7 +55,7 @@ def fetch_std():
     if not library_src_root.exists():
         raise RuntimeError("Missing `rust-src`, run `rustup component add rust-src`")
 
-    clean_std()
+    clean_std(_args)
     shutil.copytree(library_src_root, library_dst_root)
     (library_dst_root / "Cargo.toml").unlink()
 
@@ -202,9 +202,9 @@ def needs_fetch_std() -> bool:
     except:
         return True
 
-def build_std():
+def build_std(_args):
     if needs_fetch_std():
-        fetch_std()
+        fetch_std(_args)
 
     env = os.environ.copy()
     if (rustflags := env.get("RUSTFLAGS")):
@@ -250,7 +250,7 @@ def build_std():
     for rlib in candidates.values():
         shutil.copy(rlib, sysroot_libdir)
 
-def clean_std():
+def clean_std(_args):
     shutil.rmtree(library_dst_root, ignore_errors=True)
     shutil.rmtree(sysroot, ignore_errors=True)
 
@@ -269,7 +269,7 @@ runner_boot_file = runner_boot_dir / "BOOTX64.efi"
 runner_fs = runner_root / "disk.qcow2"
 runner_ovmf = runner_root / "OVMF"
 
-def create_file_qemu():
+def create_file_qemu(_args):
     subprocess.run(
         [
             "qemu-img", "create",
@@ -311,7 +311,7 @@ def run_qemu(args):
 
     subprocess.run(
         [
-            f"qemu-system-{platform.machine()}",
+            f"qemu-system-{platform.machine().replace("AMD64", "x86_64")}",
             "-accel", accel,
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_CODE.4m.fd"}",
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_VARS.4m.fd"}",
@@ -326,7 +326,7 @@ def run_qemu(args):
         check=True
     )
 
-def init_buildsystem():
+def init_buildsystem(_args):
     if sys.platform == "win32":
         for wrap in ["rustc-sysroot"]:
             subprocess.run(
@@ -334,7 +334,7 @@ def init_buildsystem():
                 cwd=root, stdout=None, stderr=None, check=True
             )
 
-    build_std()
+    build_std(_args)
 
 def main():
     parser = argparse.ArgumentParser()
