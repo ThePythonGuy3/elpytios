@@ -283,7 +283,7 @@ def create_file_qemu():
 
     runner_esp.mkdir(parents=True, exist_ok=True)
 
-def run_qemu():
+def run_qemu(args):
     if not runner_fs.exists():
         create_file_qemu()
 
@@ -298,7 +298,7 @@ def run_qemu():
             "--package", "elpytios-bootloader",
             "--bin", "elpytios-bootloader",
             "--target", "x86_64-unknown-uefi",
-            "--release",
+            "--profile", "dev" if args.debug else "release",
         ],
         cwd=root,
         stdout=None,
@@ -307,7 +307,7 @@ def run_qemu():
     )
 
     runner_boot_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(root / "target" / "x86_64-unknown-uefi" / "release" / "elpytios-bootloader.efi", runner_boot_file)
+    shutil.copy(root / "target" / "x86_64-unknown-uefi" / ("debug" if args.debug else "release") / "elpytios-bootloader.efi", runner_boot_file)
 
     subprocess.run(
         [
@@ -319,6 +319,7 @@ def run_qemu():
             "-drive", f"format=qcow2,file={runner_fs}",
             "-machine", "q35",
             "-m", "4830196K",
+            *(["-s", "-S"] if args.debug else []),
         ],
         stdout=None,
         stderr=None,
@@ -357,10 +358,12 @@ def main():
     qemu_sub = qemu.add_subparsers(dest="qemu_cmd")
 
     qemu_sub.add_parser("create-file").set_defaults(func=create_file_qemu)
-    qemu_sub.add_parser("run").set_defaults(func=run_qemu)
+    qemu_run = qemu_sub.add_parser("run")
+    qemu_run.add_argument("--debug", action="store_true")
+    qemu_run.set_defaults(func=run_qemu)
 
     args = parser.parse_args()
-    args.func()
+    args.func(args)
 
 if __name__ == "__main__":
     main()
