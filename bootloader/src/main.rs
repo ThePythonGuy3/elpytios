@@ -1,5 +1,3 @@
-//! 
-
 #![no_std]
 #![no_main]
 
@@ -87,16 +85,6 @@ fn entry() -> Status {
     };
 
     writeln!(&mut display_writer, "{:?}", (&memory_map) as *const MemoryMapOwned).unwrap();
-
-    unsafe {
-        let mut x: usize = 0;
-        asm!(
-            "mov {x}, cr3",
-            x = out(reg) x
-        );
-
-        writeln!(&mut display_writer, "{:x}", x).unwrap();
-    }
 
     for i in memory_map.entries() {
         write!(&mut display_writer, "[{:x}-{:x}) {:?} / ", i.phys_start, i.phys_start + i.page_count * 4096, i.ty).unwrap();

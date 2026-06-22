@@ -1,0 +1,13 @@
+cargo-features = ['per-package-target']
+
+[package]
+name = "elpytios-bootloader"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+
+forced-target = "x86_64-unknown-uefi"
+
+[dependencies]
+log = "0.4"
+uefi = { version = "0.37", features = ["logger", "panic_handler"] }

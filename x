@@ -262,7 +262,7 @@ def clean_std(_args):
             else:
                 path.unlink()
 
-runner_root = root / "runner"
+runner_root = root / "qemu"
 runner_esp = runner_root / "esp"
 runner_boot_dir = runner_esp / "EFI" / "BOOT"
 runner_boot_file = runner_boot_dir / "BOOTX64.efi"
@@ -319,6 +319,8 @@ def run_qemu(args):
             "-drive", f"format=qcow2,file={runner_fs}",
             "-machine", "q35",
             "-m", "4830196K",
+            "-device", "virtio-vga",
+            "-vga", "virtio",
             *(["-s", "-S"] if args.debug else []),
         ],
         stdout=None,
