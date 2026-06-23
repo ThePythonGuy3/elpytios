@@ -14,8 +14,28 @@ fn hanic_pandler(_info: &PanicInfo) -> ! {
     loop {}
 }
 
+#[cfg(debug_assertions)]
+#[unsafe(no_mangle)]
+#[used]
+static mut DEBUG_HALT: u8 = 1;
+
+#[cfg(debug_assertions)]
+#[inline(never)]
+fn pause() {
+    loop {
+        if unsafe { DEBUG_HALT } == 0 {
+            break
+        }
+
+        core::hint::spin_loop();
+    }
+}
+
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn _start(boot_info: *mut BootInfo) -> ! {
+    #[cfg(debug_assertions)]
+    pause();
+
     let mut display_writer;
 
     unsafe {
