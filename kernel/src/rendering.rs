@@ -1,14 +1,16 @@
+#![rustfmt::skip]
+
 use core::fmt::Write;
 
 use elpytios_bootinfo::*;
 
 const FONT_HEIGHT: usize = 13;
-const FONT_WIDTH: usize = 8;
+const FONT_WIDTH:  usize = 8;
 
-const VERTICAL_SPACING: usize = 3;
+const VERTICAL_SPACING:   usize = 3;
 const HORIZONTAL_SPACING: usize = 1;
 
-static FONT: [[u8; FONT_HEIGHT]; 95] = [
+const FONT: [[u8; FONT_HEIGHT]; 95] = [
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
     [0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18],
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x36, 0x36, 0x36],
@@ -103,7 +105,7 @@ static FONT: [[u8; FONT_HEIGHT]; 95] = [
     [0x00, 0x00, 0x0f, 0x18, 0x18, 0x18, 0x38, 0xf0, 0x38, 0x18, 0x18, 0x18, 0x0f],
     [0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18],
     [0x00, 0x00, 0xf0, 0x18, 0x18, 0x18, 0x1c, 0x0f, 0x1c, 0x18, 0x18, 0x18, 0xf0],
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x8f, 0xf1, 0x60, 0x00, 0x00, 0x00],
+    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x8f, 0xf1, 0x60, 0x00, 0x00, 0x00]
 ];
 
 fn get_character(ascii_code: u8) -> &'static [u8; 13] {
@@ -116,8 +118,8 @@ fn get_character(ascii_code: u8) -> &'static [u8; 13] {
 
 pub struct DisplayWriter<'a> {
     pub graphics_info: &'a GraphicsInfo,
-    pub line: usize,
-    pub col: usize,
+    pub line:              usize,
+    pub col:               usize
 }
 
 impl<'a> DisplayWriter<'a> {
@@ -143,7 +145,7 @@ impl<'a> DisplayWriter<'a> {
 
         if self.col >= (self.graphics_info.w / (FONT_WIDTH + HORIZONTAL_SPACING)) {
             self.col = 0;
-
+            
             self.advance_line();
         }
     }
@@ -157,11 +159,7 @@ impl<'a> DisplayWriter<'a> {
                 let paint_pixel = (character[(FONT_HEIGHT - 1) - y] & (0b1000_0000 >> x)) != 0;
 
                 unsafe {
-                    self.graphics_info
-                        .frame_buffer
-                        .cast::<u32>()
-                        .add((base_x + x) + (base_y + y) * self.graphics_info.stride)
-                        .write_volatile(if paint_pixel { 0xBBBBBBBB } else { 0xFF00FFFF });
+                    self.graphics_info.frame_buffer.cast::<u32>().add((base_x + x) + (base_y + y) * self.graphics_info.stride).write_volatile(if paint_pixel { 0xBBBBBBBB } else { 0xFF00FFFF });
                 }
             }
         }
