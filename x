@@ -384,4 +384,11 @@ def main():
     args.func(args)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except subprocess.CalledProcessError as e:
+        if (err := e.stderr):
+            print(err)
+        exit(1)
+    except:
+        exit(1)
