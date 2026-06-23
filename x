@@ -326,7 +326,6 @@ def run_qemu(args):
     subprocess.run(
         [
             f"qemu-system-{platform.machine().replace("AMD64", "x86_64")}",
-            "-cpu", "host",
             "-accel", accel,
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_CODE.4m.fd"}",
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_VARS.4m.fd"}",
@@ -384,4 +383,11 @@ def main():
     args.func(args)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except subprocess.CalledProcessError as e:
+        if (err := e.stderr):
+            print(err)
+        exit(1)
+    except:
+        exit(1)

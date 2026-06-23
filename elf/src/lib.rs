@@ -134,7 +134,7 @@ const impl Clone for Elf64<'_> {
 }
 
 const impl<'a> Iterator for Elf64<'a> {
-    type Item = Result<ElfSegment<'a>, ElfError>;
+    type Item = Result<ElfSegment64<'a>, ElfError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.header.program_header_entry_len = self.header.program_header_entry_len.checked_sub(1)?;
@@ -150,7 +150,7 @@ const impl<'a> Iterator for Elf64<'a> {
                 .take(int_fit(program_header.segment_file_size)?)
                 .ok_or(ElfError::Eof)?;
 
-            ElfSegment {
+            ElfSegment64 {
                 segment_type: match program_header.segment_type {
                     0 => ElfSegmentType::Null,
                     1 => ElfSegmentType::Load,
@@ -164,10 +164,10 @@ const impl<'a> Iterator for Elf64<'a> {
                 },
                 data: segment_data,
                 flags: program_header.flags,
-                virtual_address: int_fit(program_header.segment_virtual_address)?,
-                physical_address: int_fit(program_header.segment_physical_address)?,
-                memory_size: int_fit(program_header.segment_memory_size)?,
-                alignment: int_fit(program_header.section_alignment)?,
+                virtual_address: program_header.segment_virtual_address,
+                physical_address: program_header.segment_physical_address,
+                memory_size: program_header.segment_memory_size,
+                alignment: program_header.section_alignment,
             }
         })
     }
@@ -186,18 +186,18 @@ impl ExactSizeIterator for Elf64<'_> {
 
 impl FusedIterator for Elf64<'_> {}
 
-pub struct ElfSegment<'a> {
+pub struct ElfSegment64<'a> {
     pub segment_type: ElfSegmentType,
     pub data: &'a [u8],
     pub flags: ElfProgramFlags,
     /// `segment_data` should be copied to this v-address
-    pub virtual_address: usize,
+    pub virtual_address: u64,
     /// Ignored on most cases, except for kernel-related barebones programs
-    pub physical_address: usize,
+    pub physical_address: u64,
     /// If greater than `segment_data.len()`, then zero-fill the memory
-    pub memory_size: usize,
+    pub memory_size: u64,
     /// virtual_address % alignment == physical_address % alignment == 0
-    pub alignment: usize,
+    pub alignment: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

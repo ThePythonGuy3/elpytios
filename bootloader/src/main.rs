@@ -7,7 +7,7 @@
 use core::{mem::MaybeUninit, arch::asm};
 
 use const_panic::concat_panic;
-use elpytios_elf::{Elf, Elf64, ElfSegment, ElfSegmentType};
+use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType};
 use elpytios_bootinfo::{BootInfo, GraphicsInfo};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMapOwned, proto::console::gop::*};
 
@@ -19,9 +19,9 @@ static KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!("../../target
     Err(e) => concat_panic!(e),
 };
 
-const KERNEL_SEGMENTS: [ElfSegment; KERNEL_BINARY.program_header_count()] = {
-    let mut out: MaybeUninit<[ElfSegment; _]> = MaybeUninit::uninit();
-    let mut ptr = out.as_mut_ptr() as *mut ElfSegment;
+const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
+    let mut out: MaybeUninit<[ElfSegment64; _]> = MaybeUninit::uninit();
+    let mut ptr = out.as_mut_ptr() as *mut ElfSegment64;
 
     for segment in KERNEL_BINARY.clone() {
         let segment = match segment {
@@ -40,54 +40,24 @@ const KERNEL_SEGMENTS: [ElfSegment; KERNEL_BINARY.program_header_count()] = {
 
 const KERNEL_STACK_PAGES: usize = 4;
 
-fn get_kernel_virtual_base_and_pages() -> Option<(usize, usize)> {
-    let mut virt_base = usize::MAX;
-    let mut virt_max  = usize::MIN;
-
-    for segment in KERNEL_SEGMENTS {
-        if segment.segment_type != ElfSegmentType::Load { continue }
-        virt_base = virt_base.min(segment.virtual_address);
-        virt_max = virt_max.max(virt_base + segment.memory_size);
-    }
-
-    if virt_base >= virt_max {
-        return None;
-    }
-
-    Some((virt_base, (virt_max - virt_base).div_ceil(PAGE_SIZE)))
-}
-
 // TODO page allocator
 struct UefiInfo {
-    pub graphics_info: GraphicsInfo,
+    pub memory_map:         MemoryMapOwned,
 
-    pub memory_map: MemoryMapOwned,
-
-    pub kernel_mapping:     *mut u8,
-    pub kernel_virtual_base: usize,
-    pub kernel_pages:        usize,
-
-    pub kernel_stack_mapping: *mut u8,
-    pub kernel_stack_pages:    usize,
+    pub kernel_stack_base: *mut u8,
+    pub kernel_entry:      *mut u8,
 
     pub boot_info_mapping: *mut BootInfo,
-    pub boot_info_pages:    usize
 }
 
 fn setup_uefi_and_exit() -> UefiInfo {
-    let graphics_info:   GraphicsInfo;
+    let graphics_info:      GraphicsInfo;
+    let memory_map:         MemoryMapOwned;
 
-    let memory_map:      MemoryMapOwned;
-
-    let kernel_mapping:     *mut u8;
-    let kernel_virtual_base: usize;
-    let kernel_pages:        usize;
-
-    let kernel_stack_mapping: *mut u8;
-    let kernel_stack_pages:    usize;
+    let kernel_stack_base: *mut u8;
+    let kernel_entry:      *mut u8;
 
     let boot_info_mapping: *mut BootInfo;
-    let boot_info_pages:    usize;
 
     {
         helpers::init().unwrap();
@@ -148,16 +118,40 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size
         };
 
-        // Kernel Mapping
-        (kernel_virtual_base, kernel_pages) = get_kernel_virtual_base_and_pages().unwrap();
+        let kernel_page_table = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1).unwrap().as_ptr().cast::<u64>();
+        unsafe {
+            kernel_page_table.write_bytes(0, PAGE_SIZE / size_of::<u64>());
+        }
 
-        kernel_mapping = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, kernel_pages).unwrap().as_ptr();
+        for segment in KERNEL_SEGMENTS {
+            if segment.segment_type != ElfSegmentType::Load { continue }
 
-        kernel_stack_pages   = KERNEL_STACK_PAGES;
-        kernel_stack_mapping = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, kernel_stack_pages).unwrap().as_ptr();
+            let segment_size = (segment.memory_size as usize).next_multiple_of(PAGE_SIZE);
+            let segment_ptr = boot::allocate_pages(
+                AllocateType::Address(segment.virtual_address),
+                MemoryType::LOADER_CODE,
+                segment_size / PAGE_SIZE,
+            ).unwrap_or_else(|_| panic!("Couldn't allocate kernel section data to {:x}", segment.virtual_address)).as_ptr();
 
-        boot_info_pages   = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
-        boot_info_mapping = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, boot_info_pages).unwrap().as_ptr().cast::<BootInfo>();
+            unsafe {
+                segment_ptr.copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
+                segment_ptr.add(segment.data.len()).write_bytes(0, segment_size - segment.data.len());
+            }
+        }
+
+        let stack = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, KERNEL_STACK_PAGES).unwrap().as_ptr();
+        kernel_stack_base = unsafe { stack.add(KERNEL_STACK_PAGES * PAGE_SIZE) };
+        kernel_entry = KERNEL_BINARY.program_entry() as *mut u8;
+
+        let boot_info = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, size_of::<BootInfo>().div_ceil(PAGE_SIZE)).unwrap().as_ptr();
+        let boot_info = unsafe { boot_info.add(boot_info.align_offset(align_of::<BootInfo>())) }.cast::<BootInfo>();
+        unsafe {
+            boot_info.write_volatile(BootInfo {
+                graphics_info
+            });
+        }
+
+        boot_info_mapping = boot_info;
     }
 
     unsafe {
@@ -165,58 +159,29 @@ fn setup_uefi_and_exit() -> UefiInfo {
     }
 
     UefiInfo {
-        graphics_info,
-
         memory_map,
 
-        kernel_mapping,
-        kernel_virtual_base,
-        kernel_pages,
-
-        kernel_stack_mapping,
-        kernel_stack_pages,
+        kernel_stack_base,
+        kernel_entry,
 
         boot_info_mapping,
-        boot_info_pages
     }
 }
 
 #[entry]
 fn entry() -> Status {
     let uefi_info = setup_uefi_and_exit();
-
-    for segment in KERNEL_SEGMENTS {
-        if segment.segment_type != ElfSegmentType::Load { continue }
-        unsafe {
-            let segment_base = uefi_info.kernel_mapping.add(segment.virtual_address - uefi_info.kernel_virtual_base);
-
-            segment_base
-                .copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
-
-            segment_base
-                .add(segment.data.len())
-                .write_bytes(0, segment.memory_size - segment.data.len());
-        }
-    }
-
     unsafe {
-        let entry_point = uefi_info.kernel_mapping.add(KERNEL_BINARY.program_entry() as usize - uefi_info.kernel_virtual_base);
-
-        let stack_base = uefi_info.kernel_stack_mapping as usize + uefi_info.kernel_stack_pages * PAGE_SIZE;
-
-        uefi_info.boot_info_mapping.write_volatile(BootInfo {
-            graphics_info: uefi_info.graphics_info
-        });
-
         asm!(
             "mov rdi, {boot_info_base}",
             "mov rsp, {stack_base}",
             "jmp {entry_point}",
-            boot_info_base = in(reg) uefi_info.boot_info_mapping as usize,
-            stack_base = in(reg) stack_base,
-            entry_point = in(reg) entry_point
-        );
 
-        loop {}
+            boot_info_base = in(reg) uefi_info.boot_info_mapping as usize,
+            stack_base = in(reg) uefi_info.kernel_stack_base,
+            entry_point = in(reg) uefi_info.kernel_entry,
+
+            options(noreturn)
+        )
     }
 }

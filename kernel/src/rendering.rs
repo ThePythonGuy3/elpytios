@@ -1,3 +1,5 @@
+#![rustfmt::skip]
+
 use core::fmt::Write;
 
 use elpytios_bootinfo::*;
