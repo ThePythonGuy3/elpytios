@@ -10,7 +10,7 @@ PHDRS
 SECTIONS
 {
     __kernel_start = .;
-    . = 0xffffffff80000000;
+    . = 0x200000;
 
     .text : ALIGN(4K)
     {
