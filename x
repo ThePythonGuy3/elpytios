@@ -298,7 +298,7 @@ def run_qemu(args):
             "--package", "elpytios-kernel",
             "--bin", "elpytios-kernel",
             "--target", "x86_64-unknown-none",
-            "--profile", "dev" if args.debug else "release",
+            "--profile", "bootloader",
         ],
         cwd=root,
         stdout=None,
@@ -312,7 +312,7 @@ def run_qemu(args):
             "--package", "elpytios-bootloader",
             "--bin", "elpytios-bootloader",
             "--target", "x86_64-unknown-uefi",
-            "--profile", "dev" if args.debug else "release",
+            "--profile", "bootloader",
         ],
         cwd=root,
         stdout=None,
@@ -321,20 +321,22 @@ def run_qemu(args):
     )
 
     runner_boot_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(root / "target" / "x86_64-unknown-uefi" / ("debug" if args.debug else "release") / "elpytios-bootloader.efi", runner_boot_file)
+    shutil.copy(root / "target" / "x86_64-unknown-uefi" / "bootloader" / "elpytios-bootloader.efi", runner_boot_file)
 
     subprocess.run(
         [
             f"qemu-system-{platform.machine().replace("AMD64", "x86_64")}",
+            "-cpu", "host",
             "-accel", accel,
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_CODE.4m.fd"}",
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_VARS.4m.fd"}",
             "-drive", f"format=raw,file=fat:rw:{runner_esp}",
             "-drive", f"format=qcow2,file={runner_fs}",
             "-machine", "q35",
-            "-m", "4830196K",
+            "-m", "4G",
             "-device", "virtio-vga",
             "-vga", "virtio",
+            "-monitor", "stdio",
             *(["-s", "-S"] if args.debug else []),
         ],
         stdout=None,
