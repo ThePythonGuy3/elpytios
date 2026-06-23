@@ -13,7 +13,10 @@ use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::
 
 const PAGE_SIZE: usize = 4096;
 
-static KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!("../../target/x86_64-unknown-none/bootloader/elpytios-kernel")) {
+static KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
+    debug_assertions => "bootloader_debug",
+    _ => "bootloader",
+}, "/elpytios-kernel"))) {
     Ok(Elf::N32) => panic!("Expected 64-bit kernel ELF"),
     Ok(Elf::N64(elf)) => elf,
     Err(e) => concat_panic!(e),
