@@ -151,6 +151,9 @@ dependencies = [
 [[package]]
 name = "elpytios-bootinfo"
 version = "0.1.0"
+dependencies = [
+ "bitflags",
+]
 
 [[package]]
 name = "elpytios-bootloader"

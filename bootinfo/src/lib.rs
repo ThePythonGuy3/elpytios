@@ -3,6 +3,22 @@
 
 #![no_std]
 
+pub mod buddy_tree;
+pub mod paddr;
+pub mod vaddr {
+    cfg_select! {
+        target_arch = "x86_64" => {
+            mod x86_64;
+            pub use x86_64::*;
+        }
+        _ => {
+            compile_error!("Unsupported architecture");
+        }
+    }
+}
+
+pub const PAGE_SIZE: usize = 4096;
+
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
 #[repr(usize)]
