@@ -1,15 +1,15 @@
-#![feature(fn_align, const_clone, const_cmp, const_convert, const_iter, const_trait_impl, custom_inner_attributes)]
+#![feature(const_clone, const_cmp, const_convert, const_iter, const_trait_impl, custom_inner_attributes)]
 #![rustfmt::skip]
 
 #![no_std]
 #![no_main]
 
-use core::{arch::{asm, naked_asm}, mem::MaybeUninit};
+use core::{arch::asm, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
 use elpytios_bootinfo::{BootInfo, GraphicsInfo, paddr::PAddr, vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, VAddr, VAddrInfo}};
-use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::{gop::*}};
+use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMapOwned, proto::console::{gop::*}};
 
 const PAGE_SIZE: usize = 4096;
 
@@ -77,16 +77,14 @@ enum KernelBootPages {
     //PageTableVirt = 4,
     //AllocPhys = 8,
     //AllocVirt = 9,
-    JumpToKernel = 4,
-    BootInfo = 5,
-    Stack = 6,
+    BootInfo = 4,
+    Stack = 5,
     Max = Self::Stack as usize + KERNEL_STACK_PAGES,
 }
 
 struct UefiInfo {
     pub memory_map:         MemoryMapOwned,
     pub pml4_phys:          PAddr,
-    pub jumper_phys:        PAddr,
 
     pub pml4_virt:          VAddr,
     pub boot_info:          VAddr,
@@ -97,7 +95,6 @@ struct UefiInfo {
 fn setup_uefi_and_exit() -> UefiInfo {
     let memory_map:         MemoryMapOwned;
     let pml4_phys:          PAddr;
-    let jumper_phys:        PAddr;
 
     let pml4_virt:          VAddr;
     let boot_info:          VAddr;
@@ -207,30 +204,31 @@ fn setup_uefi_and_exit() -> UefiInfo {
             let mut out_pd_phys = bytemuck::zeroed::<PdTable>();
             let mut out_pt_phys = bytemuck::zeroed::<PtTable>();
 
+            let common = Entry::PRESENT | Entry::USER_SUPERVISOR;
+            out_pd_phys.pt_entries[0] = PdEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pt_ptr.addr())));
+            out_pdpt_phys.pd_entries[510] = PdptEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pd_ptr.addr())));
+            out_pml4_phys.pdpt_entries[511] = NodeEntry::from_common(common).with_addr(PAddr(pdpt_ptr.addr()));
+
             let mut map = |p_addr: PAddr, v_addr: VAddr, additional_flags: Entry| {
                 let VAddrInfo { pt_index, pd_index, pdpt_index, pml4_index, .. } = v_addr.indices();
-                let common = Entry::PRESENT | Entry::USER_SUPERVISOR | additional_flags;
 
-                out_pt_phys.phys_pages[pt_index] = (PtEntry::from_common(common) | PtEntry::GLOBAL).with_addr(p_addr);
-                out_pd_phys.pt_entries[pd_index] = PdEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pt_ptr.addr())));
-                out_pdpt_phys.pd_entries[pdpt_index] = PdptEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pd_ptr.addr())));
-                out_pml4_phys.pdpt_entries[pml4_index] = NodeEntry::from_common(common).with_addr(PAddr(pdpt_ptr.addr()));
+                // Ensure the kernel is under 2 MiB for now.
+                // (This currently does not crash, so leave it be.)
+                assert_eq!(pml4_index, 511);
+                assert_eq!(pdpt_index, 510);
+                assert_eq!(pd_index, 0);
+
+                out_pt_phys.phys_pages[pt_index] = (PtEntry::from_common(common | additional_flags) | PtEntry::GLOBAL).with_addr(p_addr);
             };
 
             for segment in KERNEL_SEGMENTS {
                 for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
                     let p_addr = PAddr(kernel_phys_elf_ptr.addr() + segment.virtual_address as usize - virtual_base + i);
                     let v_addr = VAddr::new(segment.virtual_address as usize + i);
-                    map(p_addr, v_addr, (
-                        match segment.flags.contains(ElfProgramFlags::WRITABLE) {
-                            false => Entry::empty(),
-                            true => Entry::READ_WRITE,
-                        } |
-                        match segment.flags.contains(ElfProgramFlags::EXECUTABLE) {
-                            false => Entry::EXECUTE_DISABLE,
-                            true => Entry::empty(),
-                        }
-                    ));
+                    map(p_addr, v_addr, match segment.flags.contains(ElfProgramFlags::WRITABLE) {
+                        false => Entry::empty(),
+                        true => Entry::READ_WRITE,
+                    });
                 }
             }
 
@@ -240,8 +238,8 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 (KernelBootPages::Stack, KERNEL_STACK_PAGES, true),
             ] {
                 for i in 0..page_count {
-                    let offset = (page_kind as usize + i) * PAGE_SIZE;
-                    let p_addr = PAddr(kernel_phys_boot_ptr.addr() + offset);
+                    let offset = (kernel_page_elf_count + page_kind as usize + i) * PAGE_SIZE;
+                    let p_addr = PAddr(kernel_phys_elf_ptr.addr() + offset);
                     let v_addr = VAddr::new(virtual_base + offset);
                     map(p_addr, v_addr, match writable {
                         false => Entry::empty(),
@@ -249,21 +247,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
                     });
                 }
             }
-
-            {
-                // Manually identity-map `jump_to_kernel`.
-                let offset = KernelBootPages::JumpToKernel as usize * PAGE_SIZE;
-                let p_addr = PAddr(kernel_phys_boot_ptr.addr() + offset);
-                let v_addr = VAddr::new(p_addr.0); 
-                map(p_addr, v_addr, Entry::empty());
-            }
-
-            let jump_fn_addr = jump_to_kernel as *const () as usize;
-            let jump_src_page = jump_fn_addr & !(PAGE_SIZE - 1);
-            let jump_offset = jump_fn_addr - jump_src_page;
-
-            let jumper_page_ptr = kernel_phys_boot_ptr.add(KernelBootPages::JumpToKernel as usize * PAGE_SIZE);
-            jumper_page_ptr.copy_from_nonoverlapping(jump_src_page as *const u8, PAGE_SIZE);
 
             let boot_info_ptr = kernel_phys_boot_ptr.add(KernelBootPages::BootInfo as usize * PAGE_SIZE).cast::<BootInfo>();
             boot_info_ptr.write(BootInfo { graphics_info });
@@ -273,7 +256,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
             pt_ptr.write(out_pt_phys);
 
             pml4_phys = PAddr(pml4_ptr.addr());
-            jumper_phys = PAddr(jumper_page_ptr.addr() + jump_offset);
 
             pml4_virt = VAddr::new(virtual_base + (kernel_page_elf_count + KernelBootPages::PageTablePhys as usize) * PAGE_SIZE);
             boot_info = VAddr::new(virtual_base + (kernel_page_elf_count + KernelBootPages::BootInfo as usize) * PAGE_SIZE);
@@ -287,7 +269,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
     UefiInfo {
         memory_map,
         pml4_phys,
-        jumper_phys,
 
         pml4_virt,
         boot_info,
@@ -296,9 +277,9 @@ fn setup_uefi_and_exit() -> UefiInfo {
     }
 }
 
-#[rustc_align(4096)]
-#[unsafe(link_section = ".jump_to_kernel")]
-unsafe extern "sysv64" fn jump_to_kernel(pml4_phys: usize, boot_info: usize, stack: usize, kernel_entry: usize) -> ! {
+#[entry]
+fn entry() -> Status {
+    let UefiInfo { memory_map, pml4_phys, pml4_virt, boot_info, stack, kernel_entry } = setup_uefi_and_exit();
     unsafe {
         asm!(
             "mov cr3, {pml4_phys}",
@@ -306,35 +287,10 @@ unsafe extern "sysv64" fn jump_to_kernel(pml4_phys: usize, boot_info: usize, sta
             "mov rsp, {stack}",
             "jmp {kernel_entry}",
 
-            pml4_phys = in(reg) pml4_phys,
-            boot_info = in(reg) boot_info,
-            stack = in(reg) stack,
-            kernel_entry = in(reg) kernel_entry,
-
-            options(noreturn)
-        )
-    }
-    
-    /*naked_asm!(
-        "mov cr3, rdi", // pml4_phys
-        "mov rsp, rdx", // stack
-        "mov rdi, rsi", // boot_info becomes kernel arg 1
-        "jmp rcx",      // kernel_entry
-    )*/
-}
-
-#[entry]
-fn entry() -> Status {
-    let UefiInfo { memory_map, pml4_phys, jumper_phys, pml4_virt, boot_info, stack, kernel_entry } = setup_uefi_and_exit();
-    unsafe {
-        asm!(
-            "jmp r8",
-
-            in("r8") jumper_phys.0,
-            in("rdi") pml4_phys.0,
-            in("rsi") boot_info.addr(),
-            in("rdx") stack.addr(),
-            in("rcx") kernel_entry.addr(),
+            pml4_phys = in(reg) pml4_phys.0,
+            boot_info = in(reg) boot_info.addr(),
+            stack = in(reg) stack.addr(),
+            kernel_entry = in(reg) kernel_entry.addr(),
 
             options(noreturn)
         )

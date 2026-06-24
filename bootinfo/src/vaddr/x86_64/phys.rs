@@ -49,6 +49,16 @@ impl NodeEntry {
     pub const fn with_addr(self, addr: PAddr) -> Self {
         Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
     }
+
+    #[inline]
+    pub const fn addr(self) -> PAddr {
+        PAddr(self.0 & Self::ADDRESS.0)
+    }
+
+    #[inline]
+    pub const fn is_present(self) -> bool {
+        self.0 & Entry::PRESENT.0 != 0
+    }
 }
 bitflags! {
     impl NodeEntry: usize {
@@ -81,6 +91,16 @@ impl PdptLeafEntry {
     pub const fn with_addr(self, addr: PAddr) -> Self {
         Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
     }
+
+    #[inline]
+    pub const fn addr(self) -> PAddr {
+        PAddr(self.0 & Self::ADDRESS.0)
+    }
+
+    #[inline]
+    pub const fn is_present(self) -> bool {
+        self.0 & Entry::PRESENT.0 != 0
+    }
 }
 bitflags! {
     impl PdptLeafEntry: usize {
@@ -110,8 +130,13 @@ impl PdptEntry {
     }
 
     #[inline]
-    pub const fn is_leaf(&self) -> bool {
-        unsafe { (self as *const Self).cast::<usize>().read() & NODE_IS_LEAF == 1 }
+    pub const fn is_leaf(self) -> bool {
+        unsafe { mem::transmute::<Self, usize>(self) & NODE_IS_LEAF == 1 }
+    }
+
+    #[inline]
+    pub const fn is_present(self) -> bool {
+        unsafe { mem::transmute::<Self, usize>(self) & Entry::PRESENT.0 != 0 }
     }
 }
 
@@ -133,6 +158,16 @@ impl PdLeafEntry {
     #[inline]
     pub const fn with_addr(self, addr: PAddr) -> Self {
         Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
+    }
+
+    #[inline]
+    pub const fn addr(self) -> PAddr {
+        PAddr(self.0 & Self::ADDRESS.0)
+    }
+
+    #[inline]
+    pub const fn is_present(self) -> bool {
+        unsafe { mem::transmute::<Self, usize>(self) & Entry::PRESENT.0 != 0 }
     }
 }
 bitflags! {
@@ -163,8 +198,13 @@ impl PdEntry {
     }
 
     #[inline]
-    pub const fn is_leaf(&self) -> bool {
-        unsafe { (self as *const Self).cast::<usize>().read() & NODE_IS_LEAF == 1 }
+    pub const fn is_leaf(self) -> bool {
+        unsafe { mem::transmute::<Self, usize>(self) & NODE_IS_LEAF == 1 }
+    }
+
+    #[inline]
+    pub const fn is_present(self) -> bool {
+        unsafe { mem::transmute::<Self, usize>(self) & Entry::PRESENT.0 != 0 }
     }
 }
 
@@ -186,6 +226,16 @@ impl PtEntry {
     #[inline]
     pub const fn with_addr(self, addr: PAddr) -> Self {
         Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
+    }
+
+    #[inline]
+    pub const fn addr(self) -> PAddr {
+        PAddr(self.0 & Self::ADDRESS.0)
+    }
+
+    #[inline]
+    pub const fn is_present(self) -> bool {
+        unsafe { mem::transmute::<Self, usize>(self) & Entry::PRESENT.0 != 0 }
     }
 }
 bitflags! {

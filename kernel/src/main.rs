@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use core::{fmt::Write, panic::PanicInfo};
+use core::{arch::naked_asm, fmt::Write, panic::PanicInfo};
 
 use elpytios_bootinfo::{BootInfo, GraphicsInfo};
 use elpytios_kernel::rendering::DisplayWriter;
