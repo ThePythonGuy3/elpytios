@@ -3,9 +3,12 @@
 
 #![no_std]
 
-pub mod buddy_tree;
 pub mod paddr;
 pub mod vaddr {
+    #[path = "../vaddr.rs"]
+    mod imp;
+    pub use imp::*;
+
     cfg_select! {
         target_arch = "x86_64" => {
             mod x86_64;
@@ -40,8 +43,10 @@ pub struct GraphicsInfo {
     pub frame_buffer_size: usize
 }
 
-#[repr(C)]
+const _: () = assert!(size_of::<BootInfo>() == PAGE_SIZE);
+
 #[derive(Clone, Copy)]
+#[repr(C, align(4096))]
 pub struct BootInfo {
     pub graphics_info: GraphicsInfo
 }

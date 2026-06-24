@@ -153,12 +153,14 @@ name = "elpytios-bootinfo"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "bytemuck",
 ]
 
 [[package]]
 name = "elpytios-bootloader"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "const_panic",
  "elpytios-bootinfo",
  "elpytios-elf",

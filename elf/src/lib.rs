@@ -28,6 +28,7 @@
 #![no_std]
 #![feature(
     const_clone,
+    const_cmp,
     const_convert,
     const_destruct,
     const_iter,
@@ -186,6 +187,7 @@ impl ExactSizeIterator for Elf64<'_> {
 
 impl FusedIterator for Elf64<'_> {}
 
+#[derive(Clone, Copy)]
 pub struct ElfSegment64<'a> {
     pub segment_type: ElfSegmentType,
     pub data: &'a [u8],
@@ -200,7 +202,7 @@ pub struct ElfSegment64<'a> {
     pub alignment: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Hash)]
 #[repr(u32)]
 pub enum ElfSegmentType {
     /// Ignore the entry
@@ -222,6 +224,24 @@ pub enum ElfSegmentType {
     Tls = 7,
     /// Unknown segment type
     Unknown(u32) = u32::MAX,
+}
+
+const impl Eq for ElfSegmentType {}
+const impl PartialEq for ElfSegmentType {
+    fn eq(&self, other: &Self) -> bool {
+        match (*self, *other) {
+            (Self::Null, Self::Null)
+            | (Self::Load, Self::Load)
+            | (Self::Dynamic, Self::Dynamic)
+            | (Self::Interp, Self::Interp)
+            | (Self::Note, Self::Note)
+            | (Self::Shlib, Self::Shlib)
+            | (Self::Header, Self::Header)
+            | (Self::Tls, Self::Tls) => true,
+            (Self::Unknown(l), Self::Unknown(r)) if l == r => true,
+            _ => false,
+        }
+    }
 }
 
 struct Reader<'a> {

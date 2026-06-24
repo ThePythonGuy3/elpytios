@@ -1,10 +1,10 @@
 use core::fmt;
 
-#[derive(Copy, Clone)]
+use bytemuck::Zeroable;
+
+#[derive(Copy, Clone, Zeroable)]
 #[repr(transparent)]
-pub struct PAddr {
-    addr: usize,
-}
+pub struct PAddr(pub usize);
 
 impl fmt::Debug for PAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -14,6 +14,6 @@ impl fmt::Debug for PAddr {
 
 impl fmt::Display for PAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:p}", self.addr as *const ())
+        write!(f, "{:p}", self.0 as *const ())
     }
 }

@@ -2,10 +2,13 @@
 //! accessed directly once virtualization isn't identity anymore.
 //! See the `virt` module.
 
+use core::mem;
+
 use bitflags::bitflags;
+use bytemuck::Zeroable;
 
 use super::assert_size_align;
-use crate::PAGE_SIZE;
+use crate::{PAGE_SIZE, paddr::PAddr};
 
 const _: () = assert_size_align::<Pml4Table>();
 const _: () = assert_size_align::<PdptTable>();
@@ -14,13 +17,16 @@ const _: () = assert_size_align::<PtTable>();
 
 pub const NODE_IS_LEAF: usize = 1 << 7;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Zeroable)]
 #[repr(transparent)]
 pub struct Entry(usize);
 bitflags! {
     impl Entry: usize {
+        /// 0 = unallocated, 1 = allocated
         const PRESENT = 1 << 0;
+        /// 0 = read-only, 1 = write
         const READ_WRITE = 1 << 1;
+        /// 0 = user-mode, 1 = kernel-mode
         const USER_SUPERVISOR = 1 << 2;
         const WRITE_THROUGH = 1 << 3;
         const CACHE_DISABLE = 1 << 4;
@@ -30,13 +36,18 @@ bitflags! {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone, Zeroable)]
 #[repr(transparent)]
 pub struct NodeEntry(usize);
 impl NodeEntry {
     #[inline]
-    pub const fn common(&self) -> &Entry {
-        unsafe { &*(self as *const Self).cast() }
+    pub const fn from_common(entry: Entry) -> Self {
+        Self(entry.0)
+    }
+
+    #[inline]
+    pub const fn with_addr(self, addr: PAddr) -> Self {
+        Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
     }
 }
 bitflags! {
@@ -45,23 +56,30 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Zeroable)]
 #[repr(C, align(4096))]
 pub struct Pml4Table {
-    pdpl_entries: [NodeEntry; PAGE_SIZE / size_of::<NodeEntry>()],
+    pub pdpt_entries: [NodeEntry; PAGE_SIZE / size_of::<NodeEntry>()],
 }
 
+#[derive(Zeroable)]
 #[repr(C, align(4096))]
 pub struct PdptTable {
-    pdpl_entries: [PdptEntry; PAGE_SIZE / size_of::<PdptEntry>()],
+    pub pd_entries: [PdptEntry; PAGE_SIZE / size_of::<PdptEntry>()],
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Zeroable)]
 #[repr(transparent)]
 pub struct PdptLeafEntry(usize);
 impl PdptLeafEntry {
     #[inline]
-    pub const fn common(&self) -> &Entry {
-        unsafe { &*(self as *const Self).cast() }
+    pub const fn from_common(entry: Entry) -> Self {
+        Self(entry.0)
+    }
+
+    #[inline]
+    pub const fn with_addr(self, addr: PAddr) -> Self {
+        Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
     }
 }
 bitflags! {
@@ -74,31 +92,47 @@ bitflags! {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Zeroable)]
 #[repr(C)]
 pub union PdptEntry {
-    pub node: NodeEntry,
-    pub leaf: PdptLeafEntry,
+    node: NodeEntry,
+    leaf: PdptLeafEntry,
 }
 impl PdptEntry {
+    #[inline]
+    pub const fn node(node: NodeEntry) -> Self {
+        Self { node }
+    }
+
+    #[inline]
+    pub const fn leaf(leaf: PdptLeafEntry) -> Self {
+        unsafe { mem::transmute::<usize, Self>(mem::transmute::<Self, usize>(Self { leaf }) | NODE_IS_LEAF) }
+    }
+
     #[inline]
     pub const fn is_leaf(&self) -> bool {
         unsafe { (self as *const Self).cast::<usize>().read() & NODE_IS_LEAF == 1 }
     }
 }
 
+#[derive(Zeroable)]
 #[repr(C, align(4096))]
 pub struct PdTable {
-    pdpl_entries: [PdEntry; PAGE_SIZE / size_of::<PdEntry>()],
+    pub pt_entries: [PdEntry; PAGE_SIZE / size_of::<PdEntry>()],
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Zeroable)]
 #[repr(transparent)]
 pub struct PdLeafEntry(usize);
 impl PdLeafEntry {
     #[inline]
-    pub const fn common(&self) -> &Entry {
-        unsafe { &*(self as *const Self).cast() }
+    pub const fn from_common(entry: Entry) -> Self {
+        Self(entry.0)
+    }
+
+    #[inline]
+    pub const fn with_addr(self, addr: PAddr) -> Self {
+        Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
     }
 }
 bitflags! {
@@ -111,31 +145,47 @@ bitflags! {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Zeroable)]
 #[repr(C)]
 pub union PdEntry {
-    pub node: NodeEntry,
-    pub leaf: PdLeafEntry,
+    node: NodeEntry,
+    leaf: PdLeafEntry,
 }
 impl PdEntry {
+    #[inline]
+    pub const fn node(node: NodeEntry) -> Self {
+        Self { node }
+    }
+
+    #[inline]
+    pub const fn leaf(leaf: PdLeafEntry) -> Self {
+        unsafe { mem::transmute::<usize, Self>(mem::transmute::<Self, usize>(Self { leaf }) | NODE_IS_LEAF) }
+    }
+
     #[inline]
     pub const fn is_leaf(&self) -> bool {
         unsafe { (self as *const Self).cast::<usize>().read() & NODE_IS_LEAF == 1 }
     }
 }
 
+#[derive(Zeroable)]
 #[repr(C, align(4096))]
 pub struct PtTable {
-    pdpl_entries: [PtEntry; PAGE_SIZE / size_of::<PtEntry>()],
+    pub phys_pages: [PtEntry; PAGE_SIZE / size_of::<PtEntry>()],
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Zeroable)]
 #[repr(transparent)]
 pub struct PtEntry(usize);
 impl PtEntry {
     #[inline]
-    pub const fn common(&self) -> &Entry {
-        unsafe { &*(self as *const Self).cast() }
+    pub const fn from_common(entry: Entry) -> Self {
+        Self(entry.0)
+    }
+
+    #[inline]
+    pub const fn with_addr(self, addr: PAddr) -> Self {
+        Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
     }
 }
 bitflags! {

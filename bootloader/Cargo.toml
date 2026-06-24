@@ -12,6 +12,7 @@ forced-target = "x86_64-unknown-uefi"
 elpytios-elf = { path = "../elf" }
 elpytios-bootinfo = { path = "../bootinfo" }
 
+bytemuck = { version = "1", features = ["derive", "latest_stable_rust"] }
 const_panic = { version = "0.2", features = ["derive", "rust_latest_stable"] }
 log = "0.4"
 uefi = { version = "0.37", features = ["logger", "panic_handler"] }
