@@ -5,9 +5,22 @@
 
 pub mod paddr;
 pub mod vaddr {
+    use bitflags::bitflags;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct VFlags(usize);
+    bitflags! {
+        impl VFlags: usize {
+            const WRITABLE        = 1 << 0;
+            const USER_MODE = 1 << 1;
+            const WRITE_THROUGH   = 1 << 2;
+            const CACHE_DISABLED  = 1 << 3;
+            const ACCESSED        = 1 << 4;
+        }
+    }
+
     cfg_select! {
         target_arch = "x86_64" => {
-            // TODO Only re-export public-facing APIs
             mod x86_64;
             pub use x86_64::*;
         }
