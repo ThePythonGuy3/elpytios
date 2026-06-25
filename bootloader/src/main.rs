@@ -1,15 +1,15 @@
-#![feature(const_clone, const_cmp, const_convert, const_iter, const_trait_impl, custom_inner_attributes)]
+#![feature(const_clone, const_cmp, const_convert, const_iter, const_trait_impl, custom_inner_attributes, fn_align)]
 #![rustfmt::skip]
 
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, mem::MaybeUninit};
+use core::{arch::{asm, naked_asm}, fmt, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
 use elpytios_bootinfo::{BootInfo, GraphicsInfo, paddr::PAddr, vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, VAddr, VAddrInfo}};
-use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMapOwned, proto::console::{gop::*}};
+use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMapOwned, proto::console::{gop::*, serial::Serial}};
 
 const PAGE_SIZE: usize = 4096;
 
@@ -77,14 +77,16 @@ enum KernelBootPages {
     //PageTableVirt = 4,
     //AllocPhys = 8,
     //AllocVirt = 9,
-    BootInfo = 4,
-    Stack = 5,
+    SwitchToKernel = 7,
+    BootInfo = 8,
+    Stack = 9,
     Max = Self::Stack as usize + KERNEL_STACK_PAGES,
 }
 
 struct UefiInfo {
     pub memory_map:         MemoryMapOwned,
     pub pml4_phys:          PAddr,
+    pub switcher:           PAddr,
 
     pub pml4_virt:          VAddr,
     pub boot_info:          VAddr,
@@ -95,6 +97,7 @@ struct UefiInfo {
 fn setup_uefi_and_exit() -> UefiInfo {
     let memory_map:         MemoryMapOwned;
     let pml4_phys:          PAddr;
+    let switcher:           PAddr;
 
     let pml4_virt:          VAddr;
     let boot_info:          VAddr;
@@ -103,8 +106,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
     
     helpers::init().unwrap();
 
-    // Scope for UEFI services
-    let graphics_info = {
+    {
         // Graphics Info Fetching
         let graphics_output_protocol_handle = boot::get_handle_for_protocol::<GraphicsOutput>().expect("No Graphics Output Protocol");
         let mut graphics_output_protocol;
@@ -147,7 +149,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let pixel_format       = mode_info.pixel_format();
         let frame_buffer_ptr   = frame_buffer.as_mut_ptr();
 
-        GraphicsInfo {
+        let graphics_info = GraphicsInfo {
             w,
             h,
             stride,
@@ -159,11 +161,8 @@ fn setup_uefi_and_exit() -> UefiInfo {
             },
             frame_buffer: frame_buffer_ptr,
             frame_buffer_size: frame_buffer_size
-        }
-    };
+        };
 
-    // UEFI services dropped
-    {
         let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESS;
         let kernel_page_elf_count = (virtual_max - virtual_base).div_ceil(PAGE_SIZE);
         let kernel_phys_elf_ptr = boot::allocate_pages(
@@ -187,6 +186,34 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         }
 
+        use core::fmt::Write;
+
+        struct SerialWriter(boot::ScopedProtocol<Serial>);
+        impl Write for SerialWriter {
+            fn write_char(&mut self, c: char) -> fmt::Result {
+                self.0.write_char(c)
+            }
+            
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                self.0.write_str(s)
+            }
+
+            fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
+                self.0.write_fmt(args)
+            }
+        }
+
+        let mut writer = SerialWriter(unsafe {
+            boot::open_protocol::<Serial>(
+                boot::OpenProtocolParams {
+                    handle: boot::get_handle_for_protocol::<Serial>().expect("No Serial I/O protocol"),
+                    agent: boot::image_handle(),
+                    controller: None,
+                },
+                boot::OpenProtocolAttributes::GetProtocol,
+            )
+        }.expect("Couldn't open Serial I/O protocol"));
+
         unsafe {
             let kernel_phys_boot_ptr = kernel_phys_elf_ptr.add(kernel_page_elf_count * PAGE_SIZE);
 
@@ -195,16 +222,12 @@ fn setup_uefi_and_exit() -> UefiInfo {
             let pd_ptr = pdpt_ptr.byte_add(PAGE_SIZE).cast::<PdTable>();
             let pt_ptr = pd_ptr.byte_add(PAGE_SIZE).cast::<PtTable>();
 
-            let mut out_pml4_phys = {
-                let tmp: usize;
-                asm!("mov {}, cr3", out(reg) tmp);
-                ((tmp & !0xfff) as *mut Pml4Table).read()
-            };
+            let mut out_pml4_phys = bytemuck::zeroed::<Pml4Table>();
             let mut out_pdpt_phys = bytemuck::zeroed::<PdptTable>();
             let mut out_pd_phys = bytemuck::zeroed::<PdTable>();
             let mut out_pt_phys = bytemuck::zeroed::<PtTable>();
 
-            let common = Entry::PRESENT | Entry::USER_SUPERVISOR;
+            let common = Entry::PRESENT | Entry::READ_WRITE;
             out_pd_phys.pt_entries[0] = PdEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pt_ptr.addr())));
             out_pdpt_phys.pd_entries[510] = PdptEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pd_ptr.addr())));
             out_pml4_phys.pdpt_entries[511] = NodeEntry::from_common(common).with_addr(PAddr(pdpt_ptr.addr()));
@@ -233,7 +256,8 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
 
             for (page_kind, page_count, writable) in [
-                (KernelBootPages::PageTablePhys, 4, true),
+                (KernelBootPages::PageTablePhys, 7, true),
+                (KernelBootPages::SwitchToKernel, 1, false),
                 (KernelBootPages::BootInfo, 1, false),
                 (KernelBootPages::Stack, KERNEL_STACK_PAGES, true),
             ] {
@@ -248,27 +272,58 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 }
             }
 
-            let boot_info_ptr = kernel_phys_boot_ptr.add(KernelBootPages::BootInfo as usize * PAGE_SIZE).cast::<BootInfo>();
-            boot_info_ptr.write(BootInfo { graphics_info });
-            pml4_ptr.write(out_pml4_phys);
-            pdpt_ptr.write(out_pdpt_phys);
-            pd_ptr.write(out_pd_phys);
-            pt_ptr.write(out_pt_phys);
+            // `rustc_align(4096)` helps with this, the assertion does not fail
+            assert_eq!((switch_to_kernel as *const u8).addr() % PAGE_SIZE, 0);
+            let switcher_ptr = kernel_phys_boot_ptr.add(KernelBootPages::SwitchToKernel as usize * PAGE_SIZE);
+            switcher_ptr.copy_from_nonoverlapping(switch_to_kernel as *const u8, PAGE_SIZE);
+
+            {
+                let pdpt_switcher_ptr = pt_ptr.byte_add(PAGE_SIZE).cast::<PdptTable>();
+                let pd_switcher_ptr = pdpt_switcher_ptr.byte_add(PAGE_SIZE).cast::<PdTable>();
+                let pt_switcher_ptr = pd_switcher_ptr.byte_add(PAGE_SIZE).cast::<PtTable>();
+
+                let mut out_pdpt_switcher_phys = bytemuck::zeroed::<PdptTable>();
+                let mut out_pd_switcher_phys = bytemuck::zeroed::<PdTable>();
+                let mut out_pt_switcher_phys = bytemuck::zeroed::<PtTable>();
+
+                let switcher_addr = switcher_ptr.addr();
+                let VAddrInfo { pt_index, pd_index, pdpt_index, pml4_index, .. } = VAddr::new(switcher_addr).indices();
+
+                out_pt_switcher_phys.phys_pages[pt_index] = (PtEntry::from_common(common) | PtEntry::GLOBAL).with_addr(PAddr(switcher_addr));
+                out_pd_switcher_phys.pt_entries[pd_index] = PdEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pt_switcher_ptr.addr())));
+                out_pdpt_switcher_phys.pd_entries[pdpt_index] = PdptEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pd_switcher_ptr.addr())));
+                out_pml4_phys.pdpt_entries[pml4_index] = NodeEntry::from_common(common).with_addr(PAddr(pdpt_switcher_ptr.addr()));
+
+                pdpt_switcher_ptr.write(out_pdpt_switcher_phys);
+                pd_switcher_ptr.write(out_pd_switcher_phys);
+                pt_switcher_ptr.write(out_pt_switcher_phys);
+            }
 
             pml4_phys = PAddr(pml4_ptr.addr());
+            switcher = PAddr(switcher_ptr.addr());
 
             pml4_virt = VAddr::new(virtual_base + (kernel_page_elf_count + KernelBootPages::PageTablePhys as usize) * PAGE_SIZE);
             boot_info = VAddr::new(virtual_base + (kernel_page_elf_count + KernelBootPages::BootInfo as usize) * PAGE_SIZE);
             stack = VAddr::new(virtual_base + (kernel_page_elf_count + KernelBootPages::Stack as usize + KERNEL_STACK_PAGES) * PAGE_SIZE);
             kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
 
-            memory_map = boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA));
+            let boot_info_ptr = kernel_phys_boot_ptr.add(KernelBootPages::BootInfo as usize * PAGE_SIZE).cast::<BootInfo>();
+            boot_info_ptr.write(BootInfo { graphics_info });
+            pml4_ptr.write(out_pml4_phys);
+            pdpt_ptr.write(out_pdpt_phys);
+            pd_ptr.write(out_pd_phys);
+            pt_ptr.write(out_pt_phys);
         }
+    }
+
+    unsafe {
+        memory_map = boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA));
     }
 
     UefiInfo {
         memory_map,
         pml4_phys,
+        switcher,
 
         pml4_virt,
         boot_info,
@@ -277,22 +332,37 @@ fn setup_uefi_and_exit() -> UefiInfo {
     }
 }
 
+#[rustc_align(4096)]
+#[unsafe(naked)]
+unsafe extern "sysv64" fn switch_to_kernel(
+    pml4_phys: usize,
+    boot_info: usize,
+    stack: usize,
+    kernel_entry: usize,
+) -> ! {
+    naked_asm!(
+        "mov cr3, rdi",
+        //"mov rsp, rdx",
+        "lea rsp, [rdx - 8]",
+        "mov rdi, rsi",
+        "jmp rcx",
+    )
+}
+
 #[entry]
 fn entry() -> Status {
-    let UefiInfo { memory_map, pml4_phys, pml4_virt, boot_info, stack, kernel_entry } = setup_uefi_and_exit();
+    let UefiInfo { memory_map, pml4_phys, switcher, pml4_virt, boot_info, stack, kernel_entry } = setup_uefi_and_exit();
     unsafe {
         asm!(
-            "mov cr3, {pml4_phys}",
-            "mov rdi, {boot_info}",
-            "mov rsp, {stack}",
-            "jmp {kernel_entry}",
+            "jmp r8",
 
-            pml4_phys = in(reg) pml4_phys.0,
-            boot_info = in(reg) boot_info.addr(),
-            stack = in(reg) stack.addr(),
-            kernel_entry = in(reg) kernel_entry.addr(),
+            in("rdi") pml4_phys.0,
+            in("rsi") boot_info.addr(),
+            in("rdx") stack.addr(),
+            in("rcx") kernel_entry.addr(),
+            in("r8")  switcher.0,
 
             options(noreturn)
-        )
+        );
     }
 }

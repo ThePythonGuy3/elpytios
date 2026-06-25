@@ -2,7 +2,7 @@
 //! accessed directly once virtualization isn't identity anymore.
 //! See the `virt` module.
 
-use core::mem;
+use core::{fmt, mem};
 
 use bitflags::bitflags;
 use bytemuck::Zeroable;
@@ -26,8 +26,8 @@ bitflags! {
         const PRESENT = 1 << 0;
         /// 0 = read-only, 1 = write
         const READ_WRITE = 1 << 1;
-        /// 0 = user-mode, 1 = kernel-mode
-        const USER_SUPERVISOR = 1 << 2;
+        /// 0 = kernel-mode, 1 = user-mode
+        const USER_ACCESSIBLE = 1 << 2;
         const WRITE_THROUGH = 1 << 3;
         const CACHE_DISABLE = 1 << 4;
         const ACCESSED = 1 << 5;
@@ -62,7 +62,7 @@ impl NodeEntry {
 }
 bitflags! {
     impl NodeEntry: usize {
-        const ADDRESS = (1 << 40 - 1) << 12;
+        const ADDRESS = ((1 << 40) - 1) << 12;
     }
 }
 
@@ -78,7 +78,7 @@ pub struct PdptTable {
     pub pd_entries: [PdptEntry; PAGE_SIZE / size_of::<PdptEntry>()],
 }
 
-#[derive(Copy, Clone, Zeroable)]
+#[derive(Debug, Copy, Clone, Zeroable)]
 #[repr(transparent)]
 pub struct PdptLeafEntry(usize);
 impl PdptLeafEntry {
@@ -107,8 +107,8 @@ bitflags! {
         const GLOBAL = 1 << 8;
         const PAGE_ATTRIBUTE_TABLE = 1 << 12;
 
-        const ADDRESS = (1 << 22 - 1) << 30;
-        const PROTECTION_KEY = (1 << 4 - 1) << 59;
+        const ADDRESS = ((1 << 22) - 1) << 30;
+        const PROTECTION_KEY = ((1 << 4) - 1) << 59;
     }
 }
 
@@ -117,6 +117,16 @@ bitflags! {
 pub union PdptEntry {
     node: NodeEntry,
     leaf: PdptLeafEntry,
+}
+impl fmt::Debug for PdptEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        unsafe {
+            match self.is_leaf() {
+                false => write!(f, "Node => {:?}", self.node),
+                true => write!(f, "Leaf => {:?}", self.leaf),
+            }
+        }
+    }
 }
 impl PdptEntry {
     #[inline]
@@ -131,7 +141,7 @@ impl PdptEntry {
 
     #[inline]
     pub const fn is_leaf(self) -> bool {
-        unsafe { mem::transmute::<Self, usize>(self) & NODE_IS_LEAF == 1 }
+        unsafe { mem::transmute::<Self, usize>(self) & NODE_IS_LEAF != 0 }
     }
 
     #[inline]
@@ -146,7 +156,7 @@ pub struct PdTable {
     pub pt_entries: [PdEntry; PAGE_SIZE / size_of::<PdEntry>()],
 }
 
-#[derive(Copy, Clone, Zeroable)]
+#[derive(Debug, Copy, Clone, Zeroable)]
 #[repr(transparent)]
 pub struct PdLeafEntry(usize);
 impl PdLeafEntry {
@@ -175,8 +185,8 @@ bitflags! {
         const GLOBAL = 1 << 8;
         const PAGE_ATTRIBUTE_TABLE = 1 << 12;
 
-        const ADDRESS = (1 << 31 - 1) << 21;
-        const PROTECTION_KEY = (1 << 4 - 1) << 59;
+        const ADDRESS = ((1 << 31) - 1) << 21;
+        const PROTECTION_KEY = ((1 << 4) - 1) << 59;
     }
 }
 
@@ -185,6 +195,16 @@ bitflags! {
 pub union PdEntry {
     node: NodeEntry,
     leaf: PdLeafEntry,
+}
+impl fmt::Debug for PdEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        unsafe {
+            match self.is_leaf() {
+                false => write!(f, "Node => {:?}", self.node),
+                true => write!(f, "Leaf => {:?}", self.leaf),
+            }
+        }
+    }
 }
 impl PdEntry {
     #[inline]
@@ -199,7 +219,7 @@ impl PdEntry {
 
     #[inline]
     pub const fn is_leaf(self) -> bool {
-        unsafe { mem::transmute::<Self, usize>(self) & NODE_IS_LEAF == 1 }
+        unsafe { mem::transmute::<Self, usize>(self) & NODE_IS_LEAF != 0 }
     }
 
     #[inline]
@@ -214,7 +234,7 @@ pub struct PtTable {
     pub phys_pages: [PtEntry; PAGE_SIZE / size_of::<PtEntry>()],
 }
 
-#[derive(Copy, Clone, Zeroable)]
+#[derive(Debug, Copy, Clone, Zeroable)]
 #[repr(transparent)]
 pub struct PtEntry(usize);
 impl PtEntry {
@@ -243,7 +263,7 @@ bitflags! {
         const GLOBAL = 1 << 8;
         const PAGE_ATTRIBUTE_TABLE = 1 << 7;
 
-        const ADDRESS = (1 << 40 - 1) << 12;
-        const PROTECTION_KEY = (1 << 4 - 1) << 59;
+        const ADDRESS = ((1 << 40) - 1) << 12;
+        const PROTECTION_KEY = ((1 << 4) - 1) << 59;
     }
 }

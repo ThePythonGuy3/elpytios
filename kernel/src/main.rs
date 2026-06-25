@@ -6,7 +6,7 @@
 
 use core::{arch::naked_asm, fmt::Write, panic::PanicInfo};
 
-use elpytios_bootinfo::{BootInfo, GraphicsInfo};
+use elpytios_bootinfo::BootInfo;
 use elpytios_kernel::rendering::DisplayWriter;
 
 #[panic_handler]
@@ -31,20 +31,25 @@ fn pause() {
     }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "sysv64" fn _start(boot_info: *mut BootInfo) -> ! {
+#[unsafe(naked)]
+#[unsafe(export_name = "_start")]
+unsafe extern "sysv64" fn jump_from_bootloader(boot_info: *const BootInfo) -> ! {
+    naked_asm!(
+        "jmp {main}",
+        main = sym main
+    )
+}
+
+unsafe extern "sysv64" fn main(boot_info: *const BootInfo) -> ! {
     #[cfg(debug_assertions)]
     pause();
 
-    let mut display_writer;
-
-    unsafe {
-        display_writer = DisplayWriter {
-            graphics_info: &((*boot_info).graphics_info),
-            line: 0,
-            col: 0,
-        };
-    }
+    let boot_info = unsafe { boot_info.read() };
+    let mut display_writer =  DisplayWriter {
+        graphics_info: &boot_info.graphics_info,
+        line: 0,
+        col: 0,
+    };
 
     writeln!(&mut display_writer, "Hello World from the Kernel!!!!").unwrap();
 

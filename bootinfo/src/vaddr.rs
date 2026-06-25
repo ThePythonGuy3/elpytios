@@ -20,11 +20,11 @@ impl VAddr {
 
 bitflags! {
     impl VAddr: usize {
-        const PAGE_OFFSET = (1 << 12 - 1);
-        const PT_INDEX = (1 << 9 - 1) << 12;
-        const PD_INDEX = (1 << 9 - 1) << 21;
-        const PDPT_INDEX = (1 << 9 - 1) << 30;
-        const PML4_INDEX = (1 << 9 - 1) << 39;
+        const PAGE_OFFSET = ((1 << 12) - 1);
+        const PT_INDEX = ((1 << 9) - 1) << 12;
+        const PD_INDEX = ((1 << 9) - 1) << 21;
+        const PDPT_INDEX = ((1 << 9) - 1) << 30;
+        const PML4_INDEX = ((1 << 9) - 1) << 39;
     }
 }
 
