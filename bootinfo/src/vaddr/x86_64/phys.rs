@@ -37,7 +37,7 @@ bitflags! {
 #[repr(transparent)]
 pub struct NodeEntry(usize);
 impl NodeEntry {
-    /// Safety:
+    /// # Safety:
     /// - `addr` must point to a **physical page** that is entirely contained by a valid child node.
     /// - Pointee at `addr` must be initialized and valid for accesses.
     #[inline]

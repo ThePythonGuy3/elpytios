@@ -8,7 +8,7 @@ use core::{arch::naked_asm, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion, paddr::PAddr, vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VAddr, VAddrInfo}};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion, paddr::PAddr, vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VAddr, VAddrInfo, VirtualMap}};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
 
 const PAGE_SIZE: usize = 4096;
@@ -136,7 +136,10 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let pixel_format       = mode_info.pixel_format();
         let frame_buffer_ptr   = frame_buffer.as_mut_ptr();
 
+        let pml4_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).unwrap().as_ptr();
+        pml4_phys = PAddr::new(pml4_ptr.expose_provenance());
         let mut pml4 = bytemuck::zeroed::<Pml4Table>();
+
         fn new_page_table() -> PAddr {
             let ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).unwrap().as_ptr();
             unsafe { ptr.write_bytes(0, PAGE_SIZE) }
@@ -198,6 +201,11 @@ fn setup_uefi_and_exit() -> UefiInfo {
         }
         kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
 
+        // Identity-map the kernel switcher
+        let switcher_addr = (switch_to_kernel as *const ()).expose_provenance();
+        assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
+        map_phys_to_virt(PAddr::new(switcher_addr), VAddr::new(switcher_addr), Entry::empty());
+
         let mut next_v_addr = KERNEL_VIRTUAL_FREE;
         let mut next_v_addr = |p_addr: PAddr, page_count: usize, flags: Entry| {
             let v_addr = next_v_addr;
@@ -219,11 +227,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let stack_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_STACK, KERNEL_STACK_PAGES).unwrap().as_ptr();
         let stack = next_v_addr(PAddr::new(stack_ptr.expose_provenance()), KERNEL_STACK_PAGES, Entry::WRITABLE);
         kernel_stack_base = VAddr::new(stack.addr() + KERNEL_STACK_PAGES * PAGE_SIZE);
-
-        // Map the PML4 table
-        let pml4_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).unwrap().as_ptr();
-        pml4_phys = PAddr::new(pml4_ptr.expose_provenance());
-        let pml4_virt = next_v_addr(pml4_phys, 1, Entry::WRITABLE);
 
         // Map the framebuffer
         let fb_phys = frame_buffer_ptr.expose_provenance();
@@ -247,15 +250,15 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size,
         };
 
-        let switcher_addr = (switch_to_kernel as *const ()).expose_provenance();
-        assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
-
+        // Map the boot information passed to the kernel
         let boot_info_page_len = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
         boot_info_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_BOOT_INFO, boot_info_page_len).unwrap().as_ptr().cast();
+        boot_info = next_v_addr(PAddr::new(boot_info_ptr.expose_provenance()), boot_info_page_len, Entry::empty());
         unsafe {
             boot_info_ptr.write(BootInfo {
                 graphics_info,
-                pml4_table: pml4_virt.ptr_mut(),
+                // TODO virtual-mapping construction API
+                virtual_map: VirtualMap::new(510),
                 switcher_map: VAddr::new(switcher_addr),
 
                 // Initialized after exiting UEFI boot services
@@ -263,11 +266,15 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 memory_regions_size: 0,
             });
         }
-        boot_info = next_v_addr(PAddr::new(boot_info_ptr.expose_provenance()), boot_info_page_len, Entry::empty());
 
-        map_phys_to_virt(PAddr::new(switcher_addr), VAddr::new(switcher_addr), Entry::empty());
         unsafe {
-            pml4_ptr.cast::<Pml4Table>().write(pml4);
+            // Add a recursion entry to the PML4 table
+            match pml4.pdpt_entries[510] {
+                e if e.is_present() => panic!("PDPT index 510 must be reserved for recursion slot"),
+                ref mut e => *e = NodeEntry::new(Entry::WRITABLE, pml4_phys),
+            }
+
+            pml4_ptr.cast::<Pml4Table>().write(pml4)
         }
     }
 

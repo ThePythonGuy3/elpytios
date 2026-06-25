@@ -1,16 +1,13 @@
-#![feature(custom_inner_attributes, ptr_metadata)]
+#![feature(custom_inner_attributes)]
 #![rustfmt::skip]
 
 #![no_std]
 
 pub mod paddr;
 pub mod vaddr {
-    #[path = "../vaddr.rs"]
-    mod imp;
-    pub use imp::*;
-
     cfg_select! {
         target_arch = "x86_64" => {
+            // TODO Only re-export public-facing APIs
             mod x86_64;
             pub use x86_64::*;
         }
@@ -23,7 +20,7 @@ pub mod vaddr {
 use core::{mem::MaybeUninit, slice};
 
 use paddr::PAddr;
-use vaddr::{Pml4Table, VAddr};
+use vaddr::{VAddr, VirtualMap};
 
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_MEMORY_REGIONS: usize = 128;
@@ -59,7 +56,7 @@ pub struct MemoryRegion {
 #[repr(C, align(4096))]
 pub struct BootInfo {
     pub graphics_info:        GraphicsInfo,
-    pub pml4_table:          *mut Pml4Table,
+    pub virtual_map:          VirtualMap,
     /// Leftover identity-mapping from the bootloader
     pub switcher_map:         VAddr,
 
