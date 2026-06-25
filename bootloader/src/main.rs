@@ -13,7 +13,12 @@ use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::
 
 const PAGE_SIZE: usize = 4096;
 
-static KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
+const ELPYTI_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
+const ELPYTI_KERNEL_STACK: MemoryType = MemoryType::custom(0x8000_0001);
+const ELPYTI_BOOT_INFO:    MemoryType = MemoryType::custom(0x8000_0002);
+const ELPYTI_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0003);
+
+const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
     _ => "bootloader",
 }, "/elpytios-kernel"))) {
@@ -21,11 +26,6 @@ static KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../.
     Ok(Elf::N64(elf)) => elf,
     Err(e) => concat_panic!(e),
 };
-
-const ELPYTI_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
-const ELPYTI_KERNEL_STACK: MemoryType = MemoryType::custom(0x8000_0001);
-const ELPYTI_BOOT_INFO:    MemoryType = MemoryType::custom(0x8000_0002);
-const ELPYTI_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0003);
 
 const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
     let mut out: MaybeUninit<[ElfSegment64; _]> = MaybeUninit::uninit();
@@ -50,8 +50,8 @@ const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
     unsafe { out.assume_init() }
 };
 
-const KERNEL_VIRTUAL_ADDRESS: [usize; 2] = const {
-    let mut base = u64::MAX;
+/// New virtual addresses can take this spot
+const KERNEL_VIRTUAL_FREE: usize = const {
     let mut max = u64::MIN;
 
     let mut i = 0;
@@ -59,16 +59,15 @@ const KERNEL_VIRTUAL_ADDRESS: [usize; 2] = const {
         let segment = KERNEL_SEGMENTS[i];
         if segment.segment_type != ElfSegmentType::Load { continue }
 
-        base = base.min(segment.virtual_address);
         max = max.max(segment.virtual_address + segment.memory_size);
 
         i += 1;
         if i == KERNEL_SEGMENTS.len() { break }
     }
 
-    match (base.try_into(), max.try_into()) {
-        (Ok(base), Ok(max)) => [base, max],
-        _ => panic!("Integer doesn't fit"),
+    match usize::try_from(max) {
+        Ok(max) => max.next_multiple_of(PAGE_SIZE),
+        _ => concat_panic!("Integer doesn't fit: ", max),
     }
 };
 
@@ -178,22 +177,17 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         };
 
-        let [kernel_virt_base, kernel_virt_max] = KERNEL_VIRTUAL_ADDRESS;
-        let kernel_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_CODE, (kernel_virt_max - kernel_virt_base).div_ceil(PAGE_SIZE)).unwrap().as_ptr();
         for segment in KERNEL_SEGMENTS {
             if segment.segment_type != ElfSegmentType::Load { continue }
+            let segment_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_CODE, (segment.memory_size as usize).div_ceil(PAGE_SIZE)).unwrap().as_ptr();
             unsafe {
-                kernel_ptr
-                    .add(segment.virtual_address as usize - kernel_virt_base)
-                    .copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
-                kernel_ptr
-                    .add(segment.virtual_address as usize - kernel_virt_base + segment.data.len())
-                    .write_bytes(0, segment.memory_size as usize - segment.data.len());
+                segment_ptr.copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
+                segment_ptr.add(segment.data.len()).write_bytes(0, segment.memory_size as usize - segment.data.len());
             }
 
             for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
                 map_phys_to_virt(
-                    PAddr::new(kernel_ptr.expose_provenance() + segment.virtual_address as usize - kernel_virt_base + i),
+                    PAddr::new(segment_ptr.expose_provenance() + i),
                     VAddr::new(segment.virtual_address as usize + i),
                     match segment.flags.contains(ElfProgramFlags::WRITABLE) {
                         false => Entry::empty(),
@@ -204,7 +198,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         }
         kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
 
-        let mut next_v_addr = kernel_virt_max.next_multiple_of(PAGE_SIZE);
+        let mut next_v_addr = KERNEL_VIRTUAL_FREE;
         let mut next_v_addr = |p_addr: PAddr, page_count: usize, flags: Entry| {
             let v_addr = next_v_addr;
             next_v_addr += page_count * PAGE_SIZE;
