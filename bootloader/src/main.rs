@@ -253,12 +253,16 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size,
         };
 
+        let switcher_addr = (switch_to_kernel as *const ()).expose_provenance();
+        assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
+
         let boot_info_page_len = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
         boot_info_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_BOOT_INFO, boot_info_page_len).unwrap().as_ptr().cast();
         unsafe {
             boot_info_ptr.write(BootInfo {
                 graphics_info,
                 pml4_table: pml4_virt.ptr_mut(),
+                switcher_map: VAddr::new(switcher_addr),
 
                 // Initialized after exiting UEFI boot services
                 memory_regions_base: [MaybeUninit::uninit(); _],
@@ -267,10 +271,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         }
         boot_info = next_v_addr(PAddr::new(boot_info_ptr.expose_provenance()), boot_info_page_len, Entry::empty());
 
-        let switcher_addr = (switch_to_kernel as *const ()).expose_provenance();
-        assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
         map_phys_to_virt(PAddr::new(switcher_addr), VAddr::new(switcher_addr), Entry::empty());
-
         unsafe {
             pml4_ptr.cast::<Pml4Table>().write(pml4);
         }

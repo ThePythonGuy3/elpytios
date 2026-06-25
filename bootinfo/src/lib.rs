@@ -23,7 +23,7 @@ pub mod vaddr {
 use core::mem::MaybeUninit;
 
 use paddr::PAddr;
-use vaddr::Pml4Table;
+use vaddr::{Pml4Table, VAddr};
 
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_MEMORY_REGIONS: usize = 128;
@@ -60,6 +60,8 @@ pub struct MemoryRegion {
 pub struct BootInfo {
     pub graphics_info:        GraphicsInfo,
     pub pml4_table:          *mut Pml4Table,
+    /// Leftover identity-mapping from the bootloader
+    pub switcher_map:         VAddr,
 
     pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
     pub memory_regions_size:  usize
