@@ -1,4 +1,4 @@
-#![feature(custom_inner_attributes)]
+#![feature(custom_inner_attributes, ptr_metadata)]
 #![rustfmt::skip]
 
 #![no_std]
@@ -25,6 +25,8 @@ pub const MAX_MEMORY_REGIONS: usize = 128;
 
 use core::mem::MaybeUninit;
 
+use vaddr::Pml4Table;
+
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -46,8 +48,6 @@ pub struct GraphicsInfo {
     pub frame_buffer_size: usize
 }
 
-const _: () = assert!(size_of::<BootInfo>() <= PAGE_SIZE);
-
 #[derive(Clone, Copy)]
 pub struct MemoryRegion {
     pub base: *mut u8,
@@ -55,9 +55,11 @@ pub struct MemoryRegion {
 }
 
 #[derive(Clone, Copy)]
-#[repr(C)]
+#[repr(C, align(4096))]
 pub struct BootInfo {
     pub graphics_info:        GraphicsInfo,
+    pub pml4_table:          *mut Pml4Table,
+
     pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
     pub memory_regions_size:  usize
 }

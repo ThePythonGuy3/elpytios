@@ -1,4 +1,7 @@
-use core::fmt;
+use core::{
+    fmt,
+    ptr::{self, Pointee},
+};
 
 use bitflags::bitflags;
 use bytemuck::Zeroable;
@@ -15,6 +18,16 @@ impl VAddr {
     #[inline]
     pub const fn addr(self) -> usize {
         self.0
+    }
+
+    #[inline]
+    pub const fn ptr<T: Pointee<Metadata = ()>>(self) -> *const T {
+        ptr::from_raw_parts(ptr::with_exposed_provenance::<()>(self.0), ())
+    }
+
+    #[inline]
+    pub const fn ptr_mut<T: Pointee<Metadata = ()>>(self) -> *mut T {
+        ptr::from_raw_parts_mut(ptr::with_exposed_provenance_mut::<()>(self.0), ())
     }
 }
 

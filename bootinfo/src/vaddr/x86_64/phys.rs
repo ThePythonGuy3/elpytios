@@ -17,16 +17,13 @@ const _: () = assert_size_align::<PtTable>();
 
 pub const NODE_IS_LEAF: usize = 1 << 7;
 
-#[derive(Copy, Clone, Zeroable)]
+#[derive(Debug, Copy, Clone, Zeroable)]
 #[repr(transparent)]
 pub struct Entry(usize);
 bitflags! {
     impl Entry: usize {
-        /// 0 = unallocated, 1 = allocated
         const PRESENT = 1 << 0;
-        /// 0 = read-only, 1 = write
-        const READ_WRITE = 1 << 1;
-        /// 0 = kernel-mode, 1 = user-mode
+        const WRITABLE = 1 << 1;
         const USER_ACCESSIBLE = 1 << 2;
         const WRITE_THROUGH = 1 << 3;
         const CACHE_DISABLE = 1 << 4;
@@ -36,33 +33,31 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, Zeroable)]
+#[derive(Debug, Clone, Copy, Zeroable)]
 #[repr(transparent)]
 pub struct NodeEntry(usize);
 impl NodeEntry {
+    /// Safety:
+    /// - `addr` must point to a **physical page** that is entirely contained by a valid child node.
+    /// - Pointee at `addr` must be initialized and valid for accesses.
     #[inline]
-    pub const fn from_common(entry: Entry) -> Self {
-        Self(entry.0)
+    pub const unsafe fn new(entry: Entry, addr: PAddr) -> Self {
+        Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
-    pub const fn with_addr(self, addr: PAddr) -> Self {
-        Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
+    pub const fn child_addr(&self) -> PAddr {
+        PAddr::new(self.0 & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
-    pub const fn addr(self) -> PAddr {
-        PAddr(self.0 & Self::ADDRESS.0)
-    }
-
-    #[inline]
-    pub const fn is_present(self) -> bool {
+    pub const fn is_present(&self) -> bool {
         self.0 & Entry::PRESENT.0 != 0
     }
 }
 bitflags! {
     impl NodeEntry: usize {
-        const ADDRESS = ((1 << 40) - 1) << 12;
+        const ADDRESS_MASK = ((1 << 40) - 1) << 12;
     }
 }
 
@@ -72,7 +67,7 @@ pub struct Pml4Table {
     pub pdpt_entries: [NodeEntry; PAGE_SIZE / size_of::<NodeEntry>()],
 }
 
-#[derive(Zeroable)]
+#[derive(Debug, Zeroable)]
 #[repr(C, align(4096))]
 pub struct PdptTable {
     pub pd_entries: [PdptEntry; PAGE_SIZE / size_of::<PdptEntry>()],
@@ -83,18 +78,13 @@ pub struct PdptTable {
 pub struct PdptLeafEntry(usize);
 impl PdptLeafEntry {
     #[inline]
-    pub const fn from_common(entry: Entry) -> Self {
-        Self(entry.0)
-    }
-
-    #[inline]
-    pub const fn with_addr(self, addr: PAddr) -> Self {
-        Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
+    pub const fn new(entry: Entry, addr: PAddr) -> Self {
+        Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
     pub const fn addr(self) -> PAddr {
-        PAddr(self.0 & Self::ADDRESS.0)
+        PAddr::new(self.0 & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
@@ -107,8 +97,28 @@ bitflags! {
         const GLOBAL = 1 << 8;
         const PAGE_ATTRIBUTE_TABLE = 1 << 12;
 
-        const ADDRESS = ((1 << 22) - 1) << 30;
+        const ADDRESS_MASK = ((1 << 22) - 1) << 30;
         const PROTECTION_KEY = ((1 << 4) - 1) << 59;
+    }
+}
+
+#[derive(Copy, Clone)]
+pub enum UnionEntry<Node, Leaf> {
+    Node(Node),
+    Leaf(Leaf),
+}
+
+impl<Node, Leaf> UnionEntry<Node, Leaf> {
+    #[inline]
+    pub fn force_node(self) -> Node {
+        let Self::Node(node) = self else { panic!("Not a node!") };
+        node
+    }
+
+    #[inline]
+    pub fn force_leaf(self) -> Leaf {
+        let Self::Leaf(leaf) = self else { panic!("Not a node!") };
+        leaf
     }
 }
 
@@ -120,11 +130,9 @@ pub union PdptEntry {
 }
 impl fmt::Debug for PdptEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unsafe {
-            match self.is_leaf() {
-                false => write!(f, "Node => {:?}", self.node),
-                true => write!(f, "Leaf => {:?}", self.leaf),
-            }
+        match self.kind() {
+            UnionEntry::Node(node) => write!(f, "PdptEntry({node:?})"),
+            UnionEntry::Leaf(leaf) => write!(f, "PdptEntry({leaf:?})"),
         }
     }
 }
@@ -140,8 +148,25 @@ impl PdptEntry {
     }
 
     #[inline]
-    pub const fn is_leaf(self) -> bool {
-        unsafe { mem::transmute::<Self, usize>(self) & NODE_IS_LEAF != 0 }
+    pub const fn kind(self) -> UnionEntry<NodeEntry, PdptLeafEntry> {
+        unsafe {
+            if mem::transmute::<Self, usize>(self) & NODE_IS_LEAF != 0 {
+                UnionEntry::Leaf(self.leaf)
+            } else {
+                UnionEntry::Node(self.node)
+            }
+        }
+    }
+
+    #[inline]
+    pub const fn kind_mut(&mut self) -> UnionEntry<&mut NodeEntry, &mut PdptLeafEntry> {
+        unsafe {
+            if mem::transmute::<Self, usize>(*self) & NODE_IS_LEAF != 0 {
+                UnionEntry::Leaf(&mut self.leaf)
+            } else {
+                UnionEntry::Node(&mut self.node)
+            }
+        }
     }
 
     #[inline]
@@ -161,18 +186,13 @@ pub struct PdTable {
 pub struct PdLeafEntry(usize);
 impl PdLeafEntry {
     #[inline]
-    pub const fn from_common(entry: Entry) -> Self {
-        Self(entry.0)
-    }
-
-    #[inline]
-    pub const fn with_addr(self, addr: PAddr) -> Self {
-        Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
+    pub const fn new(entry: Entry, addr: PAddr) -> Self {
+        Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
     pub const fn addr(self) -> PAddr {
-        PAddr(self.0 & Self::ADDRESS.0)
+        PAddr::new(self.0 & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
@@ -185,7 +205,7 @@ bitflags! {
         const GLOBAL = 1 << 8;
         const PAGE_ATTRIBUTE_TABLE = 1 << 12;
 
-        const ADDRESS = ((1 << 31) - 1) << 21;
+        const ADDRESS_MASK = ((1 << 31) - 1) << 21;
         const PROTECTION_KEY = ((1 << 4) - 1) << 59;
     }
 }
@@ -198,11 +218,9 @@ pub union PdEntry {
 }
 impl fmt::Debug for PdEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unsafe {
-            match self.is_leaf() {
-                false => write!(f, "Node => {:?}", self.node),
-                true => write!(f, "Leaf => {:?}", self.leaf),
-            }
+        match self.kind() {
+            UnionEntry::Node(node) => write!(f, "PdEntry({node:?})"),
+            UnionEntry::Leaf(leaf) => write!(f, "PdEntry({leaf:?})"),
         }
     }
 }
@@ -218,8 +236,25 @@ impl PdEntry {
     }
 
     #[inline]
-    pub const fn is_leaf(self) -> bool {
-        unsafe { mem::transmute::<Self, usize>(self) & NODE_IS_LEAF != 0 }
+    pub const fn kind(self) -> UnionEntry<NodeEntry, PdLeafEntry> {
+        unsafe {
+            if mem::transmute::<Self, usize>(self) & NODE_IS_LEAF != 0 {
+                UnionEntry::Leaf(self.leaf)
+            } else {
+                UnionEntry::Node(self.node)
+            }
+        }
+    }
+
+    #[inline]
+    pub const fn kind_mut(&mut self) -> UnionEntry<&mut NodeEntry, &mut PdLeafEntry> {
+        unsafe {
+            if mem::transmute::<Self, usize>(*self) & NODE_IS_LEAF != 0 {
+                UnionEntry::Leaf(&mut self.leaf)
+            } else {
+                UnionEntry::Node(&mut self.node)
+            }
+        }
     }
 
     #[inline]
@@ -239,18 +274,13 @@ pub struct PtTable {
 pub struct PtEntry(usize);
 impl PtEntry {
     #[inline]
-    pub const fn from_common(entry: Entry) -> Self {
-        Self(entry.0)
-    }
-
-    #[inline]
-    pub const fn with_addr(self, addr: PAddr) -> Self {
-        Self(self.0 & !Self::ADDRESS.0 | addr.0 & Self::ADDRESS.0)
+    pub const fn new(entry: Entry, addr: PAddr) -> Self {
+        Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
     pub const fn addr(self) -> PAddr {
-        PAddr(self.0 & Self::ADDRESS.0)
+        PAddr::new(self.0 & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
@@ -263,7 +293,7 @@ bitflags! {
         const GLOBAL = 1 << 8;
         const PAGE_ATTRIBUTE_TABLE = 1 << 7;
 
-        const ADDRESS = ((1 << 40) - 1) << 12;
+        const ADDRESS_MASK = ((1 << 40) - 1) << 12;
         const PROTECTION_KEY = ((1 << 4) - 1) << 59;
     }
 }

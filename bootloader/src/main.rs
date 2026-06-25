@@ -8,7 +8,7 @@ use core::{arch::{asm, naked_asm}, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, paddr::PAddr, vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, VAddr, VAddrInfo}};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, paddr::PAddr, vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VAddr, VAddrInfo}};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMapOwned, proto::console::gop::*};
 
 const PAGE_SIZE: usize = 4096;
@@ -25,6 +25,7 @@ static KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../.
 const ELPYTI_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
 const ELPYTI_KERNEL_STACK: MemoryType = MemoryType::custom(0x8000_0001);
 const ELPYTI_BOOT_INFO:    MemoryType = MemoryType::custom(0x8000_0002);
+const ELPYTI_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0003);
 
 const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
     let mut out: MaybeUninit<[ElfSegment64; _]> = MaybeUninit::uninit();
@@ -76,22 +77,18 @@ const KERNEL_STACK_PAGES: usize = 8;
 struct UefiInfo {
     pub memory_map:         MemoryMapOwned,
     pub pml4_phys:          PAddr,
-    pub switcher:           PAddr,
 
-    pub pml4_virt:          VAddr,
     pub boot_info:          VAddr,
-    pub stack:              VAddr,
+    pub kernel_stack_base:  VAddr,
     pub kernel_entry:       VAddr,
 }
 
 fn setup_uefi_and_exit() -> UefiInfo {
     let memory_map:         MemoryMapOwned;
     let pml4_phys:          PAddr;
-    let switcher:           PAddr;
 
-    let pml4_virt:          VAddr;
     let boot_info:          VAddr;
-    let stack:              VAddr;
+    let kernel_stack_base:  VAddr;
     let kernel_entry:       VAddr;
     
     helpers::init().unwrap();
@@ -153,145 +150,118 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size
         };
 
-        /*let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESS;
-        let kernel_page_elf_count = (virtual_max - virtual_base).div_ceil(PAGE_SIZE);
-        let kernel_phys_elf_ptr = boot::allocate_pages(
-            AllocateType::Address(0x200000),
-            ELPYTI_KERNEL_CODE,
-            kernel_page_elf_count,
-        ).unwrap_or_else(|_| panic!(
-            "Couldn't allocate physical memory for kernel at 0x200000 for {} pages",
-            kernel_page_elf_count,
-        )).as_ptr();
-
-        for segment in KERNEL_SEGMENTS {
-            if segment.segment_type != ElfSegmentType::Load { continue }
-
-            unsafe {
-                kernel_phys_elf_ptr
-                    .add(segment.virtual_address as usize - virtual_base)
-                    .copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
-                kernel_phys_elf_ptr
-                    .add(segment.virtual_address as usize - virtual_base + segment.data.len())
-                    .write_bytes(0, segment.memory_size as usize - segment.data.len());
-            }
+        let mut pml4 = bytemuck::zeroed::<Pml4Table>();
+        fn new_page_table() -> PAddr {
+            let ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).unwrap().as_ptr();
+            unsafe { ptr.write_bytes(0, PAGE_SIZE) }
+            PAddr::new(ptr.expose_provenance())
         }
 
+        let mut map_phys_to_virt = |p_addr: PAddr, v_addr: VAddr, flags: Entry| {
+            let VAddrInfo { pt_index, pd_index, pdpt_index, pml4_index, .. } = v_addr.indices();
+            unsafe {
+                let pdpt = match pml4.pdpt_entries[pml4_index] {
+                    e if e.is_present() => e,
+                    ref mut e => {
+                        *e = NodeEntry::new(Entry::WRITABLE, new_page_table());
+                        *e
+                    }
+                }.child_addr().identity_mut::<PdptTable>();
+
+                let pd = match (*pdpt).pd_entries[pdpt_index] {
+                    e if e.is_present() && let UnionEntry::Node(e) = e.kind() => e,
+                    ref mut e => {
+                        *e = PdptEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table()));
+                        e.kind().force_node()
+                    }
+                }.child_addr().identity_mut::<PdTable>();
+
+                let pt = match (*pd).pt_entries[pd_index] {
+                    e if e.is_present() && let UnionEntry::Node(e) = e.kind() => e,
+                    ref mut e => {
+                        *e = PdEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table()));
+                        e.kind().force_node()
+                    }
+                }.child_addr().identity_mut::<PtTable>();
+
+                match (*pt).phys_pages[pt_index] {
+                    e if e.is_present() => panic!("Couldn't map {v_addr} to {p_addr}; already mapped to {}", e.addr()),
+                    ref mut e => *e = PtEntry::new(flags, p_addr),
+                }
+            }
+        };
+
+        let [kernel_virt_base, kernel_virt_max] = KERNEL_VIRTUAL_ADDRESS;
+        let kernel_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_CODE, (kernel_virt_max - kernel_virt_base).div_ceil(PAGE_SIZE)).unwrap().as_ptr();
+        for segment in KERNEL_SEGMENTS {
+            if segment.segment_type != ElfSegmentType::Load { continue }
+            unsafe {
+                kernel_ptr
+                    .add(segment.virtual_address as usize - kernel_virt_base)
+                    .copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
+                kernel_ptr
+                    .add(segment.virtual_address as usize - kernel_virt_base + segment.data.len())
+                    .write_bytes(0, segment.memory_size as usize - segment.data.len());
+            }
+
+            for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
+                map_phys_to_virt(
+                    PAddr::new(kernel_ptr.expose_provenance() + segment.virtual_address as usize - kernel_virt_base + i),
+                    VAddr::new(segment.virtual_address as usize + i),
+                    match segment.flags.contains(ElfProgramFlags::WRITABLE) {
+                        false => Entry::empty(),
+                        true => Entry::WRITABLE,
+                    },
+                );
+            }
+        }
+        kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
+
+        let mut next_v_addr = kernel_virt_max.next_multiple_of(PAGE_SIZE);
+        let mut next_v_addr = |p_addr: PAddr, page_count: usize, flags: Entry| {
+            let v_addr = next_v_addr;
+            next_v_addr += page_count * PAGE_SIZE;
+
+            for i in 0..page_count {
+                let offset = i * PAGE_SIZE;
+                map_phys_to_virt(
+                    PAddr::new(p_addr.addr() + offset),
+                    VAddr::new(v_addr + offset),
+                    flags
+                );
+            }
+
+            VAddr::new(v_addr)
+        };
+
+        let stack_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_STACK, KERNEL_STACK_PAGES).unwrap().as_ptr();
+        let stack = next_v_addr(PAddr::new(stack_ptr.expose_provenance()), KERNEL_STACK_PAGES, Entry::WRITABLE);
+        kernel_stack_base = VAddr::new(stack.addr() + KERNEL_STACK_PAGES * PAGE_SIZE);
+
+        let pml4_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).unwrap().as_ptr();
+        pml4_phys = PAddr::new(pml4_ptr.expose_provenance());
+        let pml4_virt = next_v_addr(pml4_phys, 1, Entry::WRITABLE);
+
+        let boot_info_page_len = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
+        let boot_info_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_BOOT_INFO, boot_info_page_len).unwrap().as_ptr();
         unsafe {
-            let kernel_phys_boot_ptr = kernel_phys_elf_ptr.add(kernel_page_elf_count * PAGE_SIZE);
-
-            let pml4_ptr = kernel_phys_boot_ptr.add(KernelBootPages::PageTablePhys as usize * PAGE_SIZE).cast::<Pml4Table>();
-            let pdpt_ptr = pml4_ptr.byte_add(PAGE_SIZE).cast::<PdptTable>();
-            let pd_ptr = pdpt_ptr.byte_add(PAGE_SIZE).cast::<PdTable>();
-            let pt_ptr = pd_ptr.byte_add(PAGE_SIZE).cast::<PtTable>();
-
-            let mut out_pml4_phys = bytemuck::zeroed::<Pml4Table>();
-            let mut out_pdpt_phys = bytemuck::zeroed::<PdptTable>();
-            let mut out_pd_phys = bytemuck::zeroed::<PdTable>();
-            let mut out_pt_phys = bytemuck::zeroed::<PtTable>();
-
-            let common = Entry::PRESENT | Entry::READ_WRITE;
-
-            // Bootloader only allocates 3 higher-half tables and 3 identity-map tables for now.
-            let VAddrInfo {
-                pd_index: kernel_pd_index,
-                pdpt_index: kernel_pdpt_index,
-                pml4_index: kernel_pml4_index,
-                ..
-            } = VAddr::new(virtual_base).indices();
-            out_pd_phys.pt_entries[kernel_pd_index] = PdEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pt_ptr.addr())));
-            out_pdpt_phys.pd_entries[kernel_pdpt_index] = PdptEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pd_ptr.addr())));
-            out_pml4_phys.pdpt_entries[kernel_pml4_index] = NodeEntry::from_common(common).with_addr(PAddr(pdpt_ptr.addr()));
-
-            let mut map_higher_half = |p_addr: PAddr, v_addr: VAddr, additional_flags: Entry| {
-                let VAddrInfo { pt_index, pd_index, pdpt_index, pml4_index, .. } = v_addr.indices();
-
-                // Ensure the kernel is under 2 MiB for now.
-                // (This currently does not crash, so leave it be.)
-                assert_eq!(pml4_index, kernel_pml4_index);
-                assert_eq!(pdpt_index, kernel_pdpt_index);
-                assert_eq!(pd_index, kernel_pd_index);
-
-                out_pt_phys.phys_pages[pt_index] = (PtEntry::from_common((common & !Entry::READ_WRITE) | additional_flags) | PtEntry::GLOBAL).with_addr(p_addr);
-            };
-
-            for segment in KERNEL_SEGMENTS {
-                for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
-                    let p_addr = PAddr(kernel_phys_elf_ptr.addr() + segment.virtual_address as usize - virtual_base + i);
-                    let v_addr = VAddr::new(segment.virtual_address as usize + i);
-                    map_higher_half(p_addr, v_addr, match segment.flags.contains(ElfProgramFlags::WRITABLE) {
-                        false => Entry::empty(),
-                        true => Entry::READ_WRITE,
-                    });
-                }
-            }
-
-            for (page_kind, page_count, writable) in [
-                (KernelBootPages::PageTablePhys, 7, true),
-                (KernelBootPages::SwitchToKernel, 1, false),
-                (KernelBootPages::BootInfo, 1, false),
-                (KernelBootPages::Stack, KERNEL_STACK_PAGES, true),
-            ] {
-                for i in 0..page_count {
-                    let offset = (kernel_page_elf_count + page_kind as usize + i) * PAGE_SIZE;
-                    let p_addr = PAddr(kernel_phys_elf_ptr.addr() + offset);
-                    let v_addr = VAddr::new(virtual_base + offset);
-                    map_higher_half(p_addr, v_addr, match writable {
-                        false => Entry::empty(),
-                        true => Entry::READ_WRITE,
-                    });
-                }
-            }
-
-            // `rustc_align(4096)` helps with this, the assertion does not fail
-            assert_eq!((switch_to_kernel as *const u8).addr() % PAGE_SIZE, 0);
-            let switcher_ptr = kernel_phys_boot_ptr.add(KernelBootPages::SwitchToKernel as usize * PAGE_SIZE);
-            switcher_ptr.copy_from_nonoverlapping(switch_to_kernel as *const u8, PAGE_SIZE);
-
-            {
-                let pdpt_switcher_ptr = pt_ptr.byte_add(PAGE_SIZE).cast::<PdptTable>();
-                let pd_switcher_ptr = pdpt_switcher_ptr.byte_add(PAGE_SIZE).cast::<PdTable>();
-                let pt_switcher_ptr = pd_switcher_ptr.byte_add(PAGE_SIZE).cast::<PtTable>();
-
-                let mut out_pdpt_switcher_phys = bytemuck::zeroed::<PdptTable>();
-                let mut out_pd_switcher_phys = bytemuck::zeroed::<PdTable>();
-                let mut out_pt_switcher_phys = bytemuck::zeroed::<PtTable>();
-
-                let switcher_addr = switcher_ptr.addr();
-                let VAddrInfo { pt_index, pd_index, pdpt_index, pml4_index, .. } = VAddr::new(switcher_addr).indices();
-
-                // Doesn't use `map_higher_half` because it's a lower-half identity mapping
-                let common = common & !Entry::READ_WRITE;
-                out_pt_switcher_phys.phys_pages[pt_index] = (PtEntry::from_common(common) | PtEntry::GLOBAL).with_addr(PAddr(switcher_addr));
-                out_pd_switcher_phys.pt_entries[pd_index] = PdEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pt_switcher_ptr.addr())));
-                out_pdpt_switcher_phys.pd_entries[pdpt_index] = PdptEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pd_switcher_ptr.addr())));
-                out_pml4_phys.pdpt_entries[pml4_index] = NodeEntry::from_common(common).with_addr(PAddr(pdpt_switcher_ptr.addr()));
-
-                pdpt_switcher_ptr.write(out_pdpt_switcher_phys);
-                pd_switcher_ptr.write(out_pd_switcher_phys);
-                pt_switcher_ptr.write(out_pt_switcher_phys);
-            }
-
-            pml4_phys = PAddr(pml4_ptr.addr());
-            switcher = PAddr(switcher_ptr.addr());
-
-            pml4_virt = VAddr::new(virtual_base + (kernel_page_elf_count + KernelBootPages::PageTablePhys as usize) * PAGE_SIZE);
-            boot_info = VAddr::new(virtual_base + (kernel_page_elf_count + KernelBootPages::BootInfo as usize) * PAGE_SIZE);
-            stack = VAddr::new(virtual_base + (kernel_page_elf_count + KernelBootPages::Stack as usize + KERNEL_STACK_PAGES) * PAGE_SIZE);
-            kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
-
-            let boot_info_ptr = kernel_phys_boot_ptr.add(KernelBootPages::BootInfo as usize * PAGE_SIZE).cast::<BootInfo>();
-            boot_info_ptr.write(BootInfo {
+            boot_info_ptr.cast::<BootInfo>().write(BootInfo {
                 graphics_info,
-                memory_regions_base: todo!(),
-                memory_regions_size: todo!(),
-            });
+                pml4_table: pml4_virt.ptr_mut(),
 
-            pml4_ptr.write(out_pml4_phys);
-            pdpt_ptr.write(out_pdpt_phys);
-            pd_ptr.write(out_pd_phys);
-            pt_ptr.write(out_pt_phys);
-        }*/
+                memory_regions_base: [MaybeUninit::uninit(); _],
+                memory_regions_size: 0,
+            });
+        }
+        boot_info = next_v_addr(PAddr::new(boot_info_ptr.expose_provenance()), boot_info_page_len, Entry::empty());
+
+        let switcher_addr = (switch_to_kernel as *const ()).expose_provenance();
+        assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
+        map_phys_to_virt(PAddr::new(switcher_addr), VAddr::new(switcher_addr), Entry::empty());
+
+        unsafe {
+            pml4_ptr.cast::<Pml4Table>().write(pml4);
+        }
     }
 
     unsafe {
@@ -301,11 +271,9 @@ fn setup_uefi_and_exit() -> UefiInfo {
     UefiInfo {
         memory_map,
         pml4_phys,
-        switcher,
 
-        pml4_virt,
         boot_info,
-        stack,
+        kernel_stack_base,
         kernel_entry,
     }
 }
@@ -315,7 +283,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
 unsafe extern "sysv64" fn switch_to_kernel(
     pml4_phys: usize,
     boot_info: usize,
-    stack: usize,
+    stack_base: usize,
     kernel_entry: usize,
 ) -> ! {
     naked_asm!(
@@ -328,18 +296,8 @@ unsafe extern "sysv64" fn switch_to_kernel(
 
 #[entry]
 fn entry() -> Status {
-    let UefiInfo { memory_map, pml4_phys, switcher, pml4_virt, boot_info, stack, kernel_entry } = setup_uefi_and_exit();
+    let UefiInfo { memory_map, pml4_phys, boot_info, kernel_stack_base, kernel_entry } = setup_uefi_and_exit();
     unsafe {
-        asm!(
-            "jmp r8",
-
-            in("rdi") pml4_phys.0,
-            in("rsi") boot_info.addr(),
-            in("rdx") stack.addr(),
-            in("rcx") kernel_entry.addr(),
-            in("r8")  switcher.0,
-
-            options(noreturn)
-        );
+        switch_to_kernel(pml4_phys.addr(), boot_info.addr(), kernel_stack_base.addr(), kernel_entry.addr())
     }
 }
