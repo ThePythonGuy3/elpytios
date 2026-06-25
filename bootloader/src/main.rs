@@ -8,8 +8,8 @@ use core::{arch::{asm, naked_asm}, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, paddr::PAddr, vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VAddr, VAddrInfo}};
-use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMapOwned, proto::console::gop::*};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion, paddr::PAddr, vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VAddr, VAddrInfo}};
+use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
 
 const PAGE_SIZE: usize = 4096;
 
@@ -87,6 +87,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
     let memory_map:         MemoryMapOwned;
     let pml4_phys:          PAddr;
 
+    let boot_info_ptr:     *mut BootInfo;
     let boot_info:          VAddr;
     let kernel_stack_base:  VAddr;
     let kernel_entry:       VAddr;
@@ -166,7 +167,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                         *e = NodeEntry::new(Entry::WRITABLE, new_page_table());
                         *e
                     }
-                }.child_addr().identity_mut::<PdptTable>();
+                }.child_addr().addr() as *mut PdptTable;
 
                 let pd = match (*pdpt).pd_entries[pdpt_index] {
                     e if e.is_present() && let UnionEntry::Node(e) = e.kind() => e,
@@ -174,7 +175,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                         *e = PdptEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table()));
                         e.kind().force_node()
                     }
-                }.child_addr().identity_mut::<PdTable>();
+                }.child_addr().addr() as *mut PdTable;
 
                 let pt = match (*pd).pt_entries[pd_index] {
                     e if e.is_present() && let UnionEntry::Node(e) = e.kind() => e,
@@ -182,7 +183,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                         *e = PdEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table()));
                         e.kind().force_node()
                     }
-                }.child_addr().identity_mut::<PtTable>();
+                }.child_addr().addr() as *mut PtTable;
 
                 match (*pt).phys_pages[pt_index] {
                     e if e.is_present() => panic!("Couldn't map {v_addr} to {p_addr}; already mapped to {}", e.addr()),
@@ -243,12 +244,13 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let pml4_virt = next_v_addr(pml4_phys, 1, Entry::WRITABLE);
 
         let boot_info_page_len = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
-        let boot_info_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_BOOT_INFO, boot_info_page_len).unwrap().as_ptr();
+        boot_info_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_BOOT_INFO, boot_info_page_len).unwrap().as_ptr().cast();
         unsafe {
-            boot_info_ptr.cast::<BootInfo>().write(BootInfo {
+            boot_info_ptr.write(BootInfo {
                 graphics_info,
                 pml4_table: pml4_virt.ptr_mut(),
 
+                // Initialized after exiting UEFI boot services
                 memory_regions_base: [MaybeUninit::uninit(); _],
                 memory_regions_size: 0,
             });
@@ -266,6 +268,23 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
     unsafe {
         memory_map = boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA));
+        
+        let mut size = 0;
+        for entry in memory_map.entries() {
+            if matches!(entry.ty,
+                MemoryType::LOADER_CODE | MemoryType::LOADER_DATA |
+                MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA |
+                MemoryType::CONVENTIONAL
+            ) {
+                (&raw mut (*boot_info_ptr).memory_regions_base[size]).cast::<MemoryRegion>().write(MemoryRegion {
+                    base: PAddr::new(entry.phys_start as usize),
+                    pages: entry.page_count as usize,
+                });
+                size += 1;
+            }
+        }
+
+        (&raw mut (*boot_info_ptr).memory_regions_size).write(size);
     }
 
     UefiInfo {

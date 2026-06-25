@@ -20,12 +20,13 @@ pub mod vaddr {
     }
 }
 
-pub const PAGE_SIZE: usize = 4096;
-pub const MAX_MEMORY_REGIONS: usize = 128;
-
 use core::mem::MaybeUninit;
 
+use paddr::PAddr;
 use vaddr::Pml4Table;
+
+pub const PAGE_SIZE: usize = 4096;
+pub const MAX_MEMORY_REGIONS: usize = 128;
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
@@ -50,7 +51,7 @@ pub struct GraphicsInfo {
 
 #[derive(Clone, Copy)]
 pub struct MemoryRegion {
-    pub base: *mut u8,
+    pub base:  PAddr,
     pub pages: usize
 }
 

@@ -1,7 +1,4 @@
-use core::{
-    fmt,
-    ptr::{self, Pointee},
-};
+use core::fmt;
 
 use bytemuck::Zeroable;
 
@@ -17,16 +14,6 @@ impl PAddr {
     #[inline]
     pub const fn addr(self) -> usize {
         self.0
-    }
-
-    #[inline]
-    pub const fn identity<T: Pointee<Metadata = ()>>(self) -> *const T {
-        ptr::from_raw_parts(ptr::with_exposed_provenance::<()>(self.0), ())
-    }
-
-    #[inline]
-    pub const fn identity_mut<T: Pointee<Metadata = ()>>(self) -> *mut T {
-        ptr::from_raw_parts_mut(ptr::with_exposed_provenance_mut::<()>(self.0), ())
     }
 }
 
