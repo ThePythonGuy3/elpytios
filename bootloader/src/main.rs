@@ -22,6 +22,10 @@ static KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../.
     Err(e) => concat_panic!(e),
 };
 
+const ELPYTI_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
+const ELPYTI_KERNEL_STACK: MemoryType = MemoryType::custom(0x8000_0001);
+const ELPYTI_BOOT_INFO:    MemoryType = MemoryType::custom(0x8000_0002);
+
 const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
     let mut out: MaybeUninit<[ElfSegment64; _]> = MaybeUninit::uninit();
     let mut ptr = out.as_mut_ptr() as *mut ElfSegment64;
@@ -67,21 +71,7 @@ const KERNEL_VIRTUAL_ADDRESS: [usize; 2] = const {
     }
 };
 
-const KERNEL_STACK_PAGES: usize = 4;
-
-#[forbid(unused, reason = "These pages must absolutely be initialized by the bootloader")]
-#[derive(Clone, Copy)]
-#[repr(usize)]
-enum KernelBootPages {
-    PageTablePhys = 0,
-    //PageTableVirt = 4,
-    //AllocPhys = 8,
-    //AllocVirt = 9,
-    SwitchToKernel = 7,
-    BootInfo = 8,
-    Stack = 9,
-    Max = Self::Stack as usize + KERNEL_STACK_PAGES,
-}
+const KERNEL_STACK_PAGES: usize = 8;
 
 struct UefiInfo {
     pub memory_map:         MemoryMapOwned,
@@ -163,19 +153,20 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size
         };
 
-        let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESS;
+        /*let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESS;
         let kernel_page_elf_count = (virtual_max - virtual_base).div_ceil(PAGE_SIZE);
         let kernel_phys_elf_ptr = boot::allocate_pages(
             AllocateType::Address(0x200000),
-            MemoryType::LOADER_DATA,
-            kernel_page_elf_count + KernelBootPages::Max as usize,
+            ELPYTI_KERNEL_CODE,
+            kernel_page_elf_count,
         ).unwrap_or_else(|_| panic!(
             "Couldn't allocate physical memory for kernel at 0x200000 for {} pages",
-            kernel_page_elf_count + KernelBootPages::Max as usize,
+            kernel_page_elf_count,
         )).as_ptr();
 
         for segment in KERNEL_SEGMENTS {
             if segment.segment_type != ElfSegmentType::Load { continue }
+
             unsafe {
                 kernel_phys_elf_ptr
                     .add(segment.virtual_address as usize - virtual_base)
@@ -290,12 +281,17 @@ fn setup_uefi_and_exit() -> UefiInfo {
             kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
 
             let boot_info_ptr = kernel_phys_boot_ptr.add(KernelBootPages::BootInfo as usize * PAGE_SIZE).cast::<BootInfo>();
-            boot_info_ptr.write(BootInfo { graphics_info });
+            boot_info_ptr.write(BootInfo {
+                graphics_info,
+                memory_regions_base: todo!(),
+                memory_regions_size: todo!(),
+            });
+
             pml4_ptr.write(out_pml4_phys);
             pdpt_ptr.write(out_pdpt_phys);
             pd_ptr.write(out_pd_phys);
             pt_ptr.write(out_pt_phys);
-        }
+        }*/
     }
 
     unsafe {

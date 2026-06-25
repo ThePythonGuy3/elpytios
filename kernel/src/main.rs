@@ -41,8 +41,8 @@ unsafe extern "sysv64" fn jump_from_bootloader(boot_info: &'static BootInfo) -> 
 }
 
 unsafe extern "sysv64" fn main(boot_info: &'static BootInfo) -> ! {
-    //#[cfg(debug_assertions)]
-    //pause();
+    #[cfg(debug_assertions)]
+    pause();
 
     let mut display_writer =  DisplayWriter {
         graphics_info: &boot_info.graphics_info,

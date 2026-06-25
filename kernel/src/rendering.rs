@@ -159,7 +159,13 @@ impl<'a> DisplayWriter<'a> {
                 let paint_pixel = (character[(FONT_HEIGHT - 1) - y] & (0b1000_0000 >> x)) != 0;
 
                 unsafe {
-                    self.graphics_info.frame_buffer.cast::<u32>().add((base_x + x) + (base_y + y) * self.graphics_info.stride).write_volatile(if paint_pixel { 0xBBBBBBBB } else { 0xFF00FFFF });
+                    match self.graphics_info.pixel_format {
+                        PixelFormat::RGB_8_BIT |
+                        PixelFormat::BGR_8_BIT => {
+                            self.graphics_info.frame_buffer.cast::<u32>().add((base_x + x) + (base_y + y) * self.graphics_info.stride).write_volatile(if paint_pixel { 0xBBBBBBBB } else { 0x00000000 });
+                        },
+                        _ => {}
+                    }
                 }
             }
         }

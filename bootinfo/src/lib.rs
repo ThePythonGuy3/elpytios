@@ -21,6 +21,9 @@ pub mod vaddr {
 }
 
 pub const PAGE_SIZE: usize = 4096;
+pub const MAX_MEMORY_REGIONS: usize = 128;
+
+use core::mem::MaybeUninit;
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
@@ -43,10 +46,18 @@ pub struct GraphicsInfo {
     pub frame_buffer_size: usize
 }
 
-const _: () = assert!(size_of::<BootInfo>() == PAGE_SIZE);
+const _: () = assert!(size_of::<BootInfo>() <= PAGE_SIZE);
 
 #[derive(Clone, Copy)]
-#[repr(C, align(4096))]
+pub struct MemoryRegion {
+    pub base: *mut u8,
+    pub pages: usize
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
 pub struct BootInfo {
-    pub graphics_info: GraphicsInfo
+    pub graphics_info:        GraphicsInfo,
+    pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
+    pub memory_regions_size:  usize
 }
