@@ -170,7 +170,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                         false => VFlags::empty(),
                         true => VFlags::WRITABLE,
                     },
-                ).unwrap();
+                ).unwrap_or_else(|e| panic!("{e}"));
             }
         }
         kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
@@ -178,7 +178,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         // Identity-map the kernel switcher
         let switcher_addr = (switch_to_kernel as *const ()).addr();
         assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
-        virt_mapper.map(PAddr::new(switcher_addr), VAddr::new(switcher_addr), VFlags::empty()).unwrap();
+        virt_mapper.map(PAddr::new(switcher_addr), VAddr::new(switcher_addr), VFlags::empty()).unwrap_or_else(|e| panic!("{e}"));
 
         let mut next_v_addr = KERNEL_VIRTUAL_FREE;
         let mut next_v_addr = |p_addr: PAddr, page_count: usize, flags: VFlags| {
@@ -191,7 +191,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                     PAddr::new(p_addr.addr() + offset),
                     VAddr::new(v_addr + offset),
                     flags,
-                ).unwrap();
+                ).unwrap_or_else(|e| panic!("{e}"));
             }
 
             VAddr::new(v_addr)
