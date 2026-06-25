@@ -26,7 +26,7 @@ bitflags! {
         const WRITABLE = 1 << 1;
         const USER_ACCESSIBLE = 1 << 2;
         const WRITE_THROUGH = 1 << 3;
-        const CACHE_DISABLE = 1 << 4;
+        const CACHE_DISABLED = 1 << 4;
         const ACCESSED = 1 << 5;
 
         const EXECUTE_DISABLE = 1 << 63;

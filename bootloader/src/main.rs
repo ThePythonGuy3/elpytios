@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::{asm, naked_asm}, mem::MaybeUninit};
+use core::{arch::naked_asm, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
@@ -137,20 +137,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let pixel_format       = mode_info.pixel_format();
         let frame_buffer_ptr   = frame_buffer.as_mut_ptr();
 
-        let graphics_info = GraphicsInfo {
-            w,
-            h,
-            stride,
-            pixel_format: match pixel_format {
-                PixelFormat::Rgb     => elpytios_bootinfo::PixelFormat::RGB_8_BIT,
-                PixelFormat::Bgr     => elpytios_bootinfo::PixelFormat::BGR_8_BIT,
-                PixelFormat::Bitmask => elpytios_bootinfo::PixelFormat::BIT_MASK,
-                PixelFormat::BltOnly => elpytios_bootinfo::PixelFormat::BLT_ONLY
-            },
-            frame_buffer: frame_buffer_ptr,
-            frame_buffer_size: frame_buffer_size
-        };
-
         let mut pml4 = bytemuck::zeroed::<Pml4Table>();
         fn new_page_table() -> PAddr {
             let ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).unwrap().as_ptr();
@@ -187,7 +173,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
                 match (*pt).phys_pages[pt_index] {
                     e if e.is_present() => panic!("Couldn't map {v_addr} to {p_addr}; already mapped to {}", e.addr()),
-                    ref mut e => *e = PtEntry::new(flags, p_addr),
+                    ref mut e => *e = PtEntry::new(flags, p_addr) | PtEntry::GLOBAL,
                 }
             }
         };
@@ -235,13 +221,37 @@ fn setup_uefi_and_exit() -> UefiInfo {
             VAddr::new(v_addr)
         };
 
+        // Map the stack pointer
         let stack_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_STACK, KERNEL_STACK_PAGES).unwrap().as_ptr();
         let stack = next_v_addr(PAddr::new(stack_ptr.expose_provenance()), KERNEL_STACK_PAGES, Entry::WRITABLE);
         kernel_stack_base = VAddr::new(stack.addr() + KERNEL_STACK_PAGES * PAGE_SIZE);
 
+        // Map the PML4 table
         let pml4_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).unwrap().as_ptr();
         pml4_phys = PAddr::new(pml4_ptr.expose_provenance());
         let pml4_virt = next_v_addr(pml4_phys, 1, Entry::WRITABLE);
+
+        // Map the framebuffer
+        let fb_phys = frame_buffer_ptr.expose_provenance();
+        let fb_size = frame_buffer_size;
+
+        let fb_phys_base = fb_phys & !(PAGE_SIZE - 1);
+        let fb_phys_end = (fb_phys + fb_size).next_multiple_of(PAGE_SIZE);
+        let fb_page_count = (fb_phys_end - fb_phys_base) / PAGE_SIZE;
+
+        let graphics_info = GraphicsInfo {
+            w,
+            h,
+            stride,
+            pixel_format: match pixel_format {
+                PixelFormat::Rgb     => elpytios_bootinfo::PixelFormat::RGB_8_BIT,
+                PixelFormat::Bgr     => elpytios_bootinfo::PixelFormat::BGR_8_BIT,
+                PixelFormat::Bitmask => elpytios_bootinfo::PixelFormat::BIT_MASK,
+                PixelFormat::BltOnly => elpytios_bootinfo::PixelFormat::BLT_ONLY
+            },
+            frame_buffer: next_v_addr(PAddr::new(fb_phys), fb_page_count, Entry::WRITABLE | Entry::WRITE_THROUGH | Entry::CACHE_DISABLED).ptr_mut(),
+            frame_buffer_size: frame_buffer_size,
+        };
 
         let boot_info_page_len = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
         boot_info_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_BOOT_INFO, boot_info_page_len).unwrap().as_ptr().cast();
