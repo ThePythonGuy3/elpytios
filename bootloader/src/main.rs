@@ -4,12 +4,12 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::{asm, naked_asm}, fmt, mem::MaybeUninit};
+use core::{arch::{asm, naked_asm}, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
 use elpytios_bootinfo::{BootInfo, GraphicsInfo, paddr::PAddr, vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, VAddr, VAddrInfo}};
-use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMapOwned, proto::console::{gop::*, serial::Serial}};
+use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMapOwned, proto::console::gop::*};
 
 const PAGE_SIZE: usize = 4096;
 
@@ -186,34 +186,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         }
 
-        use core::fmt::Write;
-
-        struct SerialWriter(boot::ScopedProtocol<Serial>);
-        impl Write for SerialWriter {
-            fn write_char(&mut self, c: char) -> fmt::Result {
-                self.0.write_char(c)
-            }
-            
-            fn write_str(&mut self, s: &str) -> fmt::Result {
-                self.0.write_str(s)
-            }
-
-            fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
-                self.0.write_fmt(args)
-            }
-        }
-
-        let mut writer = SerialWriter(unsafe {
-            boot::open_protocol::<Serial>(
-                boot::OpenProtocolParams {
-                    handle: boot::get_handle_for_protocol::<Serial>().expect("No Serial I/O protocol"),
-                    agent: boot::image_handle(),
-                    controller: None,
-                },
-                boot::OpenProtocolAttributes::GetProtocol,
-            )
-        }.expect("Couldn't open Serial I/O protocol"));
-
         unsafe {
             let kernel_phys_boot_ptr = kernel_phys_elf_ptr.add(kernel_page_elf_count * PAGE_SIZE);
 
@@ -228,27 +200,35 @@ fn setup_uefi_and_exit() -> UefiInfo {
             let mut out_pt_phys = bytemuck::zeroed::<PtTable>();
 
             let common = Entry::PRESENT | Entry::READ_WRITE;
-            out_pd_phys.pt_entries[0] = PdEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pt_ptr.addr())));
-            out_pdpt_phys.pd_entries[510] = PdptEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pd_ptr.addr())));
-            out_pml4_phys.pdpt_entries[511] = NodeEntry::from_common(common).with_addr(PAddr(pdpt_ptr.addr()));
 
-            let mut map = |p_addr: PAddr, v_addr: VAddr, additional_flags: Entry| {
+            // Bootloader only allocates 3 higher-half tables and 3 identity-map tables for now.
+            let VAddrInfo {
+                pd_index: kernel_pd_index,
+                pdpt_index: kernel_pdpt_index,
+                pml4_index: kernel_pml4_index,
+                ..
+            } = VAddr::new(virtual_base).indices();
+            out_pd_phys.pt_entries[kernel_pd_index] = PdEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pt_ptr.addr())));
+            out_pdpt_phys.pd_entries[kernel_pdpt_index] = PdptEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pd_ptr.addr())));
+            out_pml4_phys.pdpt_entries[kernel_pml4_index] = NodeEntry::from_common(common).with_addr(PAddr(pdpt_ptr.addr()));
+
+            let mut map_higher_half = |p_addr: PAddr, v_addr: VAddr, additional_flags: Entry| {
                 let VAddrInfo { pt_index, pd_index, pdpt_index, pml4_index, .. } = v_addr.indices();
 
                 // Ensure the kernel is under 2 MiB for now.
                 // (This currently does not crash, so leave it be.)
-                assert_eq!(pml4_index, 511);
-                assert_eq!(pdpt_index, 510);
-                assert_eq!(pd_index, 0);
+                assert_eq!(pml4_index, kernel_pml4_index);
+                assert_eq!(pdpt_index, kernel_pdpt_index);
+                assert_eq!(pd_index, kernel_pd_index);
 
-                out_pt_phys.phys_pages[pt_index] = (PtEntry::from_common(common | additional_flags) | PtEntry::GLOBAL).with_addr(p_addr);
+                out_pt_phys.phys_pages[pt_index] = (PtEntry::from_common((common & !Entry::READ_WRITE) | additional_flags) | PtEntry::GLOBAL).with_addr(p_addr);
             };
 
             for segment in KERNEL_SEGMENTS {
                 for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
                     let p_addr = PAddr(kernel_phys_elf_ptr.addr() + segment.virtual_address as usize - virtual_base + i);
                     let v_addr = VAddr::new(segment.virtual_address as usize + i);
-                    map(p_addr, v_addr, match segment.flags.contains(ElfProgramFlags::WRITABLE) {
+                    map_higher_half(p_addr, v_addr, match segment.flags.contains(ElfProgramFlags::WRITABLE) {
                         false => Entry::empty(),
                         true => Entry::READ_WRITE,
                     });
@@ -265,7 +245,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                     let offset = (kernel_page_elf_count + page_kind as usize + i) * PAGE_SIZE;
                     let p_addr = PAddr(kernel_phys_elf_ptr.addr() + offset);
                     let v_addr = VAddr::new(virtual_base + offset);
-                    map(p_addr, v_addr, match writable {
+                    map_higher_half(p_addr, v_addr, match writable {
                         false => Entry::empty(),
                         true => Entry::READ_WRITE,
                     });
@@ -289,6 +269,8 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 let switcher_addr = switcher_ptr.addr();
                 let VAddrInfo { pt_index, pd_index, pdpt_index, pml4_index, .. } = VAddr::new(switcher_addr).indices();
 
+                // Doesn't use `map_higher_half` because it's a lower-half identity mapping
+                let common = common & !Entry::READ_WRITE;
                 out_pt_switcher_phys.phys_pages[pt_index] = (PtEntry::from_common(common) | PtEntry::GLOBAL).with_addr(PAddr(switcher_addr));
                 out_pd_switcher_phys.pt_entries[pd_index] = PdEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pt_switcher_ptr.addr())));
                 out_pdpt_switcher_phys.pd_entries[pdpt_index] = PdptEntry::node(NodeEntry::from_common(common).with_addr(PAddr(pd_switcher_ptr.addr())));
@@ -342,7 +324,6 @@ unsafe extern "sysv64" fn switch_to_kernel(
 ) -> ! {
     naked_asm!(
         "mov cr3, rdi",
-        //"mov rsp, rdx",
         "lea rsp, [rdx - 8]",
         "mov rdi, rsi",
         "jmp rcx",
