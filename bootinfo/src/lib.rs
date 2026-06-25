@@ -20,7 +20,7 @@ pub mod vaddr {
     }
 }
 
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, slice};
 
 use paddr::PAddr;
 use vaddr::{Pml4Table, VAddr};
@@ -65,4 +65,11 @@ pub struct BootInfo {
 
     pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
     pub memory_regions_size:  usize
+}
+
+impl BootInfo {
+    #[inline]
+    pub fn memory_regions(&self) -> &[MemoryRegion] {
+        unsafe { slice::from_raw_parts(self.memory_regions_base.as_ptr() as _, self.memory_regions_size) }
+    }
 }

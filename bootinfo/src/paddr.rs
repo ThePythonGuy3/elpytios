@@ -2,7 +2,7 @@ use core::fmt;
 
 use bytemuck::Zeroable;
 
-#[derive(Copy, Clone, Zeroable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Zeroable)]
 #[repr(transparent)]
 pub struct PAddr(usize);
 impl PAddr {
@@ -14,6 +14,11 @@ impl PAddr {
     #[inline]
     pub const fn addr(self) -> usize {
         self.0
+    }
+
+    #[inline]
+    pub const fn byte_add(self, offset: usize) -> Self {
+        Self(self.0 + offset)
     }
 }
 

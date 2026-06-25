@@ -6,7 +6,7 @@ use core::{
 use bitflags::bitflags;
 use bytemuck::Zeroable;
 
-#[derive(Copy, Clone, Zeroable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Zeroable)]
 #[repr(transparent)]
 pub struct VAddr(usize);
 impl VAddr {

@@ -1,7 +1,5 @@
 mod phys;
-mod virt;
 pub use phys::*;
-pub use virt::*;
 
 use crate::PAGE_SIZE;
 
