@@ -13,6 +13,10 @@ use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::
 
 const PAGE_SIZE: usize = 4096;
 
+const ELPYTI_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
+const ELPYTI_KERNEL_STACK: MemoryType = MemoryType::custom(0x8000_0001);
+const ELPYTI_BOOT_INFO:    MemoryType = MemoryType::custom(0x8000_0002);
+
 static KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!("../../target/x86_64-unknown-none/bootloader/elpytios-kernel")) {
     Ok(Elf::N32) => panic!("Expected 64-bit kernel ELF"),
     Ok(Elf::N64(elf)) => elf,
@@ -38,7 +42,7 @@ const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
     unsafe { out.assume_init() }
 };
 
-const KERNEL_STACK_PAGES: usize = 4;
+const KERNEL_STACK_PAGES: usize = 8;
 
 // TODO page allocator
 struct UefiInfo {
@@ -118,7 +122,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size
         };
 
-        let kernel_page_table = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1).unwrap().as_ptr().cast::<u64>();
+        let kernel_page_table = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_CODE, 1).unwrap().as_ptr().cast::<u64>();
         unsafe {
             kernel_page_table.write_bytes(0, PAGE_SIZE / size_of::<u64>());
         }
@@ -129,7 +133,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
             let segment_size = (segment.memory_size as usize).next_multiple_of(PAGE_SIZE);
             let segment_ptr = boot::allocate_pages(
                 AllocateType::Address(segment.virtual_address),
-                MemoryType::LOADER_CODE,
+                ELPYTI_KERNEL_CODE,
                 segment_size / PAGE_SIZE,
             ).unwrap_or_else(|_| panic!("Couldn't allocate kernel section data to {:x}", segment.virtual_address)).as_ptr();
 
@@ -139,11 +143,11 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         }
 
-        let stack = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, KERNEL_STACK_PAGES).unwrap().as_ptr();
+        let stack = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_STACK, KERNEL_STACK_PAGES).unwrap().as_ptr();
         kernel_stack_base = unsafe { stack.add(KERNEL_STACK_PAGES * PAGE_SIZE) };
         kernel_entry = KERNEL_BINARY.program_entry() as *mut u8;
 
-        let boot_info = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, size_of::<BootInfo>().div_ceil(PAGE_SIZE)).unwrap().as_ptr();
+        let boot_info = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_BOOT_INFO, size_of::<BootInfo>().div_ceil(PAGE_SIZE)).unwrap().as_ptr();
         let boot_info = unsafe { boot_info.add(boot_info.align_offset(align_of::<BootInfo>())) }.cast::<BootInfo>();
         unsafe {
             boot_info.write_volatile(BootInfo {

@@ -6,7 +6,7 @@
 
 use core::{fmt::Write, panic::PanicInfo};
 
-use elpytios_bootinfo::{BootInfo, GraphicsInfo};
+use elpytios_bootinfo::BootInfo;
 use elpytios_kernel::rendering::DisplayWriter;
 
 #[panic_handler]
@@ -26,7 +26,7 @@ unsafe extern "sysv64" fn _start(boot_info: *mut BootInfo) -> ! {
         };
     }
 
-    writeln!(&mut display_writer, "Hello World from the Kernel!!!!").unwrap();
+    writeln!(&mut display_writer, "Hello World").unwrap();
 
     loop {}
 }

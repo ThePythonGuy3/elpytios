@@ -3,6 +3,10 @@
 
 #![no_std]
 
+use core::mem::MaybeUninit;
+
+pub const MAX_MEMORY_REGIONS: usize = 128;
+
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -24,8 +28,15 @@ pub struct GraphicsInfo {
     pub frame_buffer_size: usize
 }
 
+pub struct MemoryRegion {
+    pub base: *mut u8,
+    pub pages: usize
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BootInfo {
-    pub graphics_info: GraphicsInfo
+    pub graphics_info:        GraphicsInfo,
+    pub memory_regions_base: *const [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
+    pub memory_regions_size:  usize
 }
