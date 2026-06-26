@@ -15,11 +15,11 @@ const _: () = assert_size_align::<PdptTable>();
 const _: () = assert_size_align::<PdTable>();
 const _: () = assert_size_align::<PtTable>();
 
-pub const NODE_IS_LEAF: usize = 1 << 7;
+pub const UNION_IS_LEAF: usize = 1 << 7;
 
 #[derive(Debug, Copy, Clone, Zeroable)]
 #[repr(transparent)]
-pub(crate) struct Entry(usize);
+pub struct Entry(usize);
 bitflags! {
     impl Entry: usize {
         const PRESENT = 1 << 0;
@@ -59,7 +59,7 @@ impl From<VFlags> for Entry {
 
 #[derive(Debug, Clone, Copy, Zeroable)]
 #[repr(transparent)]
-pub(crate) struct NodeEntry(usize);
+pub struct NodeEntry(usize);
 impl NodeEntry {
     /// # Safety:
     /// - `addr` must point to a **physical page** that is entirely contained by a valid child node.
@@ -87,28 +87,28 @@ bitflags! {
 
 #[derive(Debug, Zeroable)]
 #[repr(C, align(4096))]
-pub(crate) struct Pml4Table {
+pub struct Pml4Table {
     pub pdpt_entries: [NodeEntry; PAGE_SIZE / size_of::<NodeEntry>()],
 }
 
 #[derive(Debug, Zeroable)]
 #[repr(C, align(4096))]
-pub(crate) struct PdptTable {
+pub struct PdptTable {
     pub pd_entries: [PdptEntry; PAGE_SIZE / size_of::<PdptEntry>()],
 }
 
 #[derive(Debug, Copy, Clone, Zeroable)]
 #[repr(transparent)]
-pub(crate) struct PdptLeafEntry(usize);
+pub struct PdptLeafEntry(usize);
 impl PdptLeafEntry {
-    /*#[inline]
-    pub const fn new(entry: Entry, addr: PAddr) -> Self {
-        Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
-    }
-
     #[inline]
     pub const fn addr(self) -> PAddr {
         PAddr::new(self.0 & Self::ADDRESS_MASK.0)
+    }
+
+    /*#[inline]
+    pub const fn new(entry: Entry, addr: PAddr) -> Self {
+        Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
@@ -127,7 +127,7 @@ bitflags! {
 }
 
 #[derive(Copy, Clone)]
-pub(crate) enum UnionEntry<Node, Leaf> {
+pub enum UnionEntry<Node, Leaf> {
     Node(Node),
     Leaf(Leaf),
 }
@@ -148,7 +148,7 @@ impl<Node, Leaf> UnionEntry<Node, Leaf> {
 
 #[derive(Copy, Clone, Zeroable)]
 #[repr(C)]
-pub(crate) union PdptEntry {
+pub union PdptEntry {
     node: NodeEntry,
     leaf: PdptLeafEntry,
 }
@@ -174,7 +174,7 @@ impl PdptEntry {
     #[inline]
     pub const fn kind(self) -> UnionEntry<NodeEntry, PdptLeafEntry> {
         unsafe {
-            if mem::transmute::<Self, usize>(self) & NODE_IS_LEAF != 0 {
+            if mem::transmute::<Self, usize>(self) & UNION_IS_LEAF != 0 {
                 UnionEntry::Leaf(self.leaf)
             } else {
                 UnionEntry::Node(self.node)
@@ -185,7 +185,7 @@ impl PdptEntry {
     /*#[inline]
     pub const fn kind_mut(&mut self) -> UnionEntry<&mut NodeEntry, &mut PdptLeafEntry> {
         unsafe {
-            if mem::transmute::<Self, usize>(*self) & NODE_IS_LEAF != 0 {
+            if mem::transmute::<Self, usize>(*self) & UNION_IS_LEAF != 0 {
                 UnionEntry::Leaf(&mut self.leaf)
             } else {
                 UnionEntry::Node(&mut self.node)
@@ -201,22 +201,22 @@ impl PdptEntry {
 
 #[derive(Zeroable)]
 #[repr(C, align(4096))]
-pub(crate) struct PdTable {
+pub struct PdTable {
     pub pt_entries: [PdEntry; PAGE_SIZE / size_of::<PdEntry>()],
 }
 
 #[derive(Debug, Copy, Clone, Zeroable)]
 #[repr(transparent)]
-pub(crate) struct PdLeafEntry(usize);
+pub struct PdLeafEntry(usize);
 impl PdLeafEntry {
-    /*#[inline]
-    pub const fn new(entry: Entry, addr: PAddr) -> Self {
-        Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
-    }
-
     #[inline]
     pub const fn addr(self) -> PAddr {
         PAddr::new(self.0 & Self::ADDRESS_MASK.0)
+    }
+
+    /*#[inline]
+    pub const fn new(entry: Entry, addr: PAddr) -> Self {
+        Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
     }
 
     #[inline]
@@ -236,7 +236,7 @@ bitflags! {
 
 #[derive(Copy, Clone, Zeroable)]
 #[repr(C)]
-pub(crate) union PdEntry {
+pub union PdEntry {
     node: NodeEntry,
     leaf: PdLeafEntry,
 }
@@ -262,7 +262,7 @@ impl PdEntry {
     #[inline]
     pub const fn kind(self) -> UnionEntry<NodeEntry, PdLeafEntry> {
         unsafe {
-            if mem::transmute::<Self, usize>(self) & NODE_IS_LEAF != 0 {
+            if mem::transmute::<Self, usize>(self) & UNION_IS_LEAF != 0 {
                 UnionEntry::Leaf(self.leaf)
             } else {
                 UnionEntry::Node(self.node)
@@ -289,13 +289,13 @@ impl PdEntry {
 
 #[derive(Zeroable)]
 #[repr(C, align(4096))]
-pub(crate) struct PtTable {
+pub struct PtTable {
     pub phys_pages: [PtEntry; PAGE_SIZE / size_of::<PtEntry>()],
 }
 
 #[derive(Debug, Copy, Clone, Zeroable)]
 #[repr(transparent)]
-pub(crate) struct PtEntry(usize);
+pub struct PtEntry(usize);
 impl PtEntry {
     #[inline]
     pub const fn new(entry: Entry, addr: PAddr) -> Self {

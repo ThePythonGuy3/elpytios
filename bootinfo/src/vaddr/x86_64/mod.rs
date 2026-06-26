@@ -1,6 +1,6 @@
 mod phys;
 mod virt;
-pub use phys::*;
+pub(crate) use phys::*;
 pub use virt::*;
 
 use crate::PAGE_SIZE;

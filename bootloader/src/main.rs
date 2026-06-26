@@ -8,7 +8,7 @@ use core::{arch::naked_asm, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion, paddr::PAddr, vaddr::{VAddr, VFlags, VirtualMapBuilder, VirtualMapper}};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion, paddr::PAddr, vaddr::{VAddr, VFlags, VirtualMapBuilder, VirtualMapper2}};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
 
 const PAGE_SIZE: usize = 4096;
@@ -74,7 +74,7 @@ const KERNEL_VIRTUAL_FREE: usize = const {
 const KERNEL_STACK_PAGES: usize = 8;
 
 struct Mapper;
-unsafe impl VirtualMapper for Mapper {
+unsafe impl VirtualMapper2 for Mapper {
     #[inline]
     fn new_page_table(&self) -> Option<PAddr> {
         boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).ok().map(|ptr| {
