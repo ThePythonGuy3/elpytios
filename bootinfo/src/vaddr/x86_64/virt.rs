@@ -157,9 +157,9 @@ unsafe impl sealed::VirtualMapper for LocalMapper {
     }
 
     #[inline]
-    fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable {
+    unsafe fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable {
         unsafe {
-            (self.page_table_ptr)(self.table.pdpt_entries[pml4_index].child_addr())
+            (self.page_table_ptr)(self.table.pdpt_entries.get(pml4_index).unwrap_unchecked().child_addr())
                 .cast::<PdptTable>()
                 .as_mut_unchecked()
         }
@@ -168,7 +168,7 @@ unsafe impl sealed::VirtualMapper for LocalMapper {
     #[inline]
     unsafe fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
         unsafe {
-            (self.page_table_ptr)(match self.pdpt(pml4_index).pd_entries[pdpt_index].kind() {
+            (self.page_table_ptr)(match self.pdpt(pml4_index).pd_entries.get(pdpt_index).unwrap_unchecked().kind() {
                 UnionEntry::Node(e) => e.child_addr(),
                 UnionEntry::Leaf(..) => unreachable_unchecked(),
             })
@@ -180,7 +180,7 @@ unsafe impl sealed::VirtualMapper for LocalMapper {
     #[inline]
     unsafe fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
         unsafe {
-            (self.page_table_ptr)(match self.pd(pml4_index, pdpt_index).pt_entries[pd_index].kind() {
+            (self.page_table_ptr)(match self.pd(pml4_index, pdpt_index).pt_entries.get(pd_index).unwrap_unchecked().kind() {
                 UnionEntry::Node(e) => e.child_addr(),
                 UnionEntry::Leaf(..) => unreachable_unchecked(),
             })
@@ -279,14 +279,18 @@ mod sealed {
 
         fn pml4(&mut self) -> &mut Pml4Table;
 
-        fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable;
+        /// # Safety
+        /// - [`pml4_index`] must be within `0..512` (exclusive).
+        unsafe fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable;
 
         /// # Safety:
         /// - [`Self::pdpt()`] to the given indices must return a node entry, not leaf.
+        /// - [`pml4_index`] and [`pdpt_index`] must be within `0..512` (exclusive).
         unsafe fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable;
 
         /// # Safety:
         /// - [`Self::pd()`] to the given indices must return a node entry, not leaf.
+        /// - [`pml4_index`], [`pdpt_index`], and [`pd_index`] must be within `0..512` (exclusive).
         unsafe fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable;
     }
 
@@ -330,7 +334,7 @@ mod sealed {
         }
 
         #[inline]
-        fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable {
+        unsafe fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable {
             unsafe {
                 VAddr::from_info(VAddrInfo {
                     page_offset: 0, // Stop recursing at PT index so it ends up with the PDPT entry

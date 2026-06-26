@@ -87,7 +87,7 @@ pub struct MemoryRegion {
 pub struct BootInfo {
     pub graphics_info:        GraphicsInfo,
     pub virtual_map:          VirtualMap,
-    /// Leftover identity-mapping from the bootloader
+    /// Leftover identity-mapping from the bootloader, to be unmapped by the kernel
     pub switcher_map:         VAddr,
 
     pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
