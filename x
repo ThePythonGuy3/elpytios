@@ -300,7 +300,6 @@ def run_qemu(args):
             "--bin", "elpytios-kernel",
             "--target", "x86_64-unknown-none",
             "--profile", profile,
-            
         ],
         cwd=root,
         stdout=None,
