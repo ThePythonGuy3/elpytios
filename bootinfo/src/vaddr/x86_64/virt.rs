@@ -1,4 +1,4 @@
-use core::{fmt, hint::unreachable_unchecked};
+use core::{cell::RefCell, fmt, hint::unreachable_unchecked, ops::DerefMut};
 
 use bytemuck::Zeroable;
 
@@ -100,7 +100,7 @@ impl VirtualMapBuilder {
         Self {
             map: VirtualMap {
                 mapper: LocalMapper {
-                    table: bytemuck::zeroed(),
+                    table: RefCell::new(bytemuck::zeroed()),
                     page_table_ptr,
                     recursion_index,
                 },
@@ -121,13 +121,13 @@ impl VirtualMapBuilder {
         } = self;
 
         let pml4_phys = (new_page_table)().ok_or(VirtualMapError::PageTable)?;
-        match mapper.table.pdpt_entries[mapper.recursion_index] {
+        match mapper.table.get_mut().pdpt_entries[mapper.recursion_index] {
             e if e.is_present() => unreachable!("`recursion_index` is checked in earlier methods"),
             ref mut e => *e = unsafe { NodeEntry::new(Entry::WRITABLE, pml4_phys) },
         }
 
         unsafe {
-            (mapper.page_table_ptr)(pml4_phys).cast::<Pml4Table>().write(mapper.table);
+            (mapper.page_table_ptr)(pml4_phys).cast::<Pml4Table>().write(mapper.table.into_inner());
         }
 
         Ok((pml4_phys, VirtualMap {
@@ -139,7 +139,7 @@ impl VirtualMapBuilder {
 #[derive(Debug)]
 #[repr(C)]
 pub struct LocalMapper {
-    table: Pml4Table,
+    table: RefCell<Pml4Table>,
     page_table_ptr: unsafe fn(PAddr) -> *mut (),
     recursion_index: usize,
 }
@@ -152,21 +152,21 @@ unsafe impl sealed::VirtualMapper for LocalMapper {
     }
 
     #[inline]
-    fn pml4(&mut self) -> &mut Pml4Table {
-        &mut self.table
+    fn pml4(&self) -> impl DerefMut<Target = Pml4Table> {
+        self.table.borrow_mut()
     }
 
     #[inline]
-    unsafe fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable {
+    unsafe fn pdpt(&self, pml4_index: usize) -> &mut PdptTable {
         unsafe {
-            (self.page_table_ptr)(self.table.pdpt_entries.get(pml4_index).unwrap_unchecked().child_addr())
+            (self.page_table_ptr)(self.table.borrow_mut().pdpt_entries.get(pml4_index).unwrap_unchecked().child_addr())
                 .cast::<PdptTable>()
                 .as_mut_unchecked()
         }
     }
 
     #[inline]
-    unsafe fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
+    unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
         unsafe {
             (self.page_table_ptr)(match self.pdpt(pml4_index).pd_entries.get(pdpt_index).unwrap_unchecked().kind() {
                 UnionEntry::Node(e) => e.child_addr(),
@@ -178,7 +178,7 @@ unsafe impl sealed::VirtualMapper for LocalMapper {
     }
 
     #[inline]
-    unsafe fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
+    unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
         unsafe {
             (self.page_table_ptr)(match self.pd(pml4_index, pdpt_index).pt_entries.get(pd_index).unwrap_unchecked().kind() {
                 UnionEntry::Node(e) => e.child_addr(),
@@ -203,8 +203,10 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
     ///   that is:
     ///   - Completely zeroed out.
     ///   - Completely free to be written to (nothing else "owns" it).
+    /// - There must never be concurrent (multithreaded) calls to this method that have the same
+    ///   virtual page occupied by `v_addr`.
     pub unsafe fn map(
-        &mut self,
+        &self,
         p_addr: PAddr,
         v_addr: VAddr,
         flags: VFlags,
@@ -277,21 +279,21 @@ mod sealed {
             false
         }
 
-        fn pml4(&mut self) -> &mut Pml4Table;
+        fn pml4(&self) -> impl DerefMut<Target = Pml4Table>;
 
         /// # Safety
         /// - [`pml4_index`] must be within `0..512` (exclusive).
-        unsafe fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable;
+        unsafe fn pdpt(&self, pml4_index: usize) -> &mut PdptTable;
 
         /// # Safety:
         /// - [`Self::pdpt()`] to the given indices must return a node entry, not leaf.
         /// - [`pml4_index`] and [`pdpt_index`] must be within `0..512` (exclusive).
-        unsafe fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable;
+        unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable;
 
         /// # Safety:
         /// - [`Self::pd()`] to the given indices must return a node entry, not leaf.
         /// - [`pml4_index`], [`pdpt_index`], and [`pd_index`] must be within `0..512` (exclusive).
-        unsafe fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable;
+        unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable;
     }
 
     #[derive(Debug)]
@@ -319,7 +321,7 @@ mod sealed {
         }
 
         #[inline]
-        fn pml4(&mut self) -> &mut Pml4Table {
+        fn pml4(&self) -> impl DerefMut<Target = Pml4Table> {
             unsafe {
                 VAddr::from_info(VAddrInfo {
                     page_offset: 0, // Keep recursing so it ends up with the PML4 table itself
@@ -334,7 +336,7 @@ mod sealed {
         }
 
         #[inline]
-        unsafe fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable {
+        unsafe fn pdpt(&self, pml4_index: usize) -> &mut PdptTable {
             unsafe {
                 VAddr::from_info(VAddrInfo {
                     page_offset: 0, // Stop recursing at PT index so it ends up with the PDPT entry
@@ -349,7 +351,7 @@ mod sealed {
         }
 
         #[inline]
-        unsafe fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
+        unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
             unsafe {
                 VAddr::from_info(VAddrInfo {
                     page_offset: 0, // Stop recursing at PD index so it ends up with the PD entry
@@ -364,7 +366,7 @@ mod sealed {
         }
 
         #[inline]
-        unsafe fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
+        unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
             unsafe {
                 VAddr::from_info(VAddrInfo {
                     page_offset: 0, // Stop recursing at PDPT index so it ends up with the PT entry

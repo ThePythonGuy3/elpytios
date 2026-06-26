@@ -48,7 +48,7 @@ pub mod vaddr {
 use bitflags::bitflags;
 use derive_more::Display;
 
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, slice};
 
 use paddr::PAddr;
 use vaddr::{VAddr, VirtualMap};
@@ -94,4 +94,16 @@ pub struct BootInfo {
     pub memory_regions_size:  usize,
     pub v_addr_start:         VAddr,
     pub v_addr_end:           VAddr,
+}
+
+impl BootInfo {
+    #[inline]
+    pub fn memory_regions(&self) -> &[MemoryRegion] {
+        unsafe { slice::from_raw_parts(&raw const self.memory_regions_base as _, self.memory_regions_size) }
+    }
+
+    #[inline]
+    pub fn v_addr_range(&self) -> [VAddr; 2] {
+        [self.v_addr_start, self.v_addr_end]
+    }
 }

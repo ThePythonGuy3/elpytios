@@ -27,6 +27,13 @@ SECTIONS
         __rodata_end = .;
     } :rodata
 
+    .bootinfo (NOLOAD) : ALIGN(4K)
+    {
+        __bootinfo_start = .;
+        KEEP(*(.bootinfo))
+        __bootinfo_end = .;
+    } :rodata
+
     .data : ALIGN(4K)
     {
         __data_start = .;
@@ -40,13 +47,6 @@ SECTIONS
         *(.bss .bss.*)
         *(COMMON)
         __bss_end = .;
-    } :data
-
-    .bootinfo (NOLOAD) : ALIGN(4K)
-    {
-        __bootinfo_start = .;
-        KEEP(*(.bootinfo))
-        __bootinfo_end = .;
     } :data
 
     __kernel_end = .;

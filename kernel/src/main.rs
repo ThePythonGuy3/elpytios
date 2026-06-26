@@ -7,7 +7,7 @@
 use core::{arch::naked_asm, fmt::Write, panic::PanicInfo};
 
 use elpytios_bootinfo::PAGE_SIZE;
-use elpytios_kernel::{boot, rendering::DisplayWriter};
+use elpytios_kernel::{boot_info, rendering::DisplayWriter};
 
 #[panic_handler]
 fn hanic_pandler(_info: &PanicInfo) -> ! {
@@ -45,14 +45,14 @@ unsafe extern "sysv64" fn main() -> ! {
     pause();
 
     let mut display_writer = DisplayWriter {
-        graphics_info: boot::graphics_info(),
+        graphics_info: &boot_info().graphics_info,
         line: 0,
         col: 0,
     };
 
     writeln!(&mut display_writer, "Hello World from the Kernel, calling at address {:p}!!!!", main as *const ()).unwrap();
 
-    let regions = boot::memory_regions();
+    let regions = boot_info().memory_regions();
     writeln!(&mut display_writer, "Found {} usable physical memory regions!", regions.len()).unwrap();
     for region in regions {
         writeln!(
@@ -64,7 +64,7 @@ unsafe extern "sysv64" fn main() -> ! {
         ).unwrap();
     }
 
-    let [virt_start, virt_end] = boot::v_addr_range();
+    let [virt_start, virt_end] = boot_info().v_addr_range();
     writeln!(&mut display_writer, "Higher-half virtual addressing available in range {virt_start}..{virt_end}").unwrap();
 
     loop {}
