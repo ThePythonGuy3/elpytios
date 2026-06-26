@@ -112,7 +112,6 @@ struct UefiInfo {
     pub memory_map:         MemoryMapOwned,
     pub pml4_phys:          PAddr,
 
-    //pub boot_info:          VAddr,
     pub kernel_stack_base:  VAddr,
     pub kernel_entry:       VAddr,
 }
