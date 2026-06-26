@@ -1,6 +1,5 @@
 [unstable]
 codegen-backend = true
-profile-rustflags = true
 json-target-spec = true
 
 [build]
