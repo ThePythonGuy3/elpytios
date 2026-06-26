@@ -202,7 +202,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 virtual_map.map(
                     PAddr::new(unsafe { kernel_ptr.add(segment.virtual_address as usize - virtual_base).addr() } + i),
                     VAddr::new(segment.virtual_address as usize + i),
-                    match segment.flags.contains(ElfProgramFlags::WRITABLE) {
+                    VFlags::GLOBAL | match segment.flags.contains(ElfProgramFlags::WRITABLE) {
                         false => VFlags::empty(),
                         true => VFlags::WRITABLE,
                     },
@@ -225,7 +225,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 virtual_map.map(
                     PAddr::new(p_addr.addr() + offset),
                     VAddr::new(v_addr + offset),
-                    flags,
+                    VFlags::GLOBAL | flags,
                 ).unwrap_or_else(|e| panic!("{e}"));
             }
 
