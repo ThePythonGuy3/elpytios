@@ -15,8 +15,7 @@ const PAGE_SIZE: usize = 4096;
 
 const ELPYTI_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
 const ELPYTI_KERNEL_STACK: MemoryType = MemoryType::custom(0x8000_0001);
-const ELPYTI_BOOT_INFO:    MemoryType = MemoryType::custom(0x8000_0002);
-const ELPYTI_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0003);
+const ELPYTI_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0002);
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
@@ -50,8 +49,36 @@ const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
     unsafe { out.assume_init() }
 };
 
-/// New virtual addresses can take this spot
-const KERNEL_VIRTUAL_FREE: usize = const {
+const KERNEL_BOOTINFO_ADDRESS: usize = {
+    let mut ret = 0;
+    for section in KERNEL_BINARY.sections() {
+        let section = match section {
+            Ok(section) => section,
+            Err(e) => concat_panic!(e),
+        };
+
+        if section.name(&KERNEL_BINARY) == b".bootinfo" {
+            ret = match usize::try_from(section.virtual_address) {
+                Ok(max) => max.next_multiple_of(PAGE_SIZE),
+                _ => concat_panic!("Integer doesn't fit: ", section.virtual_address),
+            };
+            break
+        }
+    }
+
+    if ret == 0 {
+        panic!("`.bootinfo` section not found")
+    } else if ret % PAGE_SIZE != 0 {
+        concat_panic!("`.bootinfo` section not aligned: ", ret)
+    } else {
+        ret
+    }
+};
+
+/// Index 0: Lowest virtual address of the kernel.
+/// Index 1: New virtual addresses can take this spot.
+const KERNEL_VIRTUAL_ADDRESSES: [usize; 2] = {
+    let mut min = u64::MAX;
     let mut max = u64::MIN;
 
     let mut i = 0;
@@ -59,14 +86,22 @@ const KERNEL_VIRTUAL_FREE: usize = const {
         let segment = KERNEL_SEGMENTS[i];
         if segment.segment_type != ElfSegmentType::Load { continue }
 
+        min = min.min(segment.virtual_address);
         max = max.max(segment.virtual_address + segment.memory_size);
 
         i += 1;
         if i == KERNEL_SEGMENTS.len() { break }
     }
 
-    match usize::try_from(max) {
-        Ok(max) => max.next_multiple_of(PAGE_SIZE),
+    match (usize::try_from(min), usize::try_from(max)) {
+        (Ok(min), Ok(max)) => [
+            if min % PAGE_SIZE == 0 {
+                min
+            } else {
+                concat_panic!("Virtual address base (", min, ") isn't aligned to ", PAGE_SIZE)
+            },
+            max.next_multiple_of(PAGE_SIZE)
+        ],
         _ => concat_panic!("Integer doesn't fit: ", max),
     }
 };
@@ -77,7 +112,7 @@ struct UefiInfo {
     pub memory_map:         MemoryMapOwned,
     pub pml4_phys:          PAddr,
 
-    pub boot_info:          VAddr,
+    //pub boot_info:          VAddr,
     pub kernel_stack_base:  VAddr,
     pub kernel_entry:       VAddr,
 }
@@ -87,7 +122,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
     let pml4_phys:          PAddr;
 
     let boot_info_ptr:     *mut BootInfo;
-    let boot_info:          VAddr;
     let kernel_stack_base:  VAddr;
     let kernel_entry:       VAddr;
     
@@ -151,17 +185,23 @@ fn setup_uefi_and_exit() -> UefiInfo {
             )
         };
 
+        let [virtual_base, mut next_v_addr] = KERNEL_VIRTUAL_ADDRESSES;
+        let kernel_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_CODE, (next_v_addr - virtual_base) / PAGE_SIZE).unwrap().as_ptr();
         for segment in KERNEL_SEGMENTS {
             if segment.segment_type != ElfSegmentType::Load { continue }
-            let segment_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_CODE, (segment.memory_size as usize).div_ceil(PAGE_SIZE)).unwrap().as_ptr();
             unsafe {
-                segment_ptr.copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
-                segment_ptr.add(segment.data.len()).write_bytes(0, segment.memory_size as usize - segment.data.len());
+                kernel_ptr
+                    .add(segment.virtual_address as usize - virtual_base)
+                    .copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
+
+                kernel_ptr
+                    .add(segment.virtual_address as usize - virtual_base + segment.data.len())
+                    .add(segment.data.len()).write_bytes(0, segment.memory_size as usize - segment.data.len());
             }
 
             for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
                 virtual_map.map(
-                    PAddr::new(segment_ptr.addr() + i),
+                    PAddr::new(unsafe { kernel_ptr.add(segment.virtual_address as usize - virtual_base).addr() } + i),
                     VAddr::new(segment.virtual_address as usize + i),
                     match segment.flags.contains(ElfProgramFlags::WRITABLE) {
                         false => VFlags::empty(),
@@ -177,7 +217,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
         assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
         virtual_map.map(PAddr::new(switcher_addr), VAddr::new(switcher_addr), VFlags::empty()).unwrap_or_else(|e| panic!("{e}"));
 
-        let mut next_v_addr = KERNEL_VIRTUAL_FREE;
         let mut next_v_addr = |p_addr: PAddr, page_count: usize, flags: VFlags| {
             let v_addr = next_v_addr;
             next_v_addr += page_count * PAGE_SIZE;
@@ -221,14 +260,10 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size,
         };
 
-        // Map the boot information passed to the kernel
-        let boot_info_page_len = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
-        boot_info_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_BOOT_INFO, boot_info_page_len).unwrap().as_ptr().cast();
-        boot_info = next_v_addr(PAddr::new(boot_info_ptr.addr()), boot_info_page_len, VFlags::empty());
-
         let (pml4_phys_ret, virtual_map) = virtual_map.finish().unwrap();
         pml4_phys = pml4_phys_ret;
         unsafe {
+            boot_info_ptr = kernel_ptr.add(KERNEL_BOOTINFO_ADDRESS - virtual_base).cast();
             boot_info_ptr.write(BootInfo {
                 graphics_info,
                 virtual_map,
@@ -266,7 +301,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
         memory_map,
         pml4_phys,
 
-        boot_info,
         kernel_stack_base,
         kernel_entry,
     }
@@ -276,22 +310,20 @@ fn setup_uefi_and_exit() -> UefiInfo {
 #[unsafe(naked)]
 unsafe extern "sysv64" fn switch_to_kernel(
     pml4_phys: usize,
-    boot_info: usize,
     stack_base: usize,
     kernel_entry: usize,
 ) -> ! {
     naked_asm!(
         "mov cr3, rdi",
-        "lea rsp, [rdx - 8]",
-        "mov rdi, rsi",
-        "jmp rcx",
+        "lea rsp, [rsi - 8]",
+        "jmp rdx",
     )
 }
 
 #[entry]
 fn entry() -> Status {
-    let UefiInfo { memory_map, pml4_phys, boot_info, kernel_stack_base, kernel_entry } = setup_uefi_and_exit();
+    let UefiInfo { memory_map, pml4_phys, kernel_stack_base, kernel_entry } = setup_uefi_and_exit();
     unsafe {
-        switch_to_kernel(pml4_phys.addr(), boot_info.addr(), kernel_stack_base.addr(), kernel_entry.addr())
+        switch_to_kernel(pml4_phys.addr(), kernel_stack_base.addr(), kernel_entry.addr())
     }
 }

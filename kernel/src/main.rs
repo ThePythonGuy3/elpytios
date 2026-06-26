@@ -6,7 +6,7 @@
 
 use core::{arch::naked_asm, fmt::Write, panic::PanicInfo};
 
-use elpytios_bootinfo::{BootInfo, PAGE_SIZE};
+use elpytios_bootinfo::PAGE_SIZE;
 use elpytios_kernel::rendering::DisplayWriter;
 
 #[panic_handler]
@@ -33,26 +33,26 @@ fn pause() {
 
 #[unsafe(naked)]
 #[unsafe(export_name = "_start")]
-unsafe extern "sysv64" fn jump_from_bootloader(boot_info: &'static BootInfo) -> ! {
+unsafe extern "sysv64" fn jump_from_bootloader() -> ! {
     naked_asm!(
         "jmp {main}",
         main = sym main
     )
 }
 
-unsafe extern "sysv64" fn main(boot_info: &'static BootInfo) -> ! {
+unsafe extern "sysv64" fn main() -> ! {
     #[cfg(debug_assertions)]
     pause();
 
     let mut display_writer = DisplayWriter {
-        graphics_info: &boot_info.graphics_info,
+        graphics_info: elpytios_kernel::graphics_info(),
         line: 0,
         col: 0,
     };
 
     writeln!(&mut display_writer, "Hello World from the Kernel, calling at address {:p}!!!!", main as *const ()).unwrap();
 
-    let [region, regions @ ..] = boot_info.memory_regions() else {
+    let [region, regions @ ..] = elpytios_kernel::memory_regions() else {
         panic!("No usable RAM")
     };
     let mut region = *region;

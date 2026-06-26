@@ -5,17 +5,17 @@
 //!     let kernel_code = include_bytes!("../Cargo.toml");
 //!
 //!     match Elf::from_bytes(kernel_code)? {
-//!        Elf::N32 => unreachable!("kernel ELF is 64-bits, silly"),
-//!        Elf::N64(elf) => {
-//!          for segment in elf {
-//!               let segment = segment?;
+//!         Elf::N32(..) => unreachable!("kernel ELF is 64-bits, silly"),
+//!         Elf::N64(elf) => {
+//!             for segment in elf {
+//!                 let segment = segment?;
 //!
 //!                 segment.segment_type;     // `ElfSegmentType`: null, load, dynamic, interp, and note
-//!                 segment.segment_data;     // `&[u8]`, program segment data
+//!                 segment.data;             // `&[u8]`, program segment data
 //!                 segment.flags;            // `ElfProgramFlags`: 1 = executable, 2 = writable, 4 = readable
-//!              segment.virtual_address;  // `usize`, virtual address that `segment_data` should be copied into
+//!                 segment.virtual_address;  // `usize`, virtual address that `segment_data` should be copied into
 //!                 segment.physical_address; // `usize`, physical address that `segment_data` could be copied into, usually ignored
-//!              segment.memory_size;      // `usize`, space size allocated in `virtual_address` (can be > `segment_data.len()`), zero-initialized
+//!                 segment.memory_size;      // `usize`, space size allocated in `virtual_address` (can be > `segment_data.len()`), zero-initialized
 //!                 segment.alignment;        // `usize`, ensures that `virtual_address` and `physical_address` are multiples of this value
 //!             }
 //!         }
@@ -31,6 +31,7 @@
     const_cmp,
     const_convert,
     const_destruct,
+    const_index,
     const_iter,
     const_option_ops,
     const_trait_impl,
@@ -48,6 +49,8 @@ use bytemuck::AnyBitPattern;
 use const_panic::PanicFmt;
 use sys::{ElfHeader64, ElfHeaderPrologue, ElfProgramFlags, ElfProgramHeader64};
 
+use crate::sys::ElfSectionHeader64;
+
 #[derive(Debug, Clone, Copy, PanicFmt)]
 pub enum ElfError {
     InvalidMagic([u8; 4]),
@@ -55,6 +58,7 @@ pub enum ElfError {
     InvalidEndian(u8),
     InvalidSegmentType(u32),
     IntDoesntFit,
+    MissingStringTable,
     Eof,
 }
 
@@ -104,6 +108,7 @@ pub struct Elf64<'a> {
     file_reader: Reader<'a>,
     program_table_reader: Reader<'a>,
     section_table_reader: Reader<'a>,
+    string_table: ElfSection64<'a>,
 }
 
 impl<'a> Elf64<'a> {
@@ -112,11 +117,31 @@ impl<'a> Elf64<'a> {
         let program_table_reader = file_reader.fork(int_fit(header.program_header_table_offset)?).ok_or(ElfError::Eof)?;
         let section_table_reader = file_reader.fork(int_fit(header.section_header_table_offset)?).ok_or(ElfError::Eof)?;
 
+        let string_table;
+        let mut sections = Elf64Sections {
+            len: header.section_header_entry_len,
+            stride: header.section_header_entry_size,
+            file_reader: file_reader.clone(),
+            section_table_reader: section_table_reader.clone(),
+        };
+
+        let mut i = 0;
+        loop {
+            let Some(section) = sections.next() else { return Err(ElfError::MissingStringTable) };
+            if i == header.section_header_string_table_index {
+                string_table = section?;
+                break
+            } else {
+                i += 1
+            }
+        }
+
         Ok(Self {
             header,
             file_reader,
             program_table_reader,
             section_table_reader,
+            string_table,
         })
     }
 
@@ -133,9 +158,20 @@ impl<'a> Elf64<'a> {
     #[inline]
     pub const fn program_segments(&self) -> Elf64Programs<'_> {
         Elf64Programs {
-            header: self.header,
+            len: self.header.program_header_entry_len,
+            stride: self.header.program_header_entry_size,
             file_reader: self.file_reader.clone(),
             program_table_reader: self.program_table_reader.clone(),
+        }
+    }
+
+    #[inline]
+    pub const fn sections(&self) -> Elf64Sections<'_> {
+        Elf64Sections {
+            len: self.header.section_header_entry_len,
+            stride: self.header.section_header_entry_size,
+            file_reader: self.file_reader.clone(),
+            section_table_reader: self.section_table_reader.clone(),
         }
     }
 }
@@ -148,13 +184,15 @@ const impl Clone for Elf64<'_> {
             file_reader: self.file_reader.clone(),
             program_table_reader: self.program_table_reader.clone(),
             section_table_reader: self.section_table_reader.clone(),
+            string_table: self.string_table.clone(),
         }
     }
 }
 
 #[derive(Debug)]
 pub struct Elf64Programs<'a> {
-    header: ElfHeader64,
+    len: u16,
+    stride: u16,
     file_reader: Reader<'a>,
     program_table_reader: Reader<'a>,
 }
@@ -163,13 +201,13 @@ const impl<'a> Iterator for Elf64Programs<'a> {
     type Item = Result<ElfSegment64<'a>, ElfError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.header.program_header_entry_len = self.header.program_header_entry_len.checked_sub(1)?;
+        self.len = self.len.checked_sub(1)?;
 
         let program_header = self.program_table_reader.clone().read::<ElfProgramHeader64>()?;
-        self.program_table_reader.take(self.header.program_header_entry_size as usize);
+        self.program_table_reader.take(self.stride as usize);
 
         Some(try {
-            let segment_data = self
+            let data = self
                 .file_reader
                 .fork(int_fit(program_header.segment_offset)?)
                 .ok_or(ElfError::Eof)?
@@ -188,7 +226,7 @@ const impl<'a> Iterator for Elf64Programs<'a> {
                     7 => ElfSegmentType::Tls,
                     n => ElfSegmentType::Unknown(n),
                 },
-                data: segment_data,
+                data,
                 flags: program_header.flags,
                 virtual_address: program_header.segment_virtual_address,
                 physical_address: program_header.segment_physical_address,
@@ -200,7 +238,7 @@ const impl<'a> Iterator for Elf64Programs<'a> {
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.header.program_header_entry_len as usize;
+        let len = self.len as usize;
         (len, Some(len))
     }
 }
@@ -208,22 +246,22 @@ const impl<'a> Iterator for Elf64Programs<'a> {
 impl ExactSizeIterator for Elf64Programs<'_> {
     #[inline]
     fn len(&self) -> usize {
-        self.header.program_header_entry_len as usize
+        self.len as usize
     }
 }
 
 impl FusedIterator for Elf64Programs<'_> {}
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct ElfSegment64<'a> {
     pub segment_type: ElfSegmentType,
     pub data: &'a [u8],
     pub flags: ElfProgramFlags,
-    /// `segment_data` should be copied to this v-address
+    /// [`Self::data`] should be copied to this v-address
     pub virtual_address: u64,
     /// Ignored on most cases, except for kernel-related barebones programs
     pub physical_address: u64,
-    /// If greater than `segment_data.len()`, then zero-fill the memory
+    /// If greater than `data.len()`, then zero-fill the memory
     pub memory_size: u64,
     /// virtual_address % alignment == physical_address % alignment == 0
     pub alignment: u64,
@@ -268,6 +306,87 @@ const impl PartialEq for ElfSegmentType {
             | (Self::Tls, Self::Tls) => true,
             (Self::Unknown(l), Self::Unknown(r)) if l == r => true,
             _ => false,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Elf64Sections<'a> {
+    len: u16,
+    stride: u16,
+    file_reader: Reader<'a>,
+    section_table_reader: Reader<'a>,
+}
+
+const impl<'a> Iterator for Elf64Sections<'a> {
+    type Item = Result<ElfSection64<'a>, ElfError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.len = self.len.checked_sub(1)?;
+
+        let section_header = self.section_table_reader.clone().read::<ElfSectionHeader64>()?;
+        self.section_table_reader.take(self.stride as usize);
+
+        Some(try {
+            let data = self
+                .file_reader
+                .fork(int_fit(section_header.file_offset)?)
+                .ok_or(ElfError::Eof)?
+                .take(int_fit(section_header.size)?)
+                .ok_or(ElfError::Eof)?;
+
+            ElfSection64 {
+                name_offset: section_header.name_offset as usize,
+                data,
+                virtual_address: section_header.virtual_address,
+            }
+        })
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len as usize;
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for Elf64Sections<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.len as usize
+    }
+}
+
+impl FusedIterator for Elf64Sections<'_> {}
+
+#[derive(Debug, Copy)]
+pub struct ElfSection64<'a> {
+    pub name_offset: usize,
+    pub data: &'a [u8],
+    pub virtual_address: u64,
+}
+
+impl<'a> ElfSection64<'a> {
+    #[inline]
+    pub const fn name(&self, elf: &Elf64<'a>) -> &'a [u8] {
+        let start = self.name_offset;
+        let mut end = start;
+
+        while end < elf.string_table.data.len() && elf.string_table.data[end] != 0 {
+            end += 1
+        }
+
+        &elf.string_table.data[start..end]
+    }
+}
+
+const impl Clone for ElfSection64<'_> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            name_offset: self.name_offset,
+            data: self.data,
+            virtual_address: self.virtual_address,
         }
     }
 }

@@ -36,4 +36,11 @@ def main():
     subprocess.run([real_rustc, *rustc_args], close_fds=False, shell=False, check=True)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except subprocess.CalledProcessError as e:
+        if (err := e.stderr):
+            print(err)
+        exit(1)
+    except:
+        exit(1)
