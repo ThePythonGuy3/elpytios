@@ -54,7 +54,7 @@ impl VAddr {
     ) -> Self {
         let addr =
             page_offset & 0xfff | (pt_index & 0x1ff) << 12 | (pd_index & 0x1ff) << 21 | (pdpt_index & 0x1ff) << 30 | (pml4_index & 0x1ff) << 39;
-        Self(((addr as isize) << 16 >> 16) as usize)
+        Self((addr.cast_signed() << 16 >> 16).cast_unsigned())
     }
 }
 
