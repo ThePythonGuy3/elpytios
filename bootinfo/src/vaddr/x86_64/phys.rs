@@ -1,7 +1,3 @@
-//! Tables to be put inside the virtual memory register. Works with physical addresses; cannot be
-//! accessed directly once virtualization isn't identity anymore.
-//! See the `virt` module.
-
 use core::{fmt, mem};
 
 use bitflags::bitflags;

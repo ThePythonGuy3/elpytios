@@ -8,7 +8,7 @@ use core::{arch::naked_asm, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion, paddr::PAddr, vaddr::{VAddr, VFlags, VirtualMapBuilder, VirtualMapper2}};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion, paddr::PAddr, vaddr::{VAddr, VFlags, VirtualMapBuilder}};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
 
 const PAGE_SIZE: usize = 4096;
@@ -73,23 +73,6 @@ const KERNEL_VIRTUAL_FREE: usize = const {
 
 const KERNEL_STACK_PAGES: usize = 8;
 
-struct Mapper;
-unsafe impl VirtualMapper2 for Mapper {
-    #[inline]
-    fn new_page_table(&self) -> Option<PAddr> {
-        boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).ok().map(|ptr| {
-            let ptr = ptr.as_ptr();
-            unsafe { ptr.write_bytes(0, PAGE_SIZE) }
-            PAddr::new(ptr.addr())
-        })
-    }
-
-    #[inline]
-    unsafe fn page_table_ptr(&self, p_addr: PAddr) -> *mut () {
-        p_addr.addr() as *mut ()
-    }
-}
-
 struct UefiInfo {
     pub memory_map:         MemoryMapOwned,
     pub pml4_phys:          PAddr,
@@ -153,7 +136,21 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let pixel_format       = mode_info.pixel_format();
         let frame_buffer_ptr   = frame_buffer.as_mut_ptr();
 
-        let mut virt_mapper = VirtualMapBuilder::new(Mapper, 510); // 511 used for higher-half addressing
+        let mut virtual_map = unsafe {
+            VirtualMapBuilder::new(
+                // 511 used for higher-half addressing
+                510,
+                // Allocate 1 page via UEFI's allocator
+                || boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).ok().map(|ptr| {
+                    let ptr = ptr.as_ptr();
+                    ptr.write_bytes(0, PAGE_SIZE);
+                    PAddr::new(ptr.addr())
+                }),
+                // Identity mapping is still enabled at this point
+                |ptr| ptr.addr() as *mut (),
+            )
+        };
+
         for segment in KERNEL_SEGMENTS {
             if segment.segment_type != ElfSegmentType::Load { continue }
             let segment_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_CODE, (segment.memory_size as usize).div_ceil(PAGE_SIZE)).unwrap().as_ptr();
@@ -163,7 +160,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
 
             for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
-                virt_mapper.map(
+                virtual_map.map(
                     PAddr::new(segment_ptr.addr() + i),
                     VAddr::new(segment.virtual_address as usize + i),
                     match segment.flags.contains(ElfProgramFlags::WRITABLE) {
@@ -178,7 +175,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         // Identity-map the kernel switcher
         let switcher_addr = (switch_to_kernel as *const ()).addr();
         assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
-        virt_mapper.map(PAddr::new(switcher_addr), VAddr::new(switcher_addr), VFlags::empty()).unwrap_or_else(|e| panic!("{e}"));
+        virtual_map.map(PAddr::new(switcher_addr), VAddr::new(switcher_addr), VFlags::empty()).unwrap_or_else(|e| panic!("{e}"));
 
         let mut next_v_addr = KERNEL_VIRTUAL_FREE;
         let mut next_v_addr = |p_addr: PAddr, page_count: usize, flags: VFlags| {
@@ -187,7 +184,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
             for i in 0..page_count {
                 let offset = i * PAGE_SIZE;
-                virt_mapper.map(
+                virtual_map.map(
                     PAddr::new(p_addr.addr() + offset),
                     VAddr::new(v_addr + offset),
                     flags,
@@ -229,7 +226,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         boot_info_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_BOOT_INFO, boot_info_page_len).unwrap().as_ptr().cast();
         boot_info = next_v_addr(PAddr::new(boot_info_ptr.addr()), boot_info_page_len, VFlags::empty());
 
-        let (pml4_phys_ret, virtual_map) = virt_mapper.finish().unwrap();
+        let (pml4_phys_ret, virtual_map) = virtual_map.finish().unwrap();
         pml4_phys = pml4_phys_ret;
         unsafe {
             boot_info_ptr.write(BootInfo {

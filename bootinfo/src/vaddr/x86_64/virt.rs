@@ -1,4 +1,4 @@
-use core::fmt;
+use core::{fmt, hint::unreachable_unchecked};
 
 use bytemuck::Zeroable;
 
@@ -82,238 +82,128 @@ impl fmt::Display for VAddr {
 
 #[derive(Debug)]
 #[repr(C)]
-pub struct VirtualMapBuilder<T: VirtualMapper2> {
-    table: Pml4Table,
-    recursion_index: usize,
-    mapper: T,
+pub struct VirtualMapBuilder {
+    map: VirtualMap<LocalMapper>,
+    new_page_table: fn() -> Option<PAddr>,
 }
 
-impl<T: VirtualMapper2> VirtualMapBuilder<T> {
+impl VirtualMapBuilder {
+    /// # Safety
+    /// - `new_page_table` must return a [`PAGE_SIZE`](crate::PAGE_SIZE)-aligned physical address
+    ///   that is:
+    ///   - Completely zeroed out.
+    ///   - Completely free to be written to (nothing else "owns" it).
+    /// - `page_table_ptr` must convert physical addresses returned by `new_page_table` into a
+    ///   pointer that points to a page table.
     #[inline]
-    pub const fn new(mapper: T, recursion_index: usize) -> Self {
+    pub const unsafe fn new(recursion_index: usize, new_page_table: fn() -> Option<PAddr>, page_table_ptr: unsafe fn(PAddr) -> *mut ()) -> Self {
         Self {
-            table: bytemuck::zeroed(),
-            recursion_index,
-            mapper,
+            map: VirtualMap {
+                mapper: LocalMapper {
+                    table: bytemuck::zeroed(),
+                    page_table_ptr,
+                    recursion_index,
+                },
+            },
+            new_page_table,
         }
     }
-}
 
-impl<T: VirtualMapper2> VirtualMapBuilder<T> {
+    #[inline]
     pub fn map(&mut self, p_addr: PAddr, v_addr: VAddr, flags: VFlags) -> Result<(), VirtualMapError> {
-        let VAddrInfo {
-            pt_index,
-            pd_index,
-            pdpt_index,
-            pml4_index,
-            ..
-        } = v_addr.info();
-
-        if pml4_index == self.recursion_index {
-            return Err(VirtualMapError::Reserved { p_addr, v_addr })
-        }
-
-        unsafe {
-            let pdpt = self.mapper.page_table_ptr(
-                match &mut self.table.pdpt_entries[pml4_index] {
-                    e if e.is_present() => e,
-                    e => {
-                        *e = NodeEntry::new(Entry::WRITABLE, self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?);
-                        e
-                    }
-                }
-                .child_addr(),
-            ) as *mut PdptTable;
-            let pd = self.mapper.page_table_ptr(
-                match &mut (*pdpt).pd_entries[pdpt_index] {
-                    e if e.is_present()
-                        && let UnionEntry::Node(e) = e.kind() =>
-                    {
-                        e
-                    }
-                    e => {
-                        *e = PdptEntry::node(NodeEntry::new(
-                            Entry::WRITABLE,
-                            self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
-                        ));
-                        e.kind().force_node()
-                    }
-                }
-                .child_addr(),
-            ) as *mut PdTable;
-            let pt = self.mapper.page_table_ptr(
-                match &mut (*pd).pt_entries[pd_index] {
-                    e if e.is_present()
-                        && let UnionEntry::Node(e) = e.kind() =>
-                    {
-                        e
-                    }
-                    e => {
-                        *e = PdEntry::node(NodeEntry::new(
-                            Entry::WRITABLE,
-                            self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
-                        ));
-                        e.kind().force_node()
-                    }
-                }
-                .child_addr(),
-            ) as *mut PtTable;
-            match &mut (*pt).phys_pages[pt_index] {
-                e if e.is_present() => {
-                    return Err(VirtualMapError::AlreadyMapped {
-                        p_addr,
-                        v_addr,
-                        p_addr_existing: e.addr(),
-                    })
-                }
-                e => *e = PtEntry::new(flags.into(), p_addr) | if flags.contains(VFlags::GLOBAL) { PtEntry::GLOBAL } else { PtEntry::empty() },
-            }
-        }
-
-        Ok(())
+        unsafe { self.map.map(p_addr, v_addr, flags, self.new_page_table) }
     }
 
-    pub fn finish(mut self) -> Result<(PAddr, VirtualMap), VirtualMapError> {
-        // Add a recursion entry to the PML4 table
-        let pml4_phys = self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?;
-        match self.table.pdpt_entries[self.recursion_index] {
-            e if e.is_present() => unreachable!("`recursion_index` is checked in app `map_*` methods"),
+    pub fn finish(self) -> Result<(PAddr, VirtualMap), VirtualMapError> {
+        let Self {
+            map: VirtualMap { mut mapper },
+            new_page_table,
+        } = self;
+
+        let pml4_phys = (new_page_table)().ok_or(VirtualMapError::PageTable)?;
+        match mapper.table.pdpt_entries[mapper.recursion_index] {
+            e if e.is_present() => unreachable!("`recursion_index` is checked in earlier methods"),
             ref mut e => *e = unsafe { NodeEntry::new(Entry::WRITABLE, pml4_phys) },
         }
 
         unsafe {
-            self.mapper.page_table_ptr(pml4_phys).cast::<Pml4Table>().write(self.table);
+            (mapper.page_table_ptr)(pml4_phys).cast::<Pml4Table>().write(mapper.table);
         }
 
         Ok((pml4_phys, VirtualMap {
-            mapper: unsafe { sealed::RecursiveMapper::new(self.recursion_index) },
+            mapper: unsafe { sealed::RecursiveMapper::new(mapper.recursion_index) },
         }))
     }
 }
 
-/// # Safety
-/// - [`Self::new_page_table`] must return a [`PAGE_SIZE`](crate::PAGE_SIZE)-aligned physical
-///   address that is completely free to be written to (nothing else "owns" it).
-pub unsafe trait VirtualMapper2 {
-    fn new_page_table(&self) -> Option<PAddr>;
-
-    /// # Safety
-    /// - `p_addr` must have been obtained with [`Self::new_page_table`].
-    unsafe fn page_table_ptr(&self, p_addr: PAddr) -> *mut ();
+#[derive(Debug)]
+#[repr(C)]
+pub struct LocalMapper {
+    table: Pml4Table,
+    page_table_ptr: unsafe fn(PAddr) -> *mut (),
+    recursion_index: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
+unsafe impl sealed::VirtualMapper for LocalMapper {
+    #[inline]
+    fn reserved(&self, v_addr: VAddr) -> bool {
+        let VAddrInfo { pml4_index, .. } = v_addr.info();
+        pml4_index == self.recursion_index
+    }
+
+    #[inline]
+    fn pml4(&mut self) -> &mut Pml4Table {
+        &mut self.table
+    }
+
+    #[inline]
+    fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable {
+        unsafe {
+            (self.page_table_ptr)(self.table.pdpt_entries[pml4_index].child_addr())
+                .cast::<PdptTable>()
+                .as_mut_unchecked()
+        }
+    }
+
+    #[inline]
+    unsafe fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
+        unsafe {
+            (self.page_table_ptr)(match self.pdpt(pml4_index).pd_entries[pdpt_index].kind() {
+                UnionEntry::Node(e) => e.child_addr(),
+                UnionEntry::Leaf(..) => unreachable_unchecked(),
+            })
+            .cast::<PdTable>()
+            .as_mut_unchecked()
+        }
+    }
+
+    #[inline]
+    unsafe fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
+        unsafe {
+            (self.page_table_ptr)(match self.pd(pml4_index, pdpt_index).pt_entries[pd_index].kind() {
+                UnionEntry::Node(e) => e.child_addr(),
+                UnionEntry::Leaf(..) => unreachable_unchecked(),
+            })
+            .cast::<PtTable>()
+            .as_mut_unchecked()
+        }
+    }
+}
+
+#[derive(Debug)]
+#[repr(transparent)]
 // Note: From user-facing API perspective, `VirtualMap` must have no trait bounds.
 pub struct VirtualMap<T: sealed::VirtualMapper = sealed::RecursiveMapper> {
     mapper: T,
 }
 
-mod sealed {
-    use super::*;
-
-    pub unsafe trait VirtualMapper {
-        #[inline]
-        fn reserved(&self, #[allow(unused_variables, reason = "Available for implementors, not defaults")] v_addr: VAddr) -> bool {
-            false
-        }
-
-        fn pml4(&mut self) -> &mut Pml4Table;
-
-        fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable;
-
-        fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable;
-
-        fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable;
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    pub struct RecursiveMapper {
-        recursion_index: usize,
-    }
-
-    impl RecursiveMapper {
-        /// # Safety:
-        /// `recursion_index` must be N where
-        /// [`pdpt_entries[N]`](crate::vaddr::Pml4Table::pdpt_entries) points to the
-        /// physical address of the PML4 table itself (i.e. recursive slot).
-        #[inline]
-        pub const unsafe fn new(recursion_index: usize) -> Self {
-            Self { recursion_index }
-        }
-    }
-
-    unsafe impl VirtualMapper for RecursiveMapper {
-        #[inline]
-        fn reserved(&self, v_addr: VAddr) -> bool {
-            let VAddrInfo { pml4_index, .. } = v_addr.info();
-            pml4_index == self.recursion_index
-        }
-
-        #[inline]
-        fn pml4(&mut self) -> &mut Pml4Table {
-            unsafe {
-                VAddr::from_info(VAddrInfo {
-                    page_offset: 0, // Keep recursing so it ends up with the PML4 table itself
-                    pt_index: self.recursion_index,
-                    pd_index: self.recursion_index,
-                    pdpt_index: self.recursion_index,
-                    pml4_index: self.recursion_index,
-                })
-                .ptr_mut::<Pml4Table>()
-                .as_mut_unchecked()
-            }
-        }
-
-        #[inline]
-        fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable {
-            unsafe {
-                VAddr::from_info(VAddrInfo {
-                    page_offset: 0, // Stop recursing at PT index so it ends up with the PDPT entry
-                    pt_index: pml4_index,
-                    pd_index: self.recursion_index,
-                    pdpt_index: self.recursion_index,
-                    pml4_index: self.recursion_index,
-                })
-                .ptr_mut::<PdptTable>()
-                .as_mut_unchecked()
-            }
-        }
-
-        #[inline]
-        fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
-            unsafe {
-                VAddr::from_info(VAddrInfo {
-                    page_offset: 0, // Stop recursing at PD index so it ends up with the PD entry
-                    pt_index: pdpt_index,
-                    pd_index: pml4_index,
-                    pdpt_index: self.recursion_index,
-                    pml4_index: self.recursion_index,
-                })
-                .ptr_mut::<PdTable>()
-                .as_mut_unchecked()
-            }
-        }
-
-        #[inline]
-        fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
-            unsafe {
-                VAddr::from_info(VAddrInfo {
-                    page_offset: 0, // Stop recursing at PDPT index so it ends up with the PT entry
-                    pt_index: pd_index,
-                    pd_index: pdpt_index,
-                    pdpt_index: pml4_index,
-                    pml4_index: self.recursion_index,
-                })
-                .ptr_mut::<PtTable>()
-                .as_mut_unchecked()
-            }
-        }
-    }
-}
-
 impl<T: sealed::VirtualMapper> VirtualMap<T> {
-    pub fn map(
+    /// # Safety
+    /// - `new_page_table` must return a [`PAGE_SIZE`](crate::PAGE_SIZE)-aligned physical address
+    ///   that is:
+    ///   - Completely zeroed out.
+    ///   - Completely free to be written to (nothing else "owns" it).
+    pub unsafe fn map(
         &mut self,
         p_addr: PAddr,
         v_addr: VAddr,
@@ -374,5 +264,114 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
         }
 
         Ok(())
+    }
+}
+
+mod sealed {
+    use super::*;
+
+    #[allow(unused_variables, reason = "Available for implementors, not defaults")]
+    pub unsafe trait VirtualMapper {
+        #[inline]
+        fn reserved(&self, v_addr: VAddr) -> bool {
+            false
+        }
+
+        fn pml4(&mut self) -> &mut Pml4Table;
+
+        fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable;
+
+        /// # Safety:
+        /// - [`Self::pdpt()`] to the given indices must return a node entry, not leaf.
+        unsafe fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable;
+
+        /// # Safety:
+        /// - [`Self::pd()`] to the given indices must return a node entry, not leaf.
+        unsafe fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable;
+    }
+
+    #[derive(Debug)]
+    #[repr(transparent)]
+    pub struct RecursiveMapper {
+        recursion_index: usize,
+    }
+
+    impl RecursiveMapper {
+        /// # Safety:
+        /// `recursion_index` must be N where
+        /// [`pdpt_entries[N]`](crate::vaddr::Pml4Table::pdpt_entries) points to the
+        /// physical address of the PML4 table itself (i.e. recursive slot).
+        #[inline]
+        pub const unsafe fn new(recursion_index: usize) -> Self {
+            Self { recursion_index }
+        }
+    }
+
+    unsafe impl VirtualMapper for RecursiveMapper {
+        #[inline]
+        fn reserved(&self, v_addr: VAddr) -> bool {
+            let VAddrInfo { pml4_index, .. } = v_addr.info();
+            pml4_index == self.recursion_index
+        }
+
+        #[inline]
+        fn pml4(&mut self) -> &mut Pml4Table {
+            unsafe {
+                VAddr::from_info(VAddrInfo {
+                    page_offset: 0, // Keep recursing so it ends up with the PML4 table itself
+                    pt_index: self.recursion_index,
+                    pd_index: self.recursion_index,
+                    pdpt_index: self.recursion_index,
+                    pml4_index: self.recursion_index,
+                })
+                .ptr_mut::<Pml4Table>()
+                .as_mut_unchecked()
+            }
+        }
+
+        #[inline]
+        fn pdpt(&mut self, pml4_index: usize) -> &mut PdptTable {
+            unsafe {
+                VAddr::from_info(VAddrInfo {
+                    page_offset: 0, // Stop recursing at PT index so it ends up with the PDPT entry
+                    pt_index: pml4_index,
+                    pd_index: self.recursion_index,
+                    pdpt_index: self.recursion_index,
+                    pml4_index: self.recursion_index,
+                })
+                .ptr_mut::<PdptTable>()
+                .as_mut_unchecked()
+            }
+        }
+
+        #[inline]
+        unsafe fn pd(&mut self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
+            unsafe {
+                VAddr::from_info(VAddrInfo {
+                    page_offset: 0, // Stop recursing at PD index so it ends up with the PD entry
+                    pt_index: pdpt_index,
+                    pd_index: pml4_index,
+                    pdpt_index: self.recursion_index,
+                    pml4_index: self.recursion_index,
+                })
+                .ptr_mut::<PdTable>()
+                .as_mut_unchecked()
+            }
+        }
+
+        #[inline]
+        unsafe fn pt(&mut self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
+            unsafe {
+                VAddr::from_info(VAddrInfo {
+                    page_offset: 0, // Stop recursing at PDPT index so it ends up with the PT entry
+                    pt_index: pd_index,
+                    pd_index: pdpt_index,
+                    pdpt_index: pml4_index,
+                    pml4_index: self.recursion_index,
+                })
+                .ptr_mut::<PtTable>()
+                .as_mut_unchecked()
+            }
+        }
     }
 }

@@ -83,7 +83,6 @@ pub struct MemoryRegion {
     pub pages: usize
 }
 
-#[derive(Clone, Copy)]
 #[repr(C, align(4096))]
 pub struct BootInfo {
     pub graphics_info:        GraphicsInfo,
