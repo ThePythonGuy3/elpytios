@@ -11,22 +11,38 @@ use core::{mem::MaybeUninit, slice};
 
 use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion};
 
-#[unsafe(link_section = ".bootinfo")]
-#[used]
-static mut BOOT_INFO: MaybeUninit<BootInfo> = MaybeUninit::uninit();
+pub mod boot {
+    use elpytios_bootinfo::vaddr::VAddr;
 
-#[inline]
-pub fn graphics_info() -> &'static GraphicsInfo {
-    unsafe { &(*(&raw const BOOT_INFO as *const BootInfo)).graphics_info }
-}
+use super::*;
 
-#[inline]
-pub fn memory_regions() -> &'static [MemoryRegion] {
-    unsafe {
-        let boot_info_ptr = &raw const BOOT_INFO as *const BootInfo;
-        slice::from_raw_parts(
-            &raw const (*boot_info_ptr).memory_regions_base as *const MemoryRegion,
-            (*boot_info_ptr).memory_regions_size,
-        )
+    #[unsafe(link_section = ".bootinfo")]
+    #[used]
+    static mut BOOT_INFO: MaybeUninit<BootInfo> = MaybeUninit::uninit();
+
+    #[inline]
+    pub fn graphics_info() -> &'static GraphicsInfo {
+        unsafe { &(*(&raw const BOOT_INFO as *const BootInfo)).graphics_info }
+    }
+
+    #[inline]
+    pub fn memory_regions() -> &'static [MemoryRegion] {
+        unsafe {
+            let boot_info_ptr = &raw const BOOT_INFO as *const BootInfo;
+            slice::from_raw_parts(
+                &raw const (*boot_info_ptr).memory_regions_base as *const MemoryRegion,
+                (*boot_info_ptr).memory_regions_size,
+            )
+        }
+    }
+
+    #[inline]
+    pub fn v_addr_range() -> [VAddr; 2] {
+        unsafe {
+            [
+                (*(&raw const BOOT_INFO as *const BootInfo)).v_addr_start,
+                (*(&raw const BOOT_INFO as *const BootInfo)).v_addr_end,
+            ]
+        }
     }
 }

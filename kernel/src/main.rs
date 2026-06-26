@@ -6,7 +6,8 @@
 
 use core::{arch::naked_asm, fmt::Write, panic::PanicInfo};
 
-use elpytios_kernel::{graphics_info, memory_regions, rendering::DisplayWriter};
+use elpytios_bootinfo::PAGE_SIZE;
+use elpytios_kernel::{boot, rendering::DisplayWriter};
 
 #[panic_handler]
 fn hanic_pandler(_info: &PanicInfo) -> ! {
@@ -44,18 +45,27 @@ unsafe extern "sysv64" fn main() -> ! {
     pause();
 
     let mut display_writer = DisplayWriter {
-        graphics_info: graphics_info(),
+        graphics_info: boot::graphics_info(),
         line: 0,
         col: 0,
     };
 
     writeln!(&mut display_writer, "Hello World from the Kernel, calling at address {:p}!!!!", main as *const ()).unwrap();
 
-    let regions = memory_regions();
-    writeln!(&mut display_writer, "Found {} usable memory regions!", regions.len()).unwrap();
+    let regions = boot::memory_regions();
+    writeln!(&mut display_writer, "Found {} usable physical memory regions!", regions.len()).unwrap();
     for region in regions {
-        writeln!(&mut display_writer, "Usable region in {}, {} pages!", region.base, region.pages).unwrap();
+        writeln!(
+            &mut display_writer,
+            "Usable physical memory in {}..{}, {} pages!",
+            region.base,
+            region.base.byte_add(region.pages * PAGE_SIZE),
+            region.pages,
+        ).unwrap();
     }
+
+    let [virt_start, virt_end] = boot::v_addr_range();
+    writeln!(&mut display_writer, "Higher-half virtual addressing available in range {virt_start}..{virt_end}").unwrap();
 
     loop {}
 }

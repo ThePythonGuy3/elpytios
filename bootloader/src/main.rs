@@ -216,7 +216,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
         virtual_map.map(PAddr::new(switcher_addr), VAddr::new(switcher_addr), VFlags::empty()).unwrap_or_else(|e| panic!("{e}"));
 
-        let mut next_v_addr = |p_addr: PAddr, page_count: usize, flags: VFlags| {
+        let mut next_free_page = |p_addr: PAddr, page_count: usize, flags: VFlags| {
             let v_addr = next_v_addr;
             next_v_addr += page_count * PAGE_SIZE;
 
@@ -234,7 +234,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
         // Map the stack pointer
         let stack_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_STACK, KERNEL_STACK_PAGES).unwrap().as_ptr();
-        let stack = next_v_addr(PAddr::new(stack_ptr.addr()), KERNEL_STACK_PAGES, VFlags::WRITABLE);
+        let stack = next_free_page(PAddr::new(stack_ptr.addr()), KERNEL_STACK_PAGES, VFlags::WRITABLE);
         kernel_stack_base = VAddr::new(stack.addr() + KERNEL_STACK_PAGES * PAGE_SIZE);
 
         // Map the framebuffer
@@ -255,7 +255,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 PixelFormat::Bitmask => elpytios_bootinfo::PixelFormat::BIT_MASK,
                 PixelFormat::BltOnly => elpytios_bootinfo::PixelFormat::BLT_ONLY
             },
-            frame_buffer: next_v_addr(PAddr::new(fb_phys), fb_page_count, VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::CACHE_DISABLED).ptr_mut(),
+            frame_buffer: next_free_page(PAddr::new(fb_phys), fb_page_count, VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::CACHE_DISABLED).ptr_mut(),
             frame_buffer_size: frame_buffer_size,
         };
 
@@ -271,6 +271,9 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 // Initialized after exiting UEFI boot services
                 memory_regions_base: [MaybeUninit::uninit(); _],
                 memory_regions_size: 0,
+
+                v_addr_start: VAddr::new(next_v_addr),
+                v_addr_end: VAddr::new(usize::MAX),
             });
         }
     }

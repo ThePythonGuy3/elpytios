@@ -91,5 +91,7 @@ pub struct BootInfo {
     pub switcher_map:         VAddr,
 
     pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
-    pub memory_regions_size:  usize
+    pub memory_regions_size:  usize,
+    pub v_addr_start:         VAddr,
+    pub v_addr_end:           VAddr,
 }
