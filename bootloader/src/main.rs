@@ -1,4 +1,4 @@
-#![feature(const_clone, const_cmp, const_convert, const_iter, const_trait_impl, custom_inner_attributes, fn_align)]
+#![feature(const_cmp, const_convert, const_iter, const_trait_impl, custom_inner_attributes, fn_align)]
 #![rustfmt::skip]
 
 #![no_std]
@@ -22,7 +22,7 @@ const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../..
     debug_assertions => "bootloader_debug",
     _ => "bootloader",
 }, "/elpytios-kernel"))) {
-    Ok(Elf::N32) => panic!("Expected 64-bit kernel ELF"),
+    Ok(Elf::N32(..)) => panic!("Expected 64-bit kernel ELF"),
     Ok(Elf::N64(elf)) => elf,
     Err(e) => concat_panic!(e),
 };
@@ -31,7 +31,7 @@ const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
     let mut out: MaybeUninit<[ElfSegment64; _]> = MaybeUninit::uninit();
     let mut ptr = out.as_mut_ptr() as *mut ElfSegment64;
 
-    for segment in KERNEL_BINARY.clone() {
+    for segment in KERNEL_BINARY.program_segments() {
         let segment = match segment {
             Ok(segment) => segment,
             Err(e) => concat_panic!(e),

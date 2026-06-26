@@ -25,7 +25,6 @@ pub struct ElfProgramHeader64 {
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(transparent)]
 pub struct ElfProgramFlags(u32);
-
 bitflags! {
     impl ElfProgramFlags: u32 {
         const EXECUTABLE = 1 << 0;

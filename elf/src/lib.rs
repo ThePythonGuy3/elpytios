@@ -36,6 +36,7 @@
     const_trait_impl,
     const_try,
     const_try_residual,
+    never_type,
     try_blocks
 )]
 
@@ -67,14 +68,15 @@ const fn int_fit<T: [const] TryInto<usize, Error: [const] Destruct>>(from: T) ->
 
 #[derive(Debug)]
 pub enum Elf<'a> {
-    N32,
+    N32(!),
     N64(Elf64<'a>),
 }
 
 const impl Clone for Elf<'_> {
     fn clone(&self) -> Self {
         match self {
-            Self::N32 => Self::N32,
+            #[expect(unreachable_code, reason = "32-bit ELF isn't implemented yet")]
+            Self::N32(elf) => Self::N32(elf.clone()),
             Self::N64(elf) => Self::N64(elf.clone()),
         }
     }
@@ -101,32 +103,36 @@ pub struct Elf64<'a> {
     header: ElfHeader64,
     file_reader: Reader<'a>,
     program_table_reader: Reader<'a>,
+    section_table_reader: Reader<'a>,
 }
 
 impl<'a> Elf64<'a> {
     const fn from_bytes(file_reader: Reader<'a>, mut header_reader: Reader<'a>) -> Result<Self, ElfError> {
         let header = header_reader.read::<ElfHeader64>().ok_or(ElfError::Eof)?;
         let program_table_reader = file_reader.fork(int_fit(header.program_header_table_offset)?).ok_or(ElfError::Eof)?;
+        let section_table_reader = file_reader.fork(int_fit(header.section_header_table_offset)?).ok_or(ElfError::Eof)?;
 
         Ok(Self {
             header,
             file_reader,
             program_table_reader,
+            section_table_reader,
         })
     }
 
+    #[inline]
     pub const fn program_entry(&self) -> u64 {
         self.header.program_entry_offset
     }
 
+    #[inline]
     pub const fn program_header_count(&self) -> usize {
         self.header.program_header_entry_len as usize
     }
-}
 
-const impl Clone for Elf64<'_> {
-    fn clone(&self) -> Self {
-        Self {
+    #[inline]
+    pub const fn program_segments(&self) -> Elf64Programs<'_> {
+        Elf64Programs {
             header: self.header,
             file_reader: self.file_reader.clone(),
             program_table_reader: self.program_table_reader.clone(),
@@ -134,7 +140,26 @@ const impl Clone for Elf64<'_> {
     }
 }
 
-const impl<'a> Iterator for Elf64<'a> {
+const impl Clone for Elf64<'_> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            header: self.header,
+            file_reader: self.file_reader.clone(),
+            program_table_reader: self.program_table_reader.clone(),
+            section_table_reader: self.section_table_reader.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Elf64Programs<'a> {
+    header: ElfHeader64,
+    file_reader: Reader<'a>,
+    program_table_reader: Reader<'a>,
+}
+
+const impl<'a> Iterator for Elf64Programs<'a> {
     type Item = Result<ElfSegment64<'a>, ElfError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -173,19 +198,21 @@ const impl<'a> Iterator for Elf64<'a> {
         })
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = self.header.program_header_entry_len as usize;
         (len, Some(len))
     }
 }
 
-impl ExactSizeIterator for Elf64<'_> {
+impl ExactSizeIterator for Elf64Programs<'_> {
+    #[inline]
     fn len(&self) -> usize {
         self.header.program_header_entry_len as usize
     }
 }
 
-impl FusedIterator for Elf64<'_> {}
+impl FusedIterator for Elf64Programs<'_> {}
 
 #[derive(Clone, Copy)]
 pub struct ElfSegment64<'a> {
@@ -228,6 +255,7 @@ pub enum ElfSegmentType {
 
 const impl Eq for ElfSegmentType {}
 const impl PartialEq for ElfSegmentType {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         match (*self, *other) {
             (Self::Null, Self::Null)
@@ -249,23 +277,27 @@ struct Reader<'a> {
 }
 
 const impl Clone for Reader<'_> {
+    #[inline]
     fn clone(&self) -> Self {
         Self { bytes: self.bytes }
     }
 }
 
 impl<'a> Reader<'a> {
+    #[inline]
     const fn fork(&self, offset: usize) -> Option<Self> {
         let (.., bytes) = self.bytes.split_at_checked(offset)?;
         Some(Self { bytes })
     }
 
+    #[inline]
     const fn take(&mut self, count: usize) -> Option<&'a [u8]> {
         let (taken, bytes) = self.bytes.split_at_checked(count)?;
         self.bytes = bytes;
         Some(taken)
     }
 
+    #[inline]
     const fn read<T: AnyBitPattern>(&mut self) -> Option<T> {
         let taken = self.take(size_of::<T>())?;
         Some(unsafe { (taken.as_ptr() as *const T).read_unaligned() })
