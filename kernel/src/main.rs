@@ -6,8 +6,7 @@
 
 use core::{arch::naked_asm, fmt::Write, panic::PanicInfo};
 
-use elpytios_bootinfo::PAGE_SIZE;
-use elpytios_kernel::rendering::DisplayWriter;
+use elpytios_kernel::{graphics_info, memory_regions, rendering::DisplayWriter};
 
 #[panic_handler]
 fn hanic_pandler(_info: &PanicInfo) -> ! {
@@ -45,29 +44,18 @@ unsafe extern "sysv64" fn main() -> ! {
     pause();
 
     let mut display_writer = DisplayWriter {
-        graphics_info: elpytios_kernel::graphics_info(),
+        graphics_info: graphics_info(),
         line: 0,
         col: 0,
     };
 
     writeln!(&mut display_writer, "Hello World from the Kernel, calling at address {:p}!!!!", main as *const ()).unwrap();
 
-    let [region, regions @ ..] = elpytios_kernel::memory_regions() else {
-        panic!("No usable RAM")
-    };
-    let mut region = *region;
-    let mut regions = regions;
-
-    while let [next, next_regions @ ..] = regions {
-        if region.base.byte_add(region.pages * PAGE_SIZE) == next.base {
-            region.pages += next.pages;
-        } else {
-            writeln!(&mut display_writer, "Usable memory block [{}..{}], {} pages", region.base, region.base.byte_add(region.pages * PAGE_SIZE), region.pages).unwrap();
-            region = *next;
-        }
-        regions = next_regions;
+    let regions = memory_regions();
+    writeln!(&mut display_writer, "Found {} usable memory regions!", regions.len()).unwrap();
+    for region in regions {
+        writeln!(&mut display_writer, "Usable region in {}, {} pages!", region.base, region.pages).unwrap();
     }
-    writeln!(&mut display_writer, "Usable memory block [{}..{}], {} pages", region.base, region.base.byte_add(region.pages * PAGE_SIZE), region.pages).unwrap();
 
     loop {}
 }

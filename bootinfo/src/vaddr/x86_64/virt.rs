@@ -76,7 +76,7 @@ impl fmt::Debug for VAddr {
 
 impl fmt::Display for VAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:p}", self.0 as *const ())
+        write!(f, "{:#018p}", self.0 as *const ())
     }
 }
 
