@@ -57,7 +57,7 @@ pub enum ElfError {
     InvalidSegmentType(u32),
     IntDoesntFit,
     MissingStringTable,
-    MalformedDynHeader,
+    MalformedDynHeader(&'static str),
     Eof,
 }
 
@@ -226,11 +226,15 @@ const impl<'a> Iterator for Elf64Programs<'a> {
                             }
                         }
 
-                        let offset = rela_offset.ok_or(ElfError::MalformedDynHeader)?;
-                        let size = rela_size.ok_or(ElfError::MalformedDynHeader)?;
-                        let stride = rela_stride.ok_or(ElfError::MalformedDynHeader)?;
+                        // TODO `DT_RELA` isn't the only way to relocate things
+                        if let Some(offset) = rela_offset {
+                            let size = rela_size.ok_or(ElfError::MalformedDynHeader("`DT_RELASZ` not found"))?;
+                            let stride = rela_stride.ok_or(ElfError::MalformedDynHeader("`DT_RELAENT` not found"))?;
 
-                        ElfSegmentType::Dynamic { offset, size, stride }
+                            ElfSegmentType::Dynamic { offset, size, stride }
+                        } else {
+                            ElfSegmentType::Null
+                        }
                     }
                     3 => ElfSegmentType::Interp,
                     4 => ElfSegmentType::Note,

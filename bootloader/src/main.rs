@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::naked_asm, mem::{self, MaybeUninit}, slice};
+use core::{arch::{asm, naked_asm}, mem::{self, MaybeUninit}, slice};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
@@ -114,19 +114,25 @@ const KERNEL_STACK_PAGES: usize = 8;
 
 struct UefiInfo {
     pub memory_map:         MemoryMapOwned,
-    pub pml4_phys:          PAddr,
 
-    pub kernel_stack_base:  VAddr,
-    pub kernel_entry:       VAddr,
+    pub kernel_entry:      *mut u8,
+    pub kernel_stack_base: *mut u8,
+    //pub pml4_phys:          PAddr,
+
+    //pub kernel_stack_base:  VAddr,
+    //pub kernel_entry:       VAddr,
 }
 
 fn setup_uefi_and_exit() -> UefiInfo {
     let memory_map:         MemoryMapOwned;
-    let pml4_phys:          PAddr;
+
+    let kernel_entry:      *mut u8;
+    let kernel_stack_base: *mut u8;
+    //let pml4_phys:          PAddr;
 
     let boot_info_ptr:     *mut BootInfo;
-    let kernel_stack_base:  VAddr;
-    let kernel_entry:       VAddr;
+    //let kernel_stack_base:  VAddr;
+    //let kernel_entry:       VAddr;
     
     helpers::init().unwrap();
 
@@ -173,7 +179,84 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let pixel_format       = mode_info.pixel_format();
         let frame_buffer_ptr   = frame_buffer.as_mut_ptr();
 
-        let mut virtual_map = unsafe {
+        let graphics_info = GraphicsInfo {
+            w,
+            h,
+            stride,
+            pixel_format: match pixel_format {
+                PixelFormat::Rgb     => elpytios_bootinfo::PixelFormat::RGB_8_BIT,
+                PixelFormat::Bgr     => elpytios_bootinfo::PixelFormat::BGR_8_BIT,
+                PixelFormat::Bitmask => elpytios_bootinfo::PixelFormat::BIT_MASK,
+                PixelFormat::BltOnly => elpytios_bootinfo::PixelFormat::BLT_ONLY
+            },
+            frame_buffer: frame_buffer_ptr,
+            frame_buffer_size: frame_buffer_size,
+        };
+
+        let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESSES;
+        let kernel_base_pages = (virtual_max - virtual_base) / PAGE_SIZE;
+        let kernel_ptr = boot::allocate_pages(
+            AllocateType::Address(0x200000),
+            ELPYTI_KERNEL_CODE,
+            kernel_base_pages + KERNEL_STACK_PAGES,
+        ).unwrap().as_ptr();
+
+        for segment in KERNEL_SEGMENTS {
+            let ElfSegmentType::Load(data) = segment.segment_type else { continue };
+            unsafe {
+                kernel_ptr
+                    .add(segment.virtual_address as usize - virtual_base)
+                    .copy_from_nonoverlapping(data.as_ptr(), data.len());
+
+                kernel_ptr
+                    .add(segment.virtual_address as usize - virtual_base + data.len())
+                    .write_bytes(0, segment.memory_size as usize - data.len());
+            }
+
+            /*for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
+                virtual_map.map(
+                    PAddr::new(unsafe { kernel_ptr.add(segment.virtual_address as usize - virtual_base).addr() } + i),
+                    VAddr::new(segment.virtual_address as usize + i),
+                    VFlags::GLOBAL | match segment.flags.contains(ElfProgramFlags::WRITABLE) {
+                        false => VFlags::empty(),
+                        true => VFlags::WRITABLE,
+                    },
+                ).unwrap_or_else(|e| panic!("{e}"));
+            }*/
+        }
+
+        for segment in KERNEL_SEGMENTS {
+            let ElfSegmentType::Dynamic { offset, size, stride } = segment.segment_type else { continue };
+            for i in 0..size / stride {
+                unsafe {
+                    let rela = kernel_ptr.cast::<ElfRela64>().byte_add(offset - virtual_base).add(i).read_unaligned();
+                    match rela.info.kind {
+                        ElfRela64Type::X86_64_RELATIVE => {
+                            let slide = kernel_ptr.addr() as i64 - virtual_base as i64;
+                            let patch_addr = kernel_ptr.add(rela.offset as usize - virtual_base);
+                            let value = slide + rela.addend;
+                            patch_addr.cast::<i64>().write(value);
+                        }
+                        kind => panic!("Unsupported Elf64_Rela kind: {}", kind.0),
+                    }
+                }
+            }
+        }
+
+        unsafe {
+            boot_info_ptr = kernel_ptr.add(KERNEL_BOOTINFO_ADDRESS - virtual_base).cast::<BootInfo>();
+            boot_info_ptr.write(BootInfo {
+                graphics_info,
+
+                memory_regions_base: [MaybeUninit::uninit(); _],
+                memory_regions_size: 0,
+            })
+        }
+
+        kernel_entry = unsafe { kernel_ptr.add(KERNEL_BINARY.program_entry() as usize - virtual_base) };
+        kernel_stack_base = unsafe { kernel_ptr.add((kernel_base_pages + KERNEL_STACK_PAGES) * PAGE_SIZE) };
+
+        /*let mut virtual_map = unsafe {
             VirtualMapBuilder::new(
                 // 511 used for higher-half addressing
                 510,
@@ -187,49 +270,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 |ptr| ptr.addr() as *mut (),
             )
         };
-
-        let [virtual_base, mut next_v_addr] = KERNEL_VIRTUAL_ADDRESSES;
-        let kernel_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_CODE, (next_v_addr - virtual_base) / PAGE_SIZE).unwrap().as_ptr();
-        for segment in KERNEL_SEGMENTS {
-            let ElfSegmentType::Load(data) = segment.segment_type else { continue };
-            unsafe {
-                kernel_ptr
-                    .add(segment.virtual_address as usize - virtual_base)
-                    .copy_from_nonoverlapping(data.as_ptr(), data.len());
-
-                kernel_ptr
-                    .add(segment.virtual_address as usize - virtual_base + data.len())
-                    .add(data.len()).write_bytes(0, segment.memory_size as usize - data.len());
-            }
-
-            for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
-                virtual_map.map(
-                    PAddr::new(unsafe { kernel_ptr.add(segment.virtual_address as usize - virtual_base).addr() } + i),
-                    VAddr::new(segment.virtual_address as usize + i),
-                    VFlags::GLOBAL | match segment.flags.contains(ElfProgramFlags::WRITABLE) {
-                        false => VFlags::empty(),
-                        true => VFlags::WRITABLE,
-                    },
-                ).unwrap_or_else(|e| panic!("{e}"));
-            }
-        }
-
-        for segment in KERNEL_SEGMENTS {
-            let ElfSegmentType::Dynamic { offset, size, stride } = segment.segment_type else { continue };
-            for i in 0..size / stride {
-                unsafe {
-                    let rela = kernel_ptr.cast::<ElfRela64>().byte_add(offset - virtual_base).add(i).read_unaligned();
-                    match rela.info.kind {
-                        ElfRela64Type::X86_64_RELATIVE => {
-                            let patch_addr = kernel_ptr.add(rela.offset as usize - virtual_base);
-                            let value = virtual_base + rela.addend as usize;
-                            patch_addr.cast::<usize>().write(value);
-                        }
-                        kind => panic!("Unsupported Elf64_Rela kind: {}", kind.0),
-                    }
-                }
-            }
-        }
 
         kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
 
@@ -267,20 +307,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let fb_phys_end = (fb_phys + fb_size).next_multiple_of(PAGE_SIZE);
         let fb_page_count = (fb_phys_end - fb_phys_base) / PAGE_SIZE;
 
-        let graphics_info = GraphicsInfo {
-            w,
-            h,
-            stride,
-            pixel_format: match pixel_format {
-                PixelFormat::Rgb     => elpytios_bootinfo::PixelFormat::RGB_8_BIT,
-                PixelFormat::Bgr     => elpytios_bootinfo::PixelFormat::BGR_8_BIT,
-                PixelFormat::Bitmask => elpytios_bootinfo::PixelFormat::BIT_MASK,
-                PixelFormat::BltOnly => elpytios_bootinfo::PixelFormat::BLT_ONLY
-            },
-            frame_buffer: next_free_page(PAddr::new(fb_phys), fb_page_count, VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::CACHE_DISABLED).ptr_mut(),
-            frame_buffer_size: frame_buffer_size,
-        };
-
         let (pml4_phys_ret, virtual_map) = virtual_map.finish().unwrap();
         pml4_phys = pml4_phys_ret;
         unsafe {
@@ -297,7 +323,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 v_addr_start: VAddr::new(next_v_addr),
                 v_addr_end: VAddr::new(usize::MAX),
             });
-        }
+        }*/
     }
 
     unsafe {
@@ -358,14 +384,14 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
     UefiInfo {
         memory_map,
-        pml4_phys,
+        //pml4_phys,
 
         kernel_stack_base,
         kernel_entry,
     }
 }
 
-#[rustc_align(4096)]
+/*#[rustc_align(4096)]
 #[unsafe(naked)]
 unsafe extern "sysv64" fn switch_to_kernel(
     pml4_phys: usize,
@@ -377,12 +403,25 @@ unsafe extern "sysv64" fn switch_to_kernel(
         "lea rsp, [rsi - 8]",
         "jmp rdx",
     )
-}
+}*/
 
 #[entry]
 fn entry() -> Status {
-    let UefiInfo { memory_map, pml4_phys, kernel_stack_base, kernel_entry } = setup_uefi_and_exit();
+    let UefiInfo { memory_map, kernel_entry, kernel_stack_base } = setup_uefi_and_exit();
+    unsafe {
+        asm!(
+            "lea rsp, [{kernel_stack_base} - 8]",
+            "jmp {kernel_entry}",
+
+            kernel_stack_base = in(reg) kernel_stack_base,
+            kernel_entry = in(reg) kernel_entry,
+
+            options(noreturn)
+        )
+    }
+
+    /*let UefiInfo { memory_map, pml4_phys, kernel_stack_base, kernel_entry } = setup_uefi_and_exit();
     unsafe {
         switch_to_kernel(pml4_phys.addr(), kernel_stack_base.addr(), kernel_entry.addr())
-    }
+    }*/
 }

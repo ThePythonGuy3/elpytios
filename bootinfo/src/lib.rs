@@ -86,14 +86,14 @@ pub struct MemoryRegion {
 #[repr(C, align(4096))]
 pub struct BootInfo {
     pub graphics_info:        GraphicsInfo,
-    pub virtual_map:          VirtualMap,
+    //pub virtual_map:          VirtualMap,
     /// Leftover identity-mapping from the bootloader, to be unmapped by the kernel
-    pub switcher_map:         VAddr,
+    //pub switcher_map:         VAddr,
 
     pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
     pub memory_regions_size:  usize,
-    pub v_addr_start:         VAddr,
-    pub v_addr_end:           VAddr,
+    //pub v_addr_start:         VAddr,
+    //pub v_addr_end:           VAddr,
 }
 
 impl BootInfo {
@@ -102,8 +102,8 @@ impl BootInfo {
         unsafe { slice::from_raw_parts(&raw const self.memory_regions_base as _, self.memory_regions_size) }
     }
 
-    #[inline]
+    /*#[inline]
     pub fn v_addr_range(&self) -> [VAddr; 2] {
         [self.v_addr_start, self.v_addr_end]
-    }
+    }*/
 }

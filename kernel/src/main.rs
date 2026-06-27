@@ -64,8 +64,8 @@ unsafe extern "sysv64" fn main() -> ! {
         ).unwrap();
     }
 
-    let [virt_start, virt_end] = boot_info().v_addr_range();
-    writeln!(&mut display_writer, "Higher-half virtual addressing available in range {virt_start}..{virt_end}").unwrap();
+    //let [virt_start, virt_end] = boot_info().v_addr_range();
+    //writeln!(&mut display_writer, "Higher-half virtual addressing available in range {virt_start}..{virt_end}").unwrap();
 
     loop {}
 }
