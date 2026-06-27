@@ -283,15 +283,7 @@ def create_file_qemu(_args):
 
     runner_esp.mkdir(parents=True, exist_ok=True)
 
-def run_qemu(args):
-    if not runner_fs.exists():
-        create_file_qemu(args)
-
-    accel = "tcg"
-    match sys.platform:
-        case "win32": accel = "whpx"
-        case "linux": accel = "kvm"
-
+def build_boot(args):
     profile = "bootloader_debug" if args.debug else "bootloader"
     subprocess.run(
         [
@@ -320,6 +312,18 @@ def run_qemu(args):
         stderr=None,
         check=True
     )
+
+def run_qemu(args):
+    profile = "bootloader_debug" if args.debug else "bootloader"
+    if not runner_fs.exists():
+        create_file_qemu(args)
+
+    build_boot(args)
+
+    accel = "tcg"
+    match sys.platform:
+        case "win32": accel = "whpx"
+        case "linux": accel = "kvm"
 
     runner_boot_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(root / "target" / "x86_64-unknown-uefi" / profile / "elpytios-bootloader.efi", runner_boot_file)
@@ -369,6 +373,14 @@ def main():
     std_sub.add_parser("fetch").set_defaults(func=fetch_std)
     std_sub.add_parser("build").set_defaults(func=build_std)
     std_sub.add_parser("clean").set_defaults(func=clean_std)
+
+    # `x boot`
+    boot = sub.add_parser("boot")
+    boot_sub = boot.add_subparsers(dest="boot_cmd")
+
+    boot_build = boot_sub.add_parser("build")
+    boot_build.set_defaults(func=build_boot)
+    boot_build.add_argument("--debug", action="store_true")
 
     # `x qemu`
     qemu = sub.add_parser("qemu")
