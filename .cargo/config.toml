@@ -15,4 +15,4 @@ debug-assertions = true
 debug = "full"
 
 [target.x86_64-unknown-none]
-rustflags = ["-C", "code-model=kernel", "-C", "relocation-model=static"]
+rustflags = ["-C", "code-model=kernel", "-C", "relocation-model=pie"]

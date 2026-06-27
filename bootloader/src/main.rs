@@ -7,7 +7,7 @@
 use core::{arch::naked_asm, mem::{self, MaybeUninit}, slice};
 
 use const_panic::concat_panic;
-use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::ElfProgramFlags};
+use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
 use elpytios_bootinfo::{BootInfo, GraphicsInfo, MAX_MEMORY_REGIONS, MemoryRegion, paddr::PAddr, vaddr::{VAddr, VFlags, VirtualMapBuilder}};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
 
@@ -36,7 +36,7 @@ const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
             Err(e) => concat_panic!(e),
         };
 
-        if segment.alignment != PAGE_SIZE as u64 {
+        if let ElfSegmentType::Load(..) = segment.segment_type && segment.alignment != PAGE_SIZE as u64 {
             concat_panic!("Kernel segments must be aligned to ", PAGE_SIZE, "! Found: ", segment.alignment);
         }
 
@@ -83,14 +83,18 @@ const KERNEL_VIRTUAL_ADDRESSES: [usize; 2] = {
 
     let mut i = 0;
     loop {
-        let segment = KERNEL_SEGMENTS[i];
-        if segment.segment_type != ElfSegmentType::Load { continue }
+        if i == KERNEL_SEGMENTS.len() { break }
+
+        let segment = &KERNEL_SEGMENTS[i];
+        if !matches!(segment.segment_type, ElfSegmentType::Load(..)) {
+            i += 1;
+            continue
+        }
 
         min = min.min(segment.virtual_address);
         max = max.max(segment.virtual_address + segment.memory_size);
 
         i += 1;
-        if i == KERNEL_SEGMENTS.len() { break }
     }
 
     match (usize::try_from(min), usize::try_from(max)) {
@@ -187,15 +191,15 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let [virtual_base, mut next_v_addr] = KERNEL_VIRTUAL_ADDRESSES;
         let kernel_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_CODE, (next_v_addr - virtual_base) / PAGE_SIZE).unwrap().as_ptr();
         for segment in KERNEL_SEGMENTS {
-            if segment.segment_type != ElfSegmentType::Load { continue }
+            let ElfSegmentType::Load(data) = segment.segment_type else { continue };
             unsafe {
                 kernel_ptr
                     .add(segment.virtual_address as usize - virtual_base)
-                    .copy_from_nonoverlapping(segment.data.as_ptr(), segment.data.len());
+                    .copy_from_nonoverlapping(data.as_ptr(), data.len());
 
                 kernel_ptr
-                    .add(segment.virtual_address as usize - virtual_base + segment.data.len())
-                    .add(segment.data.len()).write_bytes(0, segment.memory_size as usize - segment.data.len());
+                    .add(segment.virtual_address as usize - virtual_base + data.len())
+                    .add(data.len()).write_bytes(0, segment.memory_size as usize - data.len());
             }
 
             for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
@@ -209,6 +213,24 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 ).unwrap_or_else(|e| panic!("{e}"));
             }
         }
+
+        for segment in KERNEL_SEGMENTS {
+            let ElfSegmentType::Dynamic { offset, size, stride } = segment.segment_type else { continue };
+            for i in 0..size / stride {
+                unsafe {
+                    let rela = kernel_ptr.cast::<ElfRela64>().byte_add(offset - virtual_base).add(i).read_unaligned();
+                    match rela.info.kind {
+                        ElfRela64Type::X86_64_RELATIVE => {
+                            let patch_addr = kernel_ptr.add(rela.offset as usize - virtual_base);
+                            let value = virtual_base + rela.addend as usize;
+                            patch_addr.cast::<usize>().write(value);
+                        }
+                        kind => panic!("Unsupported Elf64_Rela kind: {}", kind.0),
+                    }
+                }
+            }
+        }
+
         kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
 
         // Identity-map the kernel switcher

@@ -2,7 +2,7 @@
 //!
 //! ```
 //! pub fn load_kernel_code() -> Result<(), ElfError> {
-//!     let kernel_code = include_bytes!("../Cargo.toml");
+//!     let kernel_code = include_bytes!("path/to/binary.elf");
 //!
 //!     match Elf::from_bytes(kernel_code)? {
 //!         Elf::N32(..) => unreachable!("kernel ELF is 64-bits, silly"),
@@ -11,7 +11,6 @@
 //!                 let segment = segment?;
 //!
 //!                 segment.segment_type;     // `ElfSegmentType`: null, load, dynamic, interp, and note
-//!                 segment.data;             // `&[u8]`, program segment data
 //!                 segment.flags;            // `ElfProgramFlags`: 1 = executable, 2 = writable, 4 = readable
 //!                 segment.virtual_address;  // `usize`, virtual address that `segment_data` should be copied into
 //!                 segment.physical_address; // `usize`, physical address that `segment_data` could be copied into, usually ignored
@@ -28,7 +27,6 @@
 #![no_std]
 #![feature(
     const_clone,
-    const_cmp,
     const_convert,
     const_destruct,
     const_index,
@@ -49,7 +47,7 @@ use bytemuck::AnyBitPattern;
 use const_panic::PanicFmt;
 use sys::{ElfHeader64, ElfHeaderPrologue, ElfProgramFlags, ElfProgramHeader64};
 
-use crate::sys::ElfSectionHeader64;
+use crate::sys::{ElfDt64, ElfDyn64, ElfSectionHeader64};
 
 #[derive(Debug, Clone, Copy, PanicFmt)]
 pub enum ElfError {
@@ -59,6 +57,7 @@ pub enum ElfError {
     InvalidSegmentType(u32),
     IntDoesntFit,
     MissingStringTable,
+    MalformedDynHeader,
     Eof,
 }
 
@@ -207,18 +206,32 @@ const impl<'a> Iterator for Elf64Programs<'a> {
         self.program_table_reader.take(self.stride as usize);
 
         Some(try {
-            let data = self
-                .file_reader
-                .fork(int_fit(program_header.segment_offset)?)
-                .ok_or(ElfError::Eof)?
-                .take(int_fit(program_header.segment_file_size)?)
-                .ok_or(ElfError::Eof)?;
-
+            let mut data = self.file_reader.fork(int_fit(program_header.segment_offset)?).ok_or(ElfError::Eof)?;
             ElfSegment64 {
                 segment_type: match program_header.segment_type {
                     0 => ElfSegmentType::Null,
-                    1 => ElfSegmentType::Load,
-                    2 => ElfSegmentType::Dynamic,
+                    1 => ElfSegmentType::Load(data.take(int_fit(program_header.segment_file_size)?).ok_or(ElfError::Eof)?),
+                    2 => {
+                        let mut rela_offset = None;
+                        let mut rela_size = None;
+                        let mut rela_stride = None;
+                        loop {
+                            let dyn_entry = data.read::<ElfDyn64>().ok_or(ElfError::Eof)?;
+                            match dyn_entry.tag {
+                                ElfDt64::NULL => break,
+                                ElfDt64::RELA => rela_offset = Some(int_fit(dyn_entry.val)?),
+                                ElfDt64::RELASZ => rela_size = Some(int_fit(dyn_entry.val)?),
+                                ElfDt64::RELAENT => rela_stride = Some(int_fit(dyn_entry.val)?),
+                                _ => {}
+                            }
+                        }
+
+                        let offset = rela_offset.ok_or(ElfError::MalformedDynHeader)?;
+                        let size = rela_size.ok_or(ElfError::MalformedDynHeader)?;
+                        let stride = rela_stride.ok_or(ElfError::MalformedDynHeader)?;
+
+                        ElfSegmentType::Dynamic { offset, size, stride }
+                    }
                     3 => ElfSegmentType::Interp,
                     4 => ElfSegmentType::Note,
                     5 => ElfSegmentType::Shlib,
@@ -226,7 +239,6 @@ const impl<'a> Iterator for Elf64Programs<'a> {
                     7 => ElfSegmentType::Tls,
                     n => ElfSegmentType::Unknown(n),
                 },
-                data,
                 flags: program_header.flags,
                 virtual_address: program_header.segment_virtual_address,
                 physical_address: program_header.segment_physical_address,
@@ -252,10 +264,9 @@ impl ExactSizeIterator for Elf64Programs<'_> {
 
 impl FusedIterator for Elf64Programs<'_> {}
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ElfSegment64<'a> {
-    pub segment_type: ElfSegmentType,
-    pub data: &'a [u8],
+    pub segment_type: ElfSegmentType<'a>,
     pub flags: ElfProgramFlags,
     /// [`Self::data`] should be copied to this v-address
     pub virtual_address: u64,
@@ -267,15 +278,15 @@ pub struct ElfSegment64<'a> {
     pub alignment: u64,
 }
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone)]
 #[repr(u32)]
-pub enum ElfSegmentType {
+pub enum ElfSegmentType<'a> {
     /// Ignore the entry
     Null = 0,
     /// Clear p_memsz bytes at p_vaddr to 0, then copy p_filesz bytes from p_offset to p_vaddr
-    Load = 1,
+    Load(&'a [u8]) = 1,
     /// Requires dynamic linking
-    Dynamic = 2,
+    Dynamic { offset: usize, size: usize, stride: usize } = 2,
     /// Contains a file path to an executable to use as an interpreter for the segment
     Interp = 3,
     /// Note section. There are more values, but mostly contain architecture/environment specific
@@ -289,25 +300,6 @@ pub enum ElfSegmentType {
     Tls = 7,
     /// Unknown segment type
     Unknown(u32) = u32::MAX,
-}
-
-const impl Eq for ElfSegmentType {}
-const impl PartialEq for ElfSegmentType {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        match (*self, *other) {
-            (Self::Null, Self::Null)
-            | (Self::Load, Self::Load)
-            | (Self::Dynamic, Self::Dynamic)
-            | (Self::Interp, Self::Interp)
-            | (Self::Note, Self::Note)
-            | (Self::Shlib, Self::Shlib)
-            | (Self::Header, Self::Header)
-            | (Self::Tls, Self::Tls) => true,
-            (Self::Unknown(l), Self::Unknown(r)) if l == r => true,
-            _ => false,
-        }
-    }
 }
 
 #[derive(Debug)]

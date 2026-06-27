@@ -1,7 +1,7 @@
-use bytemuck::{Pod, Zeroable};
+use bytemuck::AnyBitPattern;
 
 /// The ELF header is always found at the start of the file.
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 pub struct ElfHeaderPrologue {
     /// Magic number - 0x7F, then 'ELF' in ASCII                      0-3
@@ -25,7 +25,7 @@ pub struct ElfHeaderPrologue {
 }
 
 /// Continuation of [`ElfHeaderPrologue`] in 64-bit format (arch == 2).
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 pub struct ElfHeader64 {
     /// Program entry offset                                         24-31

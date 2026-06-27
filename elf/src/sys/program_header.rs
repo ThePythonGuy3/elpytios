@@ -1,7 +1,7 @@
 use bitflags::bitflags;
-use bytemuck::{Pod, Zeroable};
+use bytemuck::AnyBitPattern;
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 pub struct ElfProgramHeader64 {
     /// Type of segment (see below)                                         0-3
@@ -22,7 +22,7 @@ pub struct ElfProgramHeader64 {
     pub section_alignment: u64,
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, AnyBitPattern)]
 #[repr(transparent)]
 pub struct ElfProgramFlags(u32);
 bitflags! {
