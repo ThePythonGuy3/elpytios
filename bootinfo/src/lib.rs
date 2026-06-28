@@ -85,8 +85,8 @@ pub struct MemoryRegion {
 
 #[repr(C, align(4096))]
 pub struct BootInfo {
-    pub graphics_info:        GraphicsInfo,
-    pub virtual_map:          VirtualMap,
+    //pub graphics_info:        GraphicsInfo,
+    //pub virtual_map:          VirtualMap,
     //pub root_page_table:      PAddr,
     /// Leftover identity-mapping from the bootloader, to be unmapped by the kernel
     //pub switcher_map:         VAddr,

@@ -6,11 +6,79 @@
 
 use core::{arch::{asm, naked_asm}, fmt::Write, panic::PanicInfo};
 
-use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
-use elpytios_kernel::{boot_info, rendering::DisplayWriter};
+use elpytios_bootinfo::{MemoryRegion, PAGE_SIZE, paddr::PAddr};
+use elpytios_kernel::{alloc::{AllocTree, PhysicalPageAllocator}, boot_info, rendering::DisplayWriter};
 
 #[panic_handler]
 fn hanic_pandler(_info: &PanicInfo) -> ! {
+    loop {}
+}
+
+#[unsafe(naked)]
+#[unsafe(export_name = "_start")]
+unsafe extern "sysv64" fn jump_from_bootloader() -> ! {
+    naked_asm!(
+        "lea rax, [rip + {setup_virtual_paging}]",
+        "jmp rax",
+
+        setup_virtual_paging = sym setup_virtual_paging,
+    )
+}
+
+unsafe extern "sysv64" fn setup_virtual_paging() -> ! {
+    let mut alloc = None;
+    for region in boot_info().memory_regions() {
+        let (alloc, MemoryRegion { mut base, mut pages }) = match alloc.as_mut() {
+            Some(alloc) => (alloc, *region),
+            None if region.pages >= 1 => {
+                let ptr = region.base.addr() as *mut PhysicalPageAllocator;
+                (
+                    unsafe {
+                        ptr.write(PhysicalPageAllocator::new());
+                        alloc.insert(ptr.as_mut_unchecked())
+                    },
+                    MemoryRegion {
+                        base: region.base.byte_add(PAGE_SIZE),
+                        pages: region.pages - 1,
+                    }
+                )
+            }
+            None => continue,
+        };
+
+        while pages > 0 {
+            let Ok(layout) = AllocTree::layout(pages) else { break };
+            let total_page_count = layout.size().div_ceil(PAGE_SIZE) + layout.node_count();
+            if total_page_count > pages {
+                pages /= 2;
+            } else {
+                unsafe {
+                    let tree = AllocTree::new(base.addr() as *mut (), layout);
+                    alloc.push_tree(base, tree);
+                }
+
+                base = base.byte_add(total_page_count * PAGE_SIZE);
+                pages -= total_page_count;
+            }
+        }
+    }
+
+    unsafe {
+        asm!(
+            "lea rax, [rip + {main}]",
+            "jmp rax",
+
+            main = sym main,
+
+            options(noreturn),
+        )
+    }
+}
+
+unsafe extern "sysv64" fn main() -> ! {
+    #[cfg(debug_assertions)]
+    pause();
+
     loop {}
 }
 
@@ -31,7 +99,7 @@ fn pause() {
     }
 }
 
-#[unsafe(naked)]
+/*#[unsafe(naked)]
 #[unsafe(export_name = "_start")]
 unsafe extern "sysv64" fn jump_from_bootloader(root_page_table: PAddr, kernel_offset: usize) -> ! {
     naked_asm!(
@@ -74,4 +142,4 @@ unsafe extern "sysv64" fn main() -> ! {
     //writeln!(&mut display_writer, "Higher-half virtual addressing available in range {virt_start}..{virt_end}").unwrap();
 
     loop {}
-}
+}*/

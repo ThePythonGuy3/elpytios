@@ -115,12 +115,11 @@ const KERNEL_VIRTUAL_ADDRESSES: [usize; 2] = {
 const KERNEL_STACK_PAGES: usize = 8;
 
 struct UefiInfo {
-    pub memory_map:         MemoryMapOwned,
-    pub root_page_table:    PAddr,
+    //pub root_page_table:    PAddr,
 
     pub kernel_entry:      *mut u8,
     pub kernel_stack_base: *mut u8,
-    pub kernel_offset:      usize,
+    //pub kernel_offset:      usize,
     //pub pml4_phys:          PAddr,
 
     //pub kernel_stack_base:  VAddr,
@@ -128,12 +127,11 @@ struct UefiInfo {
 }
 
 fn setup_uefi_and_exit() -> UefiInfo {
-    let memory_map:         MemoryMapOwned;
-    let root_page_table:    PAddr;
+    //let root_page_table:    PAddr;
 
     let kernel_entry:      *mut u8;
     let kernel_stack_base: *mut u8;
-    let kernel_offset:      usize;
+    //let kernel_offset:      usize;
     //let pml4_phys:          PAddr;
 
     let boot_info_ptr:     *mut BootInfo;
@@ -199,7 +197,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size,
         };
 
-        let mut virtual_map = unsafe {
+        /*let mut virtual_map = unsafe {
             VirtualMapBuilder::new(
                 // 511 used for higher-half addressing
                 510,
@@ -212,12 +210,12 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 // Identity mapping is still enabled at this point
                 |ptr| ptr.addr() as *mut (),
             )
-        };
+        };*/
 
         let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESSES;
         let kernel_base_pages = (virtual_max - virtual_base) / PAGE_SIZE;
         let kernel_ptr = boot::allocate_pages(
-            AllocateType::AnyPages,
+            AllocateType::Address(0x200000),
             ELPYTI_KERNEL_CODE,
             kernel_base_pages + KERNEL_STACK_PAGES,
         ).unwrap().as_ptr();
@@ -234,7 +232,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                     .write_bytes(0, segment.memory_size as usize - data.len());
             }
 
-            for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
+            /*for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
                 virtual_map.map(
                     PAddr::new(unsafe { kernel_ptr.add(segment.virtual_address as usize - virtual_base).addr() } + i),
                     VAddr::new(kernel_ptr.addr() + segment.virtual_address as usize - virtual_base + i),
@@ -252,10 +250,10 @@ fn setup_uefi_and_exit() -> UefiInfo {
                         true => VFlags::WRITABLE,
                     },
                 ).unwrap_or_else(|e| panic!("Couldn't higher-half map: {e}"));
-            }
+            }*/
         }
 
-        for i in 0..KERNEL_STACK_PAGES {
+        /*for i in 0..KERNEL_STACK_PAGES {
             virtual_map.map(
                 PAddr::new(unsafe { kernel_ptr.add((kernel_base_pages + i) * PAGE_SIZE).addr() }),
                 VAddr::new(kernel_ptr.addr() + (kernel_base_pages + i) * PAGE_SIZE),
@@ -267,7 +265,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 VAddr::new(virtual_max - virtual_base + HIGHER_HALF_ADDRESS + i * PAGE_SIZE),
                 VFlags::GLOBAL | VFlags::WRITABLE,
             ).unwrap_or_else(|e| panic!("Couldn't higher-half map: {e}"));
-        }
+        }*/
 
         for segment in KERNEL_SEGMENTS {
             let ElfSegmentType::Dynamic { offset, size, stride } = segment.segment_type else { continue };
@@ -287,15 +285,15 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         }
 
-        let (root_page_table_ret, virtual_map) = virtual_map.finish().unwrap();
-        root_page_table = root_page_table_ret;
-        kernel_offset = HIGHER_HALF_ADDRESS - kernel_ptr.addr();
+        //let (root_page_table_ret, virtual_map) = virtual_map.finish().unwrap();
+        //root_page_table = root_page_table_ret;
+        //kernel_offset = HIGHER_HALF_ADDRESS - kernel_ptr.addr();
 
         unsafe {
             boot_info_ptr = kernel_ptr.add(KERNEL_BOOTINFO_ADDRESS - virtual_base).cast::<BootInfo>();
             boot_info_ptr.write(BootInfo {
-                graphics_info,
-                virtual_map,
+                //graphics_info,
+                //virtual_map,
                 //root_page_table,
 
                 //kernel_offset: HIGHER_HALF_ADDRESS - kernel_ptr.addr(),
@@ -369,7 +367,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
     }
 
     unsafe {
-        memory_map = boot::exit_boot_services(Some(MemoryType::LOADER_DATA));
+        let memory_map = boot::exit_boot_services(Some(MemoryType::LOADER_DATA));
 
         let mut len = 0;
         let mut region = None;
@@ -394,7 +392,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 Some(reg) => {
                     if reg.base.addr() + reg.pages * PAGE_SIZE == start {
                         reg.pages += count;
-                    } else if reg.pages >= 8 {
+                    } else {
                         (&raw mut (*boot_info_ptr).memory_regions_base[len])
                             .cast::<MemoryRegion>()
                             .write(mem::replace(reg, MemoryRegion {
@@ -406,8 +404,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
                         if len == MAX_MEMORY_REGIONS {
                             break
                         }
-                    } else {
-                        region = None;
                     }
                 }
             }
@@ -425,20 +421,28 @@ fn setup_uefi_and_exit() -> UefiInfo {
     }
 
     UefiInfo {
-        memory_map,
-        root_page_table,
+        //root_page_table,
 
         kernel_stack_base,
         kernel_entry,
-        kernel_offset,
+        //kernel_offset,
     }
 }
 
 #[entry]
 fn entry() -> Status {
-    let UefiInfo { memory_map, root_page_table, kernel_entry, kernel_stack_base, kernel_offset } = setup_uefi_and_exit();
+    let UefiInfo { kernel_entry, kernel_stack_base } = setup_uefi_and_exit();
     unsafe {
         asm!(
+            "lea rsp, [{kernel_stack_base} - 8]",
+            "jmp {kernel_entry}",
+
+            kernel_stack_base = in(reg) kernel_stack_base,
+            kernel_entry = in(reg) kernel_entry,
+
+            options(noreturn)
+        )
+        /*asm!(
             "lea rsp, [{kernel_stack_base} - 8]",
             "mov rdi, {root_page_table}",
             "mov rsi, {kernel_offset}",
@@ -449,12 +453,7 @@ fn entry() -> Status {
             root_page_table = in(reg) root_page_table.addr(),
             kernel_offset = in(reg) kernel_offset,
 
-            options(noreturn)
-        )
+            optons(noreturn)
+        )*/
     }
-
-    /*let UefiInfo { memory_map, pml4_phys, kernel_stack_base, kernel_entry } = setup_uefi_and_exit();
-    unsafe {
-        switch_to_kernel(pml4_phys.addr(), kernel_stack_base.addr(), kernel_entry.addr())
-    }*/
 }

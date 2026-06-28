@@ -26,7 +26,7 @@ pub enum AllocError {
 
 /// A binary buddy tree, implemented with a split bitset and free lists. The tree operates on number
 /// of "order," not leaf counts; i.e., the leaf count must be `2 ^ order`.
-#[repr(C)]
+#[repr(C, align(4096))]
 pub struct AllocTree {
     #[cfg(debug_assertions)]
     id: u32,
@@ -47,13 +47,13 @@ struct AllocTreeFields<'a> {
 }
 
 impl AllocTree {
-    pub unsafe fn new<'a>(at: *mut (), layout: AllocTreeLayout) -> &'a mut Self {
+    pub unsafe fn new(at: *mut (), layout: AllocTreeLayout) -> *mut Self {
         let this = ptr::from_raw_parts_mut::<Self>(at, layout.size() - layout.free_nodes_offset_abs);
-        let this = unsafe {
+        unsafe {
             #[cfg(debug_assertions)]
             (&raw mut (*this).id).write(TREE_ID.fetch_add(1, Ordering::Relaxed));
 
-            (&raw mut (*this).max_order).write(layout.max_order);
+            /*(&raw mut (*this).max_order).write(layout.max_order);
             (&raw mut (*this).nodes_offset).write(layout.nodes_offset_abs - layout.free_nodes_offset_abs);
             (&raw mut (*this).split_bitset_offset).write(layout.split_bitset_offset_abs - layout.free_nodes_offset_abs);
 
@@ -76,10 +76,8 @@ impl AllocTree {
                 .as_mut_ptr()
                 .add(layout.split_bitset_offset_abs - layout.free_nodes_offset_abs)
                 .cast::<u32>()
-                .write_bytes(0, AllocBitset::size_for((1 << layout.max_order) - 1));
-
-            this.as_mut_unchecked()
-        };
+                .write_bytes(0, AllocBitset::size_for((1 << layout.max_order) - 1));*/
+        }
 
         this
     }
