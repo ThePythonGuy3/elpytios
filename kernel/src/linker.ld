@@ -10,7 +10,7 @@ PHDRS
 SECTIONS
 {
     __kernel_start = .;
-    . = 0x200000;
+    . = 0xffffffff80000000;
 
     .text : ALIGN(4K)
     {
@@ -25,6 +25,13 @@ SECTIONS
         __rodata_start = .;
         *(.rodata .rodata.*)
         __rodata_end = .;
+    } :rodata
+
+    .bootinfo (NOLOAD) : ALIGN(4K)
+    {
+        __bootinfo_start = .;
+        KEEP(*(.bootinfo))
+        __bootinfo_end = .;
     } :rodata
 
     .data : ALIGN(4K)

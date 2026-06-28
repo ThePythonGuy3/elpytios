@@ -292,13 +292,14 @@ def run_qemu(args):
         case "win32": accel = "whpx"
         case "linux": accel = "kvm"
 
+    profile = "bootloader_debug" if args.debug else "bootloader"
     subprocess.run(
         [
             "cargo", "rustc",
             "--package", "elpytios-kernel",
             "--bin", "elpytios-kernel",
             "--target", "x86_64-unknown-none",
-            "--profile", "bootloader",
+            "--profile", profile,
         ],
         cwd=root,
         stdout=None,
@@ -312,7 +313,7 @@ def run_qemu(args):
             "--package", "elpytios-bootloader",
             "--bin", "elpytios-bootloader",
             "--target", "x86_64-unknown-uefi",
-            "--profile", "bootloader",
+            "--profile", profile,
         ],
         cwd=root,
         stdout=None,
@@ -321,7 +322,7 @@ def run_qemu(args):
     )
 
     runner_boot_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(root / "target" / "x86_64-unknown-uefi" / "bootloader" / "elpytios-bootloader.efi", runner_boot_file)
+    shutil.copy(root / "target" / "x86_64-unknown-uefi" / profile / "elpytios-bootloader.efi", runner_boot_file)
 
     subprocess.run(
         [
@@ -336,7 +337,7 @@ def run_qemu(args):
             "-device", "virtio-vga",
             "-vga", "virtio",
             "-monitor", "stdio",
-            *(["-s", "-S"] if args.debug else []),
+            *(["-s"] if args.debug else []),
         ],
         stdout=None,
         stderr=None,
