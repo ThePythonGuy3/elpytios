@@ -1,10 +1,10 @@
-#![feature(const_cmp, const_convert, const_iter, const_trait_impl, custom_inner_attributes, fn_align)]
+#![feature(const_cmp, const_convert, const_iter, const_trait_impl, custom_inner_attributes)]
 #![rustfmt::skip]
 
 #![no_std]
 #![no_main]
 
-use core::{arch::{asm, naked_asm}, mem::{self, MaybeUninit}, slice};
+use core::{arch::asm, mem::{self, MaybeUninit}, slice};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
@@ -75,8 +75,10 @@ const KERNEL_BOOTINFO_ADDRESS: usize = {
     }
 };
 
+const HIGHER_HALF_ADDRESS: usize = 0xffffffff80000000;
+
 /// Index 0: Lowest virtual address of the kernel.
-/// Index 1: New virtual addresses can take this spot.
+/// Index 1: Highest virtual address of the kernel, page-aligned.
 const KERNEL_VIRTUAL_ADDRESSES: [usize; 2] = {
     let mut min = u64::MAX;
     let mut max = u64::MIN;
@@ -114,9 +116,11 @@ const KERNEL_STACK_PAGES: usize = 8;
 
 struct UefiInfo {
     pub memory_map:         MemoryMapOwned,
+    pub root_page_table:    PAddr,
 
     pub kernel_entry:      *mut u8,
     pub kernel_stack_base: *mut u8,
+    pub kernel_offset:      usize,
     //pub pml4_phys:          PAddr,
 
     //pub kernel_stack_base:  VAddr,
@@ -125,9 +129,11 @@ struct UefiInfo {
 
 fn setup_uefi_and_exit() -> UefiInfo {
     let memory_map:         MemoryMapOwned;
+    let root_page_table:    PAddr;
 
     let kernel_entry:      *mut u8;
     let kernel_stack_base: *mut u8;
+    let kernel_offset:      usize;
     //let pml4_phys:          PAddr;
 
     let boot_info_ptr:     *mut BootInfo;
@@ -193,10 +199,25 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size,
         };
 
+        let mut virtual_map = unsafe {
+            VirtualMapBuilder::new(
+                // 511 used for higher-half addressing
+                510,
+                // Allocate 1 page via UEFI's allocator
+                || boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).ok().map(|ptr| {
+                    let ptr = ptr.as_ptr();
+                    ptr.write_bytes(0, PAGE_SIZE);
+                    PAddr::new(ptr.addr())
+                }),
+                // Identity mapping is still enabled at this point
+                |ptr| ptr.addr() as *mut (),
+            )
+        };
+
         let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESSES;
         let kernel_base_pages = (virtual_max - virtual_base) / PAGE_SIZE;
         let kernel_ptr = boot::allocate_pages(
-            AllocateType::Address(0x200000),
+            AllocateType::AnyPages,
             ELPYTI_KERNEL_CODE,
             kernel_base_pages + KERNEL_STACK_PAGES,
         ).unwrap().as_ptr();
@@ -213,16 +234,39 @@ fn setup_uefi_and_exit() -> UefiInfo {
                     .write_bytes(0, segment.memory_size as usize - data.len());
             }
 
-            /*for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
+            for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
                 virtual_map.map(
                     PAddr::new(unsafe { kernel_ptr.add(segment.virtual_address as usize - virtual_base).addr() } + i),
-                    VAddr::new(segment.virtual_address as usize + i),
+                    VAddr::new(kernel_ptr.addr() + segment.virtual_address as usize - virtual_base + i),
                     VFlags::GLOBAL | match segment.flags.contains(ElfProgramFlags::WRITABLE) {
                         false => VFlags::empty(),
                         true => VFlags::WRITABLE,
                     },
-                ).unwrap_or_else(|e| panic!("{e}"));
-            }*/
+                ).unwrap_or_else(|e| panic!("Couldn't identity-map: {e}"));
+
+                virtual_map.map(
+                    PAddr::new(unsafe { kernel_ptr.add(segment.virtual_address as usize - virtual_base).addr() } + i),
+                    VAddr::new(segment.virtual_address as usize - virtual_base + HIGHER_HALF_ADDRESS + i),
+                    VFlags::GLOBAL | match segment.flags.contains(ElfProgramFlags::WRITABLE) {
+                        false => VFlags::empty(),
+                        true => VFlags::WRITABLE,
+                    },
+                ).unwrap_or_else(|e| panic!("Couldn't higher-half map: {e}"));
+            }
+        }
+
+        for i in 0..KERNEL_STACK_PAGES {
+            virtual_map.map(
+                PAddr::new(unsafe { kernel_ptr.add((kernel_base_pages + i) * PAGE_SIZE).addr() }),
+                VAddr::new(kernel_ptr.addr() + (kernel_base_pages + i) * PAGE_SIZE),
+                VFlags::GLOBAL | VFlags::WRITABLE,
+            ).unwrap_or_else(|e| panic!("Couldn't identity-map: {e}"));
+
+            virtual_map.map(
+                PAddr::new(unsafe { kernel_ptr.add((kernel_base_pages + i) * PAGE_SIZE).addr() }),
+                VAddr::new(virtual_max - virtual_base + HIGHER_HALF_ADDRESS + i * PAGE_SIZE),
+                VFlags::GLOBAL | VFlags::WRITABLE,
+            ).unwrap_or_else(|e| panic!("Couldn't higher-half map: {e}"));
         }
 
         for segment in KERNEL_SEGMENTS {
@@ -243,10 +287,22 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         }
 
+        let (root_page_table_ret, virtual_map) = virtual_map.finish().unwrap();
+        root_page_table = root_page_table_ret;
+        kernel_offset = HIGHER_HALF_ADDRESS - kernel_ptr.addr();
+
         unsafe {
             boot_info_ptr = kernel_ptr.add(KERNEL_BOOTINFO_ADDRESS - virtual_base).cast::<BootInfo>();
             boot_info_ptr.write(BootInfo {
                 graphics_info,
+                virtual_map,
+                //root_page_table,
+
+                //kernel_offset: HIGHER_HALF_ADDRESS - kernel_ptr.addr(),
+                kernel_identity: MemoryRegion {
+                    base: PAddr::new(kernel_ptr.addr()),
+                    pages: kernel_base_pages + KERNEL_STACK_PAGES,
+                },
 
                 memory_regions_base: [MaybeUninit::uninit(); _],
                 memory_regions_size: 0,
@@ -256,21 +312,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         kernel_entry = unsafe { kernel_ptr.add(KERNEL_BINARY.program_entry() as usize - virtual_base) };
         kernel_stack_base = unsafe { kernel_ptr.add((kernel_base_pages + KERNEL_STACK_PAGES) * PAGE_SIZE) };
 
-        /*let mut virtual_map = unsafe {
-            VirtualMapBuilder::new(
-                // 511 used for higher-half addressing
-                510,
-                // Allocate 1 page via UEFI's allocator
-                || boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).ok().map(|ptr| {
-                    let ptr = ptr.as_ptr();
-                    ptr.write_bytes(0, PAGE_SIZE);
-                    PAddr::new(ptr.addr())
-                }),
-                // Identity mapping is still enabled at this point
-                |ptr| ptr.addr() as *mut (),
-            )
-        };
-
+        /*
         kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
 
         // Identity-map the kernel switcher
@@ -384,37 +426,28 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
     UefiInfo {
         memory_map,
-        //pml4_phys,
+        root_page_table,
 
         kernel_stack_base,
         kernel_entry,
+        kernel_offset,
     }
 }
 
-/*#[rustc_align(4096)]
-#[unsafe(naked)]
-unsafe extern "sysv64" fn switch_to_kernel(
-    pml4_phys: usize,
-    stack_base: usize,
-    kernel_entry: usize,
-) -> ! {
-    naked_asm!(
-        "mov cr3, rdi",
-        "lea rsp, [rsi - 8]",
-        "jmp rdx",
-    )
-}*/
-
 #[entry]
 fn entry() -> Status {
-    let UefiInfo { memory_map, kernel_entry, kernel_stack_base } = setup_uefi_and_exit();
+    let UefiInfo { memory_map, root_page_table, kernel_entry, kernel_stack_base, kernel_offset } = setup_uefi_and_exit();
     unsafe {
         asm!(
             "lea rsp, [{kernel_stack_base} - 8]",
+            "mov rdi, {root_page_table}",
+            "mov rsi, {kernel_offset}",
             "jmp {kernel_entry}",
 
             kernel_stack_base = in(reg) kernel_stack_base,
             kernel_entry = in(reg) kernel_entry,
+            root_page_table = in(reg) root_page_table.addr(),
+            kernel_offset = in(reg) kernel_offset,
 
             options(noreturn)
         )

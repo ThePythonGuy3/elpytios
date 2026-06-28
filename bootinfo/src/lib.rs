@@ -51,7 +51,7 @@ use derive_more::Display;
 use core::{mem::MaybeUninit, slice};
 
 use paddr::PAddr;
-use vaddr::{VAddr, VirtualMap};
+use vaddr::VirtualMap;
 
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_MEMORY_REGIONS: usize = 128;
@@ -86,9 +86,13 @@ pub struct MemoryRegion {
 #[repr(C, align(4096))]
 pub struct BootInfo {
     pub graphics_info:        GraphicsInfo,
-    //pub virtual_map:          VirtualMap,
+    pub virtual_map:          VirtualMap,
+    //pub root_page_table:      PAddr,
     /// Leftover identity-mapping from the bootloader, to be unmapped by the kernel
     //pub switcher_map:         VAddr,
+
+    //pub kernel_offset:        usize,
+    pub kernel_identity:      MemoryRegion,
 
     pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
     pub memory_regions_size:  usize,

@@ -341,10 +341,11 @@ def run_qemu(args):
             "-device", "virtio-vga",
             "-vga", "virtio",
             "-monitor", "stdio",
+            "-d", "int", "-no-reboot", "-no-shutdown",
             *(["-s"] if args.debug else []),
         ],
         stdout=None,
-        stderr=None,
+        stderr=open("qemu.log", "w"),
         check=True
     )
 
