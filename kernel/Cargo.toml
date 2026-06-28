@@ -11,3 +11,8 @@ forced-target = "x86_64-unknown-none"
 [dependencies]
 elpytios-abi = { path = "../abi" }
 elpytios-bootinfo = { path = "../bootinfo" }
+
+derive_more = { version = "2", default-features = false, features = [
+    "display",
+] }
+nonmax = { version = "0.5", default-features = false }

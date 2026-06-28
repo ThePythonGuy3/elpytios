@@ -1,10 +1,11 @@
-#![feature(custom_inner_attributes)]
+#![feature(arbitrary_self_types_pointers, const_trait_impl, const_try, custom_inner_attributes, ptr_metadata, slice_ptr_get)]
 #![rustfmt::skip]
 
 #![no_std]
 
-pub mod page_alloc;
-pub mod page_alloc_tree;
+//pub mod page_alloc;
+//pub mod page_alloc_tree;
+pub mod alloc;
 pub mod rendering;
 
 use core::mem::MaybeUninit;
