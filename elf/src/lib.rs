@@ -227,14 +227,11 @@ const impl<'a> Iterator for Elf64Programs<'a> {
                         }
 
                         // TODO `DT_RELA` isn't the only way to relocate things
-                        if let Some(offset) = rela_offset {
-                            let size = rela_size.ok_or(ElfError::MalformedDynHeader("`DT_RELASZ` not found"))?;
-                            let stride = rela_stride.ok_or(ElfError::MalformedDynHeader("`DT_RELAENT` not found"))?;
+                        let offset = rela_offset.ok_or(ElfError::MalformedDynHeader("`DT_RELA` not found"))?;
+                        let size = rela_size.ok_or(ElfError::MalformedDynHeader("`DT_RELASZ` not found"))?;
+                        let stride = rela_stride.ok_or(ElfError::MalformedDynHeader("`DT_RELAENT` not found"))?;
 
-                            ElfSegmentType::Dynamic { offset, size, stride }
-                        } else {
-                            ElfSegmentType::Null
-                        }
+                        ElfSegmentType::Dynamic { offset, size, stride }
                     }
                     3 => ElfSegmentType::Interp,
                     4 => ElfSegmentType::Note,

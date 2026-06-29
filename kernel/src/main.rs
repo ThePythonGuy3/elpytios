@@ -1,16 +1,25 @@
-#![feature(custom_inner_attributes)]
-#![rustfmt::skip]
-
 #![no_std]
 #![no_main]
 
-use core::{arch::{asm, naked_asm}, fmt::Write, panic::PanicInfo};
+use core::{
+    arch::{asm, naked_asm},
+    fmt::Write,
+    panic::PanicInfo,
+};
 
-use elpytios_bootinfo::{MemoryRegion, PAGE_SIZE, paddr::PAddr};
-use elpytios_kernel::{alloc::{AllocTree, PhysicalPageAllocator}, boot_info, rendering::DisplayWriter};
+use elpytios_bootinfo::{
+    MemoryReclaimType, MemoryRegion, PAGE_SIZE,
+    vaddr::{VAddr, VFlags, VirtualMapBuilder},
+};
+use elpytios_kernel::{
+    alloc::{AllocTree, PhysicalPageAllocator},
+    boot_info, println,
+    serial::{Com, Serial, serial_init, serial_write},
+};
 
 #[panic_handler]
-fn hanic_pandler(_info: &PanicInfo) -> ! {
+fn panic_handler(info: &PanicInfo) -> ! {
+    println!("{info}");
     loop {}
 }
 
@@ -18,18 +27,67 @@ fn hanic_pandler(_info: &PanicInfo) -> ! {
 #[unsafe(export_name = "_start")]
 unsafe extern "sysv64" fn jump_from_bootloader() -> ! {
     naked_asm!(
-        "lea rax, [rip + {setup_virtual_paging}]",
+        "lea rax, [rip + {setup}]",
         "jmp rax",
 
-        setup_virtual_paging = sym setup_virtual_paging,
+        setup = sym setup,
     )
 }
 
-unsafe extern "sysv64" fn setup_virtual_paging() -> ! {
-    let mut alloc = None;
+const HIGHER_HALF_ADDRESS_BASE: VAddr = VAddr::new(0xffffffff80000000);
+
+unsafe extern "sysv64" fn setup() -> ! {
+    unsafe {
+        serial_init(Com::Com3);
+    }
+
+    let info = boot_info();
+
+    let max = info.page_table_init_len;
+    let mut i = 0;
+    let mut virtual_map = unsafe {
+        VirtualMapBuilder::new(
+            510,
+            || {
+                (i < max).then(|| {
+                    println!("yo");
+                    i += 1;
+                    info.page_table_init.byte_add((i - 1) * PAGE_SIZE)
+                })
+            },
+            |p_addr| p_addr.addr() as *mut (),
+        )
+    };
+
+    println!(
+        "Reserving {} pages in {:p} for initial virtual mapping...",
+        info.page_table_init_len, info.page_table_init
+    );
+
+    for i in 0..info.kernel_pages {
+        // OFFENDER HERE
+        /*println!(
+            "{} -> {}",
+            info.kernel_base.byte_add(i * PAGE_SIZE),
+            HIGHER_HALF_ADDRESS_BASE.byte_add(i * PAGE_SIZE),
+        );*/
+        virtual_map.map(
+            info.kernel_base.byte_add(i * PAGE_SIZE),
+            HIGHER_HALF_ADDRESS_BASE.byte_add(i * PAGE_SIZE),
+            VFlags::WRITABLE,
+        );
+        //.unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    //virtual_map.finish();
+    //let (virtual_map_addr, virtual_map) = virtual_map.finish().unwrap_or_else(|e| panic!("{e}"));
+
+    /*let mut alloc = None;
     for region in boot_info().memory_regions() {
-        let (alloc, MemoryRegion { mut base, mut pages }) = match alloc.as_mut() {
-            Some(alloc) => (alloc, *region),
+        if !matches!(region.reclaim, MemoryReclaimType::Free) { continue }
+
+        let (alloc, (mut base, mut pages)) = match alloc.as_mut() {
+            Some(alloc) => (alloc, (region.base, region.pages)),
             None if region.pages >= 1 => {
                 let ptr = region.base.addr() as *mut PhysicalPageAllocator;
                 (
@@ -37,10 +95,10 @@ unsafe extern "sysv64" fn setup_virtual_paging() -> ! {
                         ptr.write(PhysicalPageAllocator::new());
                         alloc.insert(ptr.as_mut_unchecked())
                     },
-                    MemoryRegion {
-                        base: region.base.byte_add(PAGE_SIZE),
-                        pages: region.pages - 1,
-                    }
+                    (
+                        region.base.byte_add(PAGE_SIZE),
+                        region.pages - 1,
+                    )
                 )
             }
             None => continue,
@@ -49,6 +107,7 @@ unsafe extern "sysv64" fn setup_virtual_paging() -> ! {
         while pages > 0 {
             let Ok(layout) = AllocTree::layout(pages) else { break };
             let total_page_count = layout.size().div_ceil(PAGE_SIZE) + layout.node_count();
+
             if total_page_count > pages {
                 pages /= 2;
             } else {
@@ -61,8 +120,9 @@ unsafe extern "sysv64" fn setup_virtual_paging() -> ! {
                 pages -= total_page_count;
             }
         }
-    }
+    }*/
 
+    println!("Enabling virtual paging...");
     unsafe {
         asm!(
             "lea rax, [rip + {main}]",
@@ -78,6 +138,8 @@ unsafe extern "sysv64" fn setup_virtual_paging() -> ! {
 unsafe extern "sysv64" fn main() -> ! {
     #[cfg(debug_assertions)]
     pause();
+
+    println!("Hello, world!");
 
     loop {}
 }

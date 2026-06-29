@@ -340,7 +340,10 @@ def run_qemu(args):
             "-m", "4G",
             "-device", "virtio-vga",
             "-vga", "virtio",
-            "-monitor", "stdio",
+            # Using `COM3` is the cleanest for the kernel, for some reason.
+            "-serial", "file:platform.log",
+            "-serial", "null",
+            "-serial", "stdio",
             "-d", "int", "-no-reboot", "-no-shutdown",
             *(["-s"] if args.debug else []),
         ],

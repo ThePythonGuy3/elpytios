@@ -26,11 +26,11 @@ pub enum AllocError {
 
 /// A binary buddy tree, implemented with a split bitset and free lists. The tree operates on number
 /// of "order," not leaf counts; i.e., the leaf count must be `2 ^ order`.
-#[repr(C, align(4096))]
+#[repr(C)]
 pub struct AllocTree {
+    max_order: u32,
     #[cfg(debug_assertions)]
     id: u32,
-    max_order: u32,
     // The offsets here are relative to the offset of `data`...
     nodes_offset: usize,
     split_bitset_offset: usize,
@@ -38,9 +38,9 @@ pub struct AllocTree {
 }
 
 struct AllocTreeFields<'a> {
+    max_order: u32,
     #[cfg(debug_assertions)]
     id: u32,
-    max_order: u32,
     free_lists: &'a mut [ListHead],
     list_nodes: &'a mut [ListNode],
     split_bitset: &'a mut AllocBitset,
@@ -53,7 +53,7 @@ impl AllocTree {
             #[cfg(debug_assertions)]
             (&raw mut (*this).id).write(TREE_ID.fetch_add(1, Ordering::Relaxed));
 
-            /*(&raw mut (*this).max_order).write(layout.max_order);
+            (&raw mut (*this).max_order).write(layout.max_order);
             (&raw mut (*this).nodes_offset).write(layout.nodes_offset_abs - layout.free_nodes_offset_abs);
             (&raw mut (*this).split_bitset_offset).write(layout.split_bitset_offset_abs - layout.free_nodes_offset_abs);
 
@@ -76,7 +76,7 @@ impl AllocTree {
                 .as_mut_ptr()
                 .add(layout.split_bitset_offset_abs - layout.free_nodes_offset_abs)
                 .cast::<u32>()
-                .write_bytes(0, AllocBitset::size_for((1 << layout.max_order) - 1));*/
+                .write_bytes(0, AllocBitset::size_for((1 << layout.max_order) - 1));
         }
 
         this
@@ -167,6 +167,13 @@ impl AllocTree {
 
         // `order`
         let layout = Layout::new::<u32>();
+        cfg_select! {
+            debug_assertions => {
+                // `id`
+                let (layout, ..) = layout.extend(Layout::new::<u32>())?;
+            }
+            _ => {}
+        }
         // `nodes_offset`
         let (layout, ..) = layout.extend(Layout::new::<usize>())?;
         // `split_bitset_offset`
@@ -205,7 +212,7 @@ impl Alloc {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct AllocTreeLayout {
     layout: Layout,
     // ..while the offsets here are absolute.

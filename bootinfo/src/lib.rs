@@ -28,9 +28,9 @@ pub mod vaddr {
     pub enum VirtualMapError {
         #[display("Couldn't allocate a page table")]
         PageTable,
-        #[display("Couldn't map {v_addr} to {p_addr}: the virtual address is reserved")]
+        #[display("Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is reserved")]
         Reserved { p_addr: PAddr, v_addr: VAddr },
-        #[display("Couldn't map {v_addr} to {p_addr}: the virtual address is already mapped to {p_addr_existing}")]
+        #[display("Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is already mapped to {p_addr_existing:p}")]
         AlreadyMapped { p_addr: PAddr, v_addr: VAddr, p_addr_existing: PAddr }
     }
 
@@ -51,7 +51,6 @@ use derive_more::Display;
 use core::{mem::MaybeUninit, slice};
 
 use paddr::PAddr;
-use vaddr::VirtualMap;
 
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_MEMORY_REGIONS: usize = 128;
@@ -77,12 +76,21 @@ pub struct GraphicsInfo {
     pub frame_buffer_size: usize
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
-    pub base:  PAddr,
-    pub pages: usize
+    pub base:    PAddr,
+    pub pages:   usize,
+    pub reclaim: MemoryReclaimType,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum MemoryReclaimType {
+    Free,
+    AfterVirtualMapping,
+}
+
+// Note: Must uphold `BootInfo: Sync`
+#[derive(Debug)]
 #[repr(C, align(4096))]
 pub struct BootInfo {
     //pub graphics_info:        GraphicsInfo,
@@ -92,10 +100,13 @@ pub struct BootInfo {
     //pub switcher_map:         VAddr,
 
     //pub kernel_offset:        usize,
-    pub kernel_identity:      MemoryRegion,
+    pub kernel_base:           PAddr,
+    pub kernel_pages:          usize,
+    pub page_table_init:       PAddr,
+    pub page_table_init_len:   usize,
 
     pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
-    pub memory_regions_size:  usize,
+    pub memory_regions_size:   usize,
     //pub v_addr_start:         VAddr,
     //pub v_addr_end:           VAddr,
 }

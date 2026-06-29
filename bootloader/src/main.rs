@@ -8,14 +8,14 @@ use core::{arch::asm, mem::{self, MaybeUninit}, slice};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, MAX_MEMORY_REGIONS, MemoryRegion, paddr::PAddr, vaddr::{VAddr, VFlags, VirtualMapBuilder}};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, MAX_MEMORY_REGIONS, MemoryReclaimType, MemoryRegion, paddr::PAddr, vaddr::{VAddr, VFlags, VirtualMapBuilder}};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
 
 const PAGE_SIZE: usize = 4096;
 
 const ELPYTI_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
-const ELPYTI_KERNEL_STACK: MemoryType = MemoryType::custom(0x8000_0001);
-const ELPYTI_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0002);
+const ELPYTI_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0001);
+const ELPYTI_PAGE_TABLE_PAGES: usize  = 1;
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
@@ -290,6 +290,9 @@ fn setup_uefi_and_exit() -> UefiInfo {
         //kernel_offset = HIGHER_HALF_ADDRESS - kernel_ptr.addr();
 
         unsafe {
+            let page_table_init = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, ELPYTI_PAGE_TABLE_PAGES).unwrap().as_ptr();
+            page_table_init.write_bytes(0, ELPYTI_PAGE_TABLE_PAGES * PAGE_SIZE);
+
             boot_info_ptr = kernel_ptr.add(KERNEL_BOOTINFO_ADDRESS - virtual_base).cast::<BootInfo>();
             boot_info_ptr.write(BootInfo {
                 //graphics_info,
@@ -297,10 +300,10 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 //root_page_table,
 
                 //kernel_offset: HIGHER_HALF_ADDRESS - kernel_ptr.addr(),
-                kernel_identity: MemoryRegion {
-                    base: PAddr::new(kernel_ptr.addr()),
-                    pages: kernel_base_pages + KERNEL_STACK_PAGES,
-                },
+                kernel_base: PAddr::new(kernel_ptr.addr()),
+                kernel_pages: kernel_base_pages + KERNEL_STACK_PAGES,
+                page_table_init: PAddr::new(page_table_init.addr()),
+                page_table_init_len: ELPYTI_PAGE_TABLE_PAGES,
 
                 memory_regions_base: [MaybeUninit::uninit(); _],
                 memory_regions_size: 0,
@@ -370,18 +373,36 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let memory_map = boot::exit_boot_services(Some(MemoryType::LOADER_DATA));
 
         let mut len = 0;
-        let mut region = None;
+        //let mut region = None;
 
-        for entry in memory_map.entries() {
-            if !matches!(entry.ty,
+        for mut entry in memory_map.entries().copied() {
+            let reclaim = match entry.ty {
+                MemoryType::CONVENTIONAL => MemoryReclaimType::Free,
                 MemoryType::LOADER_CODE | MemoryType::LOADER_DATA |
-                MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA |
-                MemoryType::CONVENTIONAL
-            ) {
-                continue
+                MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => MemoryReclaimType::AfterVirtualMapping,
+                _ => continue,
+            };
+
+            // Skip the page if it contains null pointer
+            if entry.phys_start == 0 {
+                entry.phys_start += PAGE_SIZE as u64;
+                entry.page_count -= 1;
             }
 
-            let start = entry.phys_start as usize;
+            (&raw mut (*boot_info_ptr).memory_regions_base[len])
+                .cast::<MemoryRegion>()
+                .write(MemoryRegion {
+                    base: PAddr::new(entry.phys_start as usize),
+                    pages: entry.page_count as usize,
+                    reclaim,
+                });
+            len += 1;
+
+            if len == MAX_MEMORY_REGIONS {
+                break
+            }
+
+            /*let start = entry.phys_start as usize;
             let count = entry.page_count as usize;
 
             match region.as_mut() {
@@ -406,16 +427,15 @@ fn setup_uefi_and_exit() -> UefiInfo {
                         }
                     }
                 }
-            }
+            }*/
         }
 
-        if len < MAX_MEMORY_REGIONS && let Some(region) = region {
+        /*if len < MAX_MEMORY_REGIONS && let Some(region) = region {
             (&raw mut (*boot_info_ptr).memory_regions_base[len]).cast::<MemoryRegion>().write(region);
             len += 1;
-        }
+        }*/
 
-        slice::from_raw_parts_mut(&raw mut (*boot_info_ptr).memory_regions_base as *mut MemoryRegion, len)
-            .sort_unstable_by(|a, b| b.pages.cmp(&a.pages));
+        //slice::from_raw_parts_mut(&raw mut (*boot_info_ptr).memory_regions_base as *mut MemoryRegion, len).sort_unstable_by(|a, b| b.pages.cmp(&a.pages));
 
         (&raw mut (*boot_info_ptr).memory_regions_size).write(len);
     }

@@ -24,11 +24,11 @@ impl PAddr {
 
 impl fmt::Debug for PAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self}")
+        write!(f, "{self:p}")
     }
 }
 
-impl fmt::Display for PAddr {
+impl fmt::Pointer for PAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:#018p}", self.0 as *const ())
     }

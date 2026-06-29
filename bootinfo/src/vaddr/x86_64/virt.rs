@@ -32,6 +32,11 @@ impl VAddr {
     }
 
     #[inline]
+    pub const fn byte_add(self, offset: usize) -> Self {
+        Self(self.0 + offset)
+    }
+
+    #[inline]
     pub(crate) const fn info(self) -> VAddrInfo {
         VAddrInfo {
             page_offset: self.0 & 0xfff,
@@ -74,7 +79,7 @@ impl fmt::Debug for VAddr {
     }
 }
 
-impl fmt::Display for VAddr {
+impl fmt::Pointer for VAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:#018p}", self.0 as *const ())
     }
@@ -82,12 +87,12 @@ impl fmt::Display for VAddr {
 
 #[derive(Debug)]
 #[repr(C)]
-pub struct VirtualMapBuilder {
+pub struct VirtualMapBuilder<T: FnMut() -> Option<PAddr>> {
     map: VirtualMap<LocalMapper>,
-    new_page_table: fn() -> Option<PAddr>,
+    new_page_table: T,
 }
 
-impl VirtualMapBuilder {
+impl<T: FnMut() -> Option<PAddr>> VirtualMapBuilder<T> {
     /// # Safety
     /// - `new_page_table` must return a [`PAGE_SIZE`](crate::PAGE_SIZE)-aligned physical address
     ///   that is:
@@ -96,7 +101,7 @@ impl VirtualMapBuilder {
     /// - `page_table_ptr` must convert physical addresses returned by `new_page_table` into a
     ///   pointer that points to a page table.
     #[inline]
-    pub const unsafe fn new(recursion_index: usize, new_page_table: fn() -> Option<PAddr>, page_table_ptr: unsafe fn(PAddr) -> *mut ()) -> Self {
+    pub const unsafe fn new(recursion_index: usize, new_page_table: T, page_table_ptr: unsafe fn(PAddr) -> *mut ()) -> Self {
         Self {
             map: VirtualMap {
                 mapper: LocalMapper {
@@ -111,13 +116,13 @@ impl VirtualMapBuilder {
 
     #[inline]
     pub fn map(&mut self, p_addr: PAddr, v_addr: VAddr, flags: VFlags) -> Result<(), VirtualMapError> {
-        unsafe { self.map.map(p_addr, v_addr, flags, self.new_page_table) }
+        unsafe { self.map.map(p_addr, v_addr, flags, &mut self.new_page_table) }
     }
 
     pub fn finish(self) -> Result<(PAddr, VirtualMap), VirtualMapError> {
         let Self {
             map: VirtualMap { mut mapper },
-            new_page_table,
+            mut new_page_table,
         } = self;
 
         let pml4_phys = (new_page_table)().ok_or(VirtualMapError::PageTable)?;
