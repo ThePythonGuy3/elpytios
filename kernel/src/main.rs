@@ -6,11 +6,11 @@ use core::{
     panic::PanicInfo,
 };
 
-use elpytios_bootinfo::{BootInfo, PAGE_SIZE};
+use elpytios_bootinfo::{BootInfo, IdentityMapFlags, PAGE_SIZE};
 use elpytios_kernel::{
     println,
     serial::{Com, serial_init},
-    vaddr::{VAddr, VirtualMapBuilder},
+    vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
 
 #[panic_handler]
@@ -37,48 +37,65 @@ unsafe extern "sysv64" fn setup(info: &'static BootInfo) -> ! {
         serial_init(Com::Com3);
     }
 
-    println!("Setting up kernel...");
+    println!("hey {:p} hoy", info as *const _);
+    println!("Setting up kernel, loaded at {:p}", info.kernel_base);
+    let v_slide = HIGHER_HALF_ADDRESS_BASE
+        .addr()
+        .checked_sub(info.kernel_base.addr())
+        .expect("Kernel physical address somehow higher than higher-half addressing base");
 
-    for reg in &info.memory_regions {
-        println!("{:p}, {} pages", reg.base, reg.pages);
-    }
+    println!("page table at {:?}", info.page_table_init);
+    println!("page table count {}", info.page_table_init_len);
 
-    let max = info.page_table_init_len;
     let mut i = 0;
     let mut virtual_map = unsafe {
         VirtualMapBuilder::new(
             510,
             || {
-                (i < max).then(|| {
-                    println!("yo");
+                (i < info.page_table_init_len).then(|| {
+                    let ptr = info.page_table_init.byte_add(i * PAGE_SIZE);
                     i += 1;
-                    info.page_table_init.byte_add((i - 1) * PAGE_SIZE)
+
+                    debug_assert_eq!(ptr.addr() % PAGE_SIZE, 0, "Page table pointer isn't page-aligned");
+                    //println!("    ptr          = {:p}", ptr);
+                    //println!("    ptr addr     = {:#x}", ptr.addr());
+                    //println!("    ptr addr end = {:#x}", ptr.addr() + PAGE_SIZE - 1);
+
+                    //volatile_set_memory(ptr.addr() as *mut u8, 0, PAGE_SIZE);
+                    //println!("    bytes written!");
+                    ptr
                 })
             },
             |p_addr| p_addr.addr() as *mut (),
         )
     };
 
+    println!("Offset by 0x{v_slide:x} for higher-half addressing");
     println!(
-        "Reserving {} pages in {:p} for initial virtual mapping...",
+        "Found {} reserved pages in {:p} for initial virtual mapping",
         info.page_table_init_len, info.page_table_init
     );
 
-    /*for i in 0..info.kernel_pages {
-        /*println!(
-            "{:p} -> {:p}",
-            info.kernel_base.byte_add(i * PAGE_SIZE),
-            HIGHER_HALF_ADDRESS_BASE.byte_add(i * PAGE_SIZE),
-        );
-        virtual_map.map(
-            info.kernel_base.byte_add(i * PAGE_SIZE),
-            HIGHER_HALF_ADDRESS_BASE.byte_add(i * PAGE_SIZE),
-            VFlags::WRITABLE,
-        ).unwrap_or_else(|e| panic!("{e}"));*/
-    }*/
+    let mut free_virt_addr = HIGHER_HALF_ADDRESS_BASE;
+    for map in &info.identity_maps {
+        for i in 0..map.region.pages {
+            virtual_map
+                .map(
+                    map.region.base.byte_add(i * PAGE_SIZE),
+                    VAddr::new(map.region.base.byte_add(i * PAGE_SIZE).addr()),
+                    {
+                        let mut flags = VFlags::GLOBAL;
+                        if map.flags.contains(IdentityMapFlags::WRITABLE) {
+                            flags |= VFlags::WRITABLE
+                        }
+                        flags
+                    },
+                )
+                .expect("Couldn't virtual-map");
+        }
+    }
 
-    //virtual_map.finish();
-    //let (virtual_map_addr, virtual_map) = virtual_map.finish().unwrap_or_else(|e| panic!("{e}"));
+    let (page_table_phys, virtual_map) = virtual_map.finish().expect("Couldn't build virtual map table");
 
     /*let mut alloc = None;
     for region in boot_info().memory_regions() {
@@ -120,12 +137,15 @@ unsafe extern "sysv64" fn setup(info: &'static BootInfo) -> ! {
         }
     }*/
 
-    println!("Enabling virtual paging...");
     unsafe {
         asm!(
+            "mov rdi, {info}",
+            "mov rsi, {free_virt_addr}",
             "lea rax, [rip + {main}]",
             "jmp rax",
 
+            info = in(reg) info,
+            free_virt_addr = in(reg) free_virt_addr.addr(),
             main = sym main,
 
             options(noreturn),
@@ -133,9 +153,9 @@ unsafe extern "sysv64" fn setup(info: &'static BootInfo) -> ! {
     }
 }
 
-unsafe extern "sysv64" fn main() -> ! {
-    #[cfg(debug_assertions)]
-    pause();
+unsafe extern "sysv64" fn main(info: &'static BootInfo, free_virt_addr: VAddr) -> ! {
+    //#[cfg(debug_assertions)]
+    //pause();
 
     println!("Hello, world!");
 

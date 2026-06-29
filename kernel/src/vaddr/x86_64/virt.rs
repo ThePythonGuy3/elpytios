@@ -1,4 +1,4 @@
-use core::{cell::RefCell, fmt, hint::unreachable_unchecked, ops::DerefMut};
+use core::{cell::RefCell, fmt, ops::DerefMut};
 
 use bytemuck::Zeroable;
 use elpytios_bootinfo::paddr::PAddr;
@@ -114,7 +114,7 @@ impl<T: FnMut() -> Option<PAddr>> VirtualMapBuilder<T> {
 
     #[inline]
     pub fn map(&mut self, p_addr: PAddr, v_addr: VAddr, flags: VFlags) -> Result<(), VirtualMapError> {
-        crate::println!("Mapping {p_addr:p} to {v_addr:p}");
+        crate::println!("{p_addr:p} -> {v_addr:p}");
         unsafe { self.map.map(p_addr, v_addr, flags, &mut self.new_page_table) }
     }
 
@@ -163,33 +163,36 @@ unsafe impl sealed::VirtualMapper for LocalMapper {
     #[inline]
     unsafe fn pdpt(&self, pml4_index: usize) -> &mut PdptTable {
         unsafe {
-            (self.page_table_ptr)(self.table.borrow_mut().pdpt_entries.get(pml4_index).unwrap_unchecked().child_addr())
+            (self.page_table_ptr)(self.pml4().pdpt_entries[pml4_index].child_addr())
                 .cast::<PdptTable>()
-                .as_mut_unchecked()
+                .as_mut()
+                .expect("Null pointer on PML4 entry")
         }
     }
 
     #[inline]
     unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
         unsafe {
-            (self.page_table_ptr)(match self.pdpt(pml4_index).pd_entries.get(pdpt_index).unwrap_unchecked().kind() {
+            (self.page_table_ptr)(match self.pdpt(pml4_index).pd_entries[pdpt_index].kind() {
                 UnionEntry::Node(e) => e.child_addr(),
-                UnionEntry::Leaf(..) => unreachable_unchecked(),
+                UnionEntry::Leaf(..) => unreachable!("PDPT entry is a huge page entry"),
             })
             .cast::<PdTable>()
-            .as_mut_unchecked()
+            .as_mut()
+            .expect("Null pointer on PDPT entry")
         }
     }
 
     #[inline]
     unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
         unsafe {
-            (self.page_table_ptr)(match self.pd(pml4_index, pdpt_index).pt_entries.get(pd_index).unwrap_unchecked().kind() {
+            (self.page_table_ptr)(match self.pd(pml4_index, pdpt_index).pt_entries[pd_index].kind() {
                 UnionEntry::Node(e) => e.child_addr(),
-                UnionEntry::Leaf(..) => unreachable_unchecked(),
+                UnionEntry::Leaf(..) => unreachable!("PD entry is a huge page entry"),
             })
             .cast::<PtTable>()
-            .as_mut_unchecked()
+            .as_mut()
+            .expect("Null pointer on PD entry")
         }
     }
 }

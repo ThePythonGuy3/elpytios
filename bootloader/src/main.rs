@@ -6,21 +6,22 @@
 
 use core::{arch::asm, mem::{self, MaybeUninit}};
 
+use arrayvec::ArrayVec;
 use const_panic::concat_panic;
-use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfRela64, ElfRela64Type}};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion, PAGE_SIZE, paddr::PAddr};
+use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, IdentityMap, IdentityMapFlags, MemoryRegion, PAGE_SIZE, paddr::PAddr};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap}, proto::console::gop::*};
 
 const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
 
-const MEM_KERNEL_CODE:    MemoryType = MemoryType::custom(0x8000_0000);
-const MEM_STACK:          MemoryType = MemoryType::custom(0x8000_0001);
-const MEM_PAGE_TABLE:     MemoryType = MemoryType::custom(0x8000_0002);
-const MEM_BOOT_INFO:      MemoryType = MemoryType::custom(0x8000_0003);
+const MEM_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
+const MEM_STACK:        MemoryType = MemoryType::custom(0x8000_0001);
+const MEM_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0002);
+const MEM_BOOT_INFO:    MemoryType = MemoryType::custom(0x8000_0003);
 
-const MEM_STACK_LEN:      usize      = 8;
-const MEM_PAGE_TABLE_LEN: usize      = 1;
-const MEM_BOOT_INFO_LEN:  usize      = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
+const MEM_STACK_LEN:      usize = 8;
+const MEM_PAGE_TABLE_LEN: usize = 4;
+const MEM_BOOT_INFO_LEN:  usize = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
@@ -92,13 +93,13 @@ const KERNEL_VIRTUAL_ADDRESSES: [usize; 2] = {
 struct UefiInfo {
     pub kernel_entry:      *mut u8,
     pub kernel_stack_base: *mut u8,
-    pub boot_info:     *mut BootInfo,
+    pub boot_info:         *mut BootInfo,
 }
 
 fn setup_uefi_and_exit() -> UefiInfo {
     let kernel_entry:      *mut u8;
     let kernel_stack_base: *mut u8;
-    let boot_info:     *mut BootInfo;
+    let boot_info:         *mut BootInfo;
     
     helpers::init().unwrap();
 
@@ -160,6 +161,8 @@ fn setup_uefi_and_exit() -> UefiInfo {
         };
 
         let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESSES;
+        let mut identity_maps = ArrayVec::new();
+
         let kernel_base_pages = (virtual_max - virtual_base) / PAGE_SIZE;
         let kernel_ptr = boot::allocate_pages(
             AllocateType::AnyPages,
@@ -169,6 +172,19 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
         for segment in KERNEL_SEGMENTS {
             let ElfSegmentType::Load(data) = segment.segment_type else { continue };
+            identity_maps.push(IdentityMap::new(
+                PAddr::new(kernel_ptr.addr() + segment.virtual_address as usize - virtual_base),
+                (segment.memory_size as usize).div_ceil(PAGE_SIZE),
+                {
+                    let mut flags = IdentityMapFlags::empty();
+                    if segment.flags.contains(ElfProgramFlags::EXECUTABLE) { flags |= IdentityMapFlags::EXECUTABLE }
+                    if segment.flags.contains(ElfProgramFlags::READABLE) { flags |= IdentityMapFlags::READABLE }
+                    if segment.flags.contains(ElfProgramFlags::WRITABLE) { flags |= IdentityMapFlags::WRITABLE }
+
+                    flags
+                },
+            ));
+
             unsafe {
                 kernel_ptr
                     .add(segment.virtual_address as usize - virtual_base)
@@ -203,25 +219,32 @@ fn setup_uefi_and_exit() -> UefiInfo {
             MEM_STACK,
             MEM_STACK_LEN,
         ).unwrap().as_ptr();
+        identity_maps.push(IdentityMap::new(PAddr::new(stack_ptr.addr()), MEM_STACK_LEN, IdentityMapFlags::READABLE | IdentityMapFlags::WRITABLE));
 
         kernel_entry = unsafe { kernel_ptr.add(KERNEL_BINARY.program_entry() as usize - virtual_base) };
-        kernel_stack_base = unsafe { stack_ptr.add((MEM_STACK_LEN) * PAGE_SIZE) };
+        kernel_stack_base = unsafe { stack_ptr.add(MEM_STACK_LEN * PAGE_SIZE) };
+
+        boot_info = boot::allocate_pages(
+            AllocateType::AnyPages,
+            MEM_BOOT_INFO,
+            MEM_BOOT_INFO_LEN,
+        ).unwrap().as_ptr().cast::<BootInfo>();
+        identity_maps.push(IdentityMap::new(PAddr::new(boot_info.addr()), MEM_BOOT_INFO_LEN, IdentityMapFlags::READABLE));
 
         unsafe {
-            let page_table_init = boot::allocate_pages(AllocateType::AnyPages, MEM_PAGE_TABLE, MEM_PAGE_TABLE_LEN).unwrap().as_ptr();
+            let page_table_init = boot::allocate_pages(
+                AllocateType::AnyPages,
+                MEM_PAGE_TABLE,
+                MEM_PAGE_TABLE_LEN,
+            ).unwrap().as_ptr();
             page_table_init.write_bytes(0, MEM_PAGE_TABLE_LEN * PAGE_SIZE);
 
-            boot_info = boot::allocate_pages(
-                AllocateType::AnyPages,
-                MEM_BOOT_INFO,
-                MEM_BOOT_INFO_LEN,
-            ).unwrap().as_ptr().cast::<BootInfo>();
             boot_info.write(BootInfo {
-                //kernel_base: PAddr::new(kernel_ptr.addr()),
-                //kernel_pages: kernel_base_pages + MEM_STACK_LEN,
+                kernel_base: PAddr::new(kernel_ptr.addr()),
                 page_table_init: PAddr::new(page_table_init.addr()),
                 page_table_init_len: MEM_PAGE_TABLE_LEN,
-                memory_regions: Default::default(),
+                memory_regions: ArrayVec::new(),
+                identity_maps,
             });
         }
     }
@@ -230,38 +253,25 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let memory_map = boot::exit_boot_services(Some(MemoryType::LOADER_DATA));
 
         let mut region = None;
-        for mut entry in memory_map.entries().copied() {
+        for entry in memory_map.entries().copied() {
             if !matches!(entry.ty,
                 MemoryType::LOADER_CODE | MemoryType::LOADER_DATA |
                 MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA |
-                MemoryType::CONVENTIONAL |
-                MEM_KERNEL_CODE | MEM_STACK | MEM_PAGE_TABLE | MEM_BOOT_INFO
+                MemoryType::CONVENTIONAL
             ) {
                 continue
-            }
-
-            // Skip the page if it contains null pointer
-            if entry.phys_start == 0 {
-                entry.phys_start += PAGE_SIZE as u64;
-                entry.page_count -= 1;
             }
  
             let start = entry.phys_start as usize;
             let count = entry.page_count as usize;
 
             match region.as_mut() {
-                None => region = Some(MemoryRegion {
-                    base: PAddr::new(start),
-                    pages: count,
-                }),
+                None => region = Some(MemoryRegion::at(PAddr::new(start), count)),
                 Some(reg) => {
                     if reg.base.addr() + reg.pages * PAGE_SIZE == start {
                         reg.pages += count;
                     } else {
-                        if (*boot_info).memory_regions.try_push(mem::replace(reg, MemoryRegion {
-                            base: PAddr::new(start),
-                            pages: count,
-                        })).is_err() {
+                        if (*boot_info).memory_regions.try_push(mem::replace(reg, MemoryRegion::at(PAddr::new(start), count))).is_err() {
                             break
                         }
                     }
@@ -289,7 +299,7 @@ fn entry() -> Status {
     unsafe {
         asm!(
             "mov rdi, {boot_info}",
-            "lea rsp, [{kernel_stack_base} - 8]",
+            "mov rsp, {kernel_stack_base}",
             "jmp {kernel_entry}",
 
             boot_info = in(reg) boot_info,

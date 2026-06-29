@@ -40,7 +40,7 @@ pub mod vaddr {
         }
     }
 
-    #[derive(Debug, Display, Clone, Copy)]
+    #[derive(Display, Clone, Copy)]
     #[repr(C)]
     pub enum VirtualMapError {
         #[display("Couldn't allocate a page table")]
@@ -51,16 +51,27 @@ pub mod vaddr {
         AlreadyMapped { p_addr: PAddr, v_addr: VAddr, p_addr_existing: PAddr },
     }
 
+    impl fmt::Debug for VirtualMapError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt::Display::fmt(self, f)
+        }
+    }
+
+    pub(crate) use imp::*;
+    pub use imp::{VAddr, VirtualMap, VirtualMapBuilder};
+
     cfg_select! {
         target_arch = "x86_64" => {
             mod x86_64;
-            pub use x86_64::*;
+            use x86_64 as imp;
         }
         _ => {
             compile_error!("Unsupported architecture");
         }
     }
 }
+
+use core::fmt;
 
 use bitflags::bitflags;
 use derive_more::Display;

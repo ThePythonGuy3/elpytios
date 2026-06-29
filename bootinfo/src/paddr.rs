@@ -24,7 +24,7 @@ impl PAddr {
 
 impl fmt::Debug for PAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:p}")
+        fmt::Pointer::fmt(self, f)
     }
 }
 

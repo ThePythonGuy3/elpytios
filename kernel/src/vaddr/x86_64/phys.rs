@@ -306,7 +306,7 @@ impl PtEntry {
 
     #[inline]
     pub const fn is_present(self) -> bool {
-        unsafe { mem::transmute::<Self, usize>(self) & Entry::PRESENT.0 != 0 }
+        self.0 & Entry::PRESENT.0 != 0
     }
 }
 bitflags! {
