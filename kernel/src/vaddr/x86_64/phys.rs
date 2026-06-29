@@ -2,9 +2,10 @@ use core::{fmt, mem};
 
 use bitflags::bitflags;
 use bytemuck::Zeroable;
+use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
 
 use super::assert_size_align;
-use crate::{PAGE_SIZE, paddr::PAddr, vaddr::VFlags};
+use crate::vaddr::VFlags;
 
 const _: () = assert_size_align::<Pml4Table>();
 const _: () = assert_size_align::<PdptTable>();

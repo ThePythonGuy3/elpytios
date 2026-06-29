@@ -1,9 +1,8 @@
 mod phys;
 mod virt;
-pub(crate) use phys::*;
+use elpytios_bootinfo::PAGE_SIZE;
+pub use phys::*;
 pub use virt::*;
-
-use crate::PAGE_SIZE;
 
 const _: () = assert!(size_of::<usize>() == size_of::<u64>());
 

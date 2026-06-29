@@ -7,14 +7,12 @@ use core::{
     panic::PanicInfo,
 };
 
-use elpytios_bootinfo::{
-    MemoryReclaimType, MemoryRegion, PAGE_SIZE,
-    vaddr::{VAddr, VFlags, VirtualMapBuilder},
-};
+use elpytios_bootinfo::{MemoryReclaimType, MemoryRegion, PAGE_SIZE};
 use elpytios_kernel::{
     alloc::{AllocTree, PhysicalPageAllocator},
     boot_info, println,
     serial::{Com, Serial, serial_init, serial_write},
+    vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
 
 #[panic_handler]

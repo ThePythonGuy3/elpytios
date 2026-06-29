@@ -4,12 +4,12 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, mem::{self, MaybeUninit}, slice};
+use core::{arch::asm, mem::MaybeUninit};
 
 use const_panic::concat_panic;
-use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, MAX_MEMORY_REGIONS, MemoryReclaimType, MemoryRegion, paddr::PAddr, vaddr::{VAddr, VFlags, VirtualMapBuilder}};
-use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap, MemoryMapOwned}, proto::console::gop::*};
+use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfRela64, ElfRela64Type}};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, MAX_MEMORY_REGIONS, MemoryReclaimType, MemoryRegion, paddr::PAddr};
+use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap}, proto::console::gop::*};
 
 const PAGE_SIZE: usize = 4096;
 
@@ -74,8 +74,6 @@ const KERNEL_BOOTINFO_ADDRESS: usize = {
         ret
     }
 };
-
-const HIGHER_HALF_ADDRESS: usize = 0xffffffff80000000;
 
 /// Index 0: Lowest virtual address of the kernel.
 /// Index 1: Highest virtual address of the kernel, page-aligned.

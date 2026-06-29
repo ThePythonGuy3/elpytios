@@ -1,11 +1,9 @@
 use core::{cell::RefCell, fmt, hint::unreachable_unchecked, ops::DerefMut};
 
 use bytemuck::Zeroable;
+use elpytios_bootinfo::paddr::PAddr;
 
-use crate::{
-    paddr::PAddr,
-    vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VFlags, VirtualMapError},
-};
+use crate::vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VFlags, VirtualMapError};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Zeroable)]
 #[repr(transparent)]

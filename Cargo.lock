@@ -184,7 +184,6 @@ dependencies = [
 name = "elpytios-bootinfo"
 version = "0.1.0"
 dependencies = [
- "bitflags",
  "bytemuck",
  "derive_more",
 ]
@@ -214,6 +213,8 @@ dependencies = [
 name = "elpytios-kernel"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
+ "bytemuck",
  "derive_more",
  "elpytios-abi",
  "elpytios-bootinfo",

@@ -4,49 +4,6 @@
 #![no_std]
 
 pub mod paddr;
-pub mod vaddr {
-    use super::*;
-
-    #[derive(Debug, Clone, Copy)]
-    #[repr(transparent)]
-    pub struct VFlags(usize);
-    bitflags! {
-        impl VFlags: usize {
-            const WRITABLE        = 1 << 0;
-            const USER_MODE       = 1 << 1;
-            const WRITE_THROUGH   = 1 << 2;
-            const CACHE_DISABLED  = 1 << 3;
-            const ACCESSED        = 1 << 4;
-
-            /// Don't flush translation lookaside buffers when switching virtual map tables
-            const GLOBAL          = 1 << 5;
-        }
-    }
-
-    #[derive(Debug, Display, Clone, Copy)]
-    #[repr(C)]
-    pub enum VirtualMapError {
-        #[display("Couldn't allocate a page table")]
-        PageTable,
-        #[display("Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is reserved")]
-        Reserved { p_addr: PAddr, v_addr: VAddr },
-        #[display("Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is already mapped to {p_addr_existing:p}")]
-        AlreadyMapped { p_addr: PAddr, v_addr: VAddr, p_addr_existing: PAddr }
-    }
-
-    cfg_select! {
-        target_arch = "x86_64" => {
-            mod x86_64;
-            pub use x86_64::*;
-        }
-        _ => {
-            compile_error!("Unsupported architecture");
-        }
-    }
-}
-
-use bitflags::bitflags;
-use derive_more::Display;
 
 use core::{mem::MaybeUninit, slice};
 

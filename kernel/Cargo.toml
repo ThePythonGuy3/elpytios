@@ -12,6 +12,8 @@ forced-target = "x86_64-unknown-none"
 elpytios-abi = { path = "../abi" }
 elpytios-bootinfo = { path = "../bootinfo" }
 
+bitflags = "2"
+bytemuck = { version = "1", features = ["derive", "latest_stable_rust"] }
 derive_more = { version = "2", default-features = false, features = [
     "display",
 ] }
