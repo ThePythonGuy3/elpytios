@@ -68,22 +68,3 @@ use core::fmt;
 use bitflags::bitflags;
 use derive_more::Display;
 use elpytios_bootinfo::paddr::PAddr;
-
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        _ = write!($crate::serial::Serial($crate::serial::Com::Com3), $($arg)*);
-    }};
-}
-
-#[macro_export]
-macro_rules! println {
-    () => {
-        $crate::print!("\n")
-    };
-    ($($arg:tt)*) => {{
-        $crate::print!($($arg)*);
-        $crate::print!("\n");
-    }};
-}

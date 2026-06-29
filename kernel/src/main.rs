@@ -3,19 +3,20 @@
 
 use core::{
     arch::{asm, naked_asm},
+    fmt::Write,
     panic::PanicInfo,
 };
 
 use elpytios_bootinfo::{BootInfo, IdentityMapFlags, PAGE_SIZE, paddr::PAddr};
 use elpytios_kernel::{
-    println,
-    serial::{Com, serial_init},
+    serial::{Com, Serial, serial_init},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
+use log::{error, info};
 
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
-    println!("{info}");
+    error!("{info}");
     loop {}
 }
 
@@ -35,9 +36,32 @@ const HIGHER_HALF_ADDRESS_BASE: VAddr = VAddr::new(0xffff_8000_0000_0000);
 unsafe extern "sysv64" fn setup(info: &'static BootInfo) -> ! {
     unsafe {
         serial_init(Com::Com3);
+        _ = log::set_logger_racy(&SerialLogger(Com::Com3));
+        log::set_max_level_racy(match cfg!(debug_assertions) {
+            false => log::LevelFilter::Info,
+            true => log::LevelFilter::Trace,
+        });
+
+        struct SerialLogger(Com);
+        impl log::Log for SerialLogger {
+            fn enabled(&self, _metadata: &log::Metadata) -> bool {
+                true
+            }
+
+            fn log(&self, record: &log::Record) {
+                if self.enabled(record.metadata()) {
+                    _ = match (record.file(), record.line()) {
+                        (Some(file), Some(line)) => writeln!(Serial(self.0), "[{}] {}:{}\t- {}", record.level(), file, line, record.args()),
+                        _ => writeln!(Serial(self.0), "[{}] {}\t- {}", record.level(), record.target(), record.args()),
+                    }
+                }
+            }
+
+            fn flush(&self) {}
+        }
     }
 
-    println!("Setting up kernel, loaded at {:p}", info.kernel_base);
+    info!("Setting up kernel, loaded at {:p}", info.kernel_base);
     let v_slide = HIGHER_HALF_ADDRESS_BASE
         .addr()
         .checked_sub(info.kernel_base.addr())
@@ -60,8 +84,8 @@ unsafe extern "sysv64" fn setup(info: &'static BootInfo) -> ! {
         )
     };
 
-    println!("Offset by 0x{v_slide:x} for higher-half addressing");
-    println!(
+    info!("Offset by 0x{v_slide:x} for higher-half addressing");
+    info!(
         "Found {} reserved pages in {:p} for initial virtual mapping",
         info.page_table_init_len, info.page_table_init
     );
@@ -130,7 +154,7 @@ unsafe extern "sysv64" fn main(_info: &'static BootInfo) -> ! {
         }
     }
 
-    println!("Hello, world! Kernel is now in higher-half addressing!");
+    info!("Hello, world! Kernel is now in higher-half addressing!");
 
     loop {}
 }

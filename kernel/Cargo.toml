@@ -18,4 +18,5 @@ bytemuck = { version = "1", features = ["derive", "latest_stable_rust"] }
 derive_more = { version = "2", default-features = false, features = [
     "display",
 ] }
+log = "*"
 nonmax = { version = "0.5", default-features = false }
