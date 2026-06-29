@@ -163,7 +163,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
         let kernel_base_pages = (virtual_max - virtual_base) / PAGE_SIZE;
         let base_ptr = boot::allocate_pages(
-            AllocateType::Address(0x200000),
+            AllocateType::AnyPages,
             MEM_KERNEL_CODE,
             kernel_base_pages + MEM_BOOT_INFO_LEN + MEM_STACK_LEN,
         ).unwrap().as_ptr();
@@ -224,8 +224,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
         unsafe {
             let page_table_init = boot::allocate_pages(
-                // Cannot use `AnyPages` here for some reason! Thanks, UEFI!
-                AllocateType::MaxAddress(0x6fff_ffff),
+                AllocateType::AnyPages,
                 MEM_PAGE_TABLE,
                 MEM_PAGE_TABLE_LEN,
             ).unwrap().as_ptr();
