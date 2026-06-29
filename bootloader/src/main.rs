@@ -15,13 +15,11 @@ use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::
 const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
 
 const MEM_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
-const MEM_STACK:        MemoryType = MemoryType::custom(0x8000_0001);
-const MEM_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0002);
-const MEM_BOOT_INFO:    MemoryType = MemoryType::custom(0x8000_0003);
+const MEM_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0001);
 
-const MEM_STACK_LEN:      usize = 8;
-const MEM_PAGE_TABLE_LEN: usize = 4;
+const MEM_STACK_LEN:      usize = 64;
 const MEM_BOOT_INFO_LEN:  usize = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
+const MEM_PAGE_TABLE_LEN: usize = 7;
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
@@ -164,11 +162,12 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let mut identity_maps = ArrayVec::new();
 
         let kernel_base_pages = (virtual_max - virtual_base) / PAGE_SIZE;
-        let kernel_ptr = boot::allocate_pages(
-            AllocateType::AnyPages,
+        let base_ptr = boot::allocate_pages(
+            AllocateType::Address(0x200000),
             MEM_KERNEL_CODE,
-            kernel_base_pages,
+            kernel_base_pages + MEM_BOOT_INFO_LEN + MEM_STACK_LEN,
         ).unwrap().as_ptr();
+        let kernel_ptr = base_ptr;
 
         for segment in KERNEL_SEGMENTS {
             let ElfSegmentType::Load(data) = segment.segment_type else { continue };
@@ -214,33 +213,26 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         }
 
-        let stack_ptr = boot::allocate_pages(
-            AllocateType::AnyPages,
-            MEM_STACK,
-            MEM_STACK_LEN,
-        ).unwrap().as_ptr();
+        let stack_ptr = unsafe { base_ptr.add((kernel_base_pages + MEM_BOOT_INFO_LEN) * PAGE_SIZE) };
         identity_maps.push(IdentityMap::new(PAddr::new(stack_ptr.addr()), MEM_STACK_LEN, IdentityMapFlags::READABLE | IdentityMapFlags::WRITABLE));
 
         kernel_entry = unsafe { kernel_ptr.add(KERNEL_BINARY.program_entry() as usize - virtual_base) };
         kernel_stack_base = unsafe { stack_ptr.add(MEM_STACK_LEN * PAGE_SIZE) };
 
-        boot_info = boot::allocate_pages(
-            AllocateType::AnyPages,
-            MEM_BOOT_INFO,
-            MEM_BOOT_INFO_LEN,
-        ).unwrap().as_ptr().cast::<BootInfo>();
+        boot_info = unsafe { base_ptr.add(kernel_base_pages * PAGE_SIZE).cast() };
         identity_maps.push(IdentityMap::new(PAddr::new(boot_info.addr()), MEM_BOOT_INFO_LEN, IdentityMapFlags::READABLE));
 
         unsafe {
             let page_table_init = boot::allocate_pages(
-                AllocateType::AnyPages,
+                // Cannot use `AnyPages` here for some reason! Thanks, UEFI!
+                AllocateType::MaxAddress(0x6fff_ffff),
                 MEM_PAGE_TABLE,
                 MEM_PAGE_TABLE_LEN,
             ).unwrap().as_ptr();
             page_table_init.write_bytes(0, MEM_PAGE_TABLE_LEN * PAGE_SIZE);
 
             boot_info.write(BootInfo {
-                kernel_base: PAddr::new(kernel_ptr.addr()),
+                kernel_base: PAddr::new(base_ptr.addr()),
                 page_table_init: PAddr::new(page_table_init.addr()),
                 page_table_init_len: MEM_PAGE_TABLE_LEN,
                 memory_regions: ArrayVec::new(),
@@ -300,6 +292,7 @@ fn entry() -> Status {
         asm!(
             "mov rdi, {boot_info}",
             "mov rsp, {kernel_stack_base}",
+            //"lea rsp, [{kernel_stack_base} - 8]",
             "jmp {kernel_entry}",
 
             boot_info = in(reg) boot_info,

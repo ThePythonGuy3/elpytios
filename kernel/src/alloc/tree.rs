@@ -108,6 +108,7 @@ impl AllocTree {
         }
 
         let AllocTreeFields {
+            #[cfg(debug_assertions)]
             id,
             max_order,
             free_lists,
