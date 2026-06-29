@@ -3,16 +3,14 @@
 
 use core::{
     arch::{asm, naked_asm},
-    fmt::Write,
     panic::PanicInfo,
 };
 
-use elpytios_bootinfo::{BootInfo, MemoryReclaimType, MemoryRegion, PAGE_SIZE};
+use elpytios_bootinfo::{BootInfo, PAGE_SIZE};
 use elpytios_kernel::{
-    alloc::{AllocTree, PhysicalPageAllocator},
     println,
-    serial::{Com, Serial, serial_init, serial_write},
-    vaddr::{VAddr, VFlags, VirtualMapBuilder},
+    serial::{Com, serial_init},
+    vaddr::{VAddr, VirtualMapBuilder},
 };
 
 #[panic_handler]
@@ -41,7 +39,9 @@ unsafe extern "sysv64" fn setup(info: &'static BootInfo) -> ! {
 
     println!("Setting up kernel...");
 
-    println!("{info:?}");
+    for reg in &info.memory_regions {
+        println!("{:p}, {} pages", reg.base, reg.pages);
+    }
 
     let max = info.page_table_init_len;
     let mut i = 0;
@@ -64,11 +64,7 @@ unsafe extern "sysv64" fn setup(info: &'static BootInfo) -> ! {
         info.page_table_init_len, info.page_table_init
     );
 
-    println!("Kernel has {} pages", info.kernel_pages);
-    let base = info.kernel_base;
-    println!("Kernel base is at {base:p}");
-
-    for i in 0..info.kernel_pages {
+    /*for i in 0..info.kernel_pages {
         /*println!(
             "{:p} -> {:p}",
             info.kernel_base.byte_add(i * PAGE_SIZE),
@@ -79,8 +75,7 @@ unsafe extern "sysv64" fn setup(info: &'static BootInfo) -> ! {
             HIGHER_HALF_ADDRESS_BASE.byte_add(i * PAGE_SIZE),
             VFlags::WRITABLE,
         ).unwrap_or_else(|e| panic!("{e}"));*/
-    }
-    println!("Never gets called");
+    }*/
 
     //virtual_map.finish();
     //let (virtual_map_addr, virtual_map) = virtual_map.finish().unwrap_or_else(|e| panic!("{e}"));

@@ -5,8 +5,7 @@
 
 pub mod paddr;
 
-use core::{fmt, mem::MaybeUninit, slice};
-
+use arrayvec::ArrayVec;
 use paddr::PAddr;
 
 pub const PAGE_SIZE: usize = 4096;
@@ -22,8 +21,8 @@ pub enum PixelFormat {
     BLT_ONLY
 }
 
-#[repr(C)]
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub struct GraphicsInfo {
     pub w:                 usize,
     pub h:                 usize,
@@ -37,47 +36,15 @@ pub struct GraphicsInfo {
 pub struct MemoryRegion {
     pub base:    PAddr,
     pub pages:   usize,
-    pub reclaim: MemoryReclaimType,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum MemoryReclaimType {
-    Free,
-    AfterVirtualMapping,
 }
 
 // Note: Must uphold `BootInfo: Sync`
+#[derive(Debug)]
 #[repr(C, align(4096))]
 pub struct BootInfo {
-    pub kernel_base:           PAddr,
-    pub kernel_pages:          usize,
-    pub page_table_init:       PAddr,
-    pub page_table_init_len:   usize,
-
-    pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
-    pub memory_regions_size:   usize,
-}
-
-impl BootInfo {
-    #[inline]
-    pub fn memory_regions(&self) -> &[MemoryRegion] {
-        unsafe { slice::from_raw_parts(&raw const self.memory_regions_base as _, self.memory_regions_size) }
-    }
-
-    /*#[inline]
-    pub fn v_addr_range(&self) -> [VAddr; 2] {
-        [self.v_addr_start, self.v_addr_end]
-    }*/
-}
-
-impl fmt::Debug for BootInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BootInfo")
-            .field("kernel_base", &self.kernel_base)
-            .field("kernel_pages", &self.kernel_pages)
-            .field("page_table_init", &self.page_table_init)
-            .field("page_table_init_len", &self.page_table_init_len)
-            .field("memory_regions", &self.memory_regions())
-            .finish()
-    }
+    //pub kernel_base:           PAddr,
+    //pub kernel_pages:          usize,
+    pub page_table_init:     PAddr,
+    pub page_table_init_len: usize,
+    pub memory_regions:      ArrayVec<MemoryRegion, MAX_MEMORY_REGIONS>,
 }

@@ -4,11 +4,11 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, mem::MaybeUninit};
+use core::{arch::asm, mem::{self, MaybeUninit}};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfRela64, ElfRela64Type}};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, MAX_MEMORY_REGIONS, MemoryReclaimType, MemoryRegion, PAGE_SIZE, paddr::PAddr};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, MemoryRegion, PAGE_SIZE, paddr::PAddr};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap}, proto::console::gop::*};
 
 const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
@@ -159,21 +159,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
             frame_buffer_size: frame_buffer_size,
         };
 
-        /*let mut virtual_map = unsafe {
-            VirtualMapBuilder::new(
-                // 511 used for higher-half addressing
-                510,
-                // Allocate 1 page via UEFI's allocator
-                || boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, 1).ok().map(|ptr| {
-                    let ptr = ptr.as_ptr();
-                    ptr.write_bytes(0, PAGE_SIZE);
-                    PAddr::new(ptr.addr())
-                }),
-                // Identity mapping is still enabled at this point
-                |ptr| ptr.addr() as *mut (),
-            )
-        };*/
-
         let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESSES;
         let kernel_base_pages = (virtual_max - virtual_base) / PAGE_SIZE;
         let kernel_ptr = boot::allocate_pages(
@@ -193,41 +178,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                     .add(segment.virtual_address as usize - virtual_base + data.len())
                     .write_bytes(0, segment.memory_size as usize - data.len());
             }
-
-            /*for i in (0..segment.memory_size as usize).step_by(PAGE_SIZE) {
-                virtual_map.map(
-                    PAddr::new(unsafe { kernel_ptr.add(segment.virtual_address as usize - virtual_base).addr() } + i),
-                    VAddr::new(kernel_ptr.addr() + segment.virtual_address as usize - virtual_base + i),
-                    VFlags::GLOBAL | match segment.flags.contains(ElfProgramFlags::WRITABLE) {
-                        false => VFlags::empty(),
-                        true => VFlags::WRITABLE,
-                    },
-                ).unwrap_or_else(|e| panic!("Couldn't identity-map: {e}"));
-
-                virtual_map.map(
-                    PAddr::new(unsafe { kernel_ptr.add(segment.virtual_address as usize - virtual_base).addr() } + i),
-                    VAddr::new(segment.virtual_address as usize - virtual_base + HIGHER_HALF_ADDRESS + i),
-                    VFlags::GLOBAL | match segment.flags.contains(ElfProgramFlags::WRITABLE) {
-                        false => VFlags::empty(),
-                        true => VFlags::WRITABLE,
-                    },
-                ).unwrap_or_else(|e| panic!("Couldn't higher-half map: {e}"));
-            }*/
         }
-
-        /*for i in 0..KERNEL_STACK_PAGES {
-            virtual_map.map(
-                PAddr::new(unsafe { kernel_ptr.add((kernel_base_pages + i) * PAGE_SIZE).addr() }),
-                VAddr::new(kernel_ptr.addr() + (kernel_base_pages + i) * PAGE_SIZE),
-                VFlags::GLOBAL | VFlags::WRITABLE,
-            ).unwrap_or_else(|e| panic!("Couldn't identity-map: {e}"));
-
-            virtual_map.map(
-                PAddr::new(unsafe { kernel_ptr.add((kernel_base_pages + i) * PAGE_SIZE).addr() }),
-                VAddr::new(virtual_max - virtual_base + HIGHER_HALF_ADDRESS + i * PAGE_SIZE),
-                VFlags::GLOBAL | VFlags::WRITABLE,
-            ).unwrap_or_else(|e| panic!("Couldn't higher-half map: {e}"));
-        }*/
 
         for segment in KERNEL_SEGMENTS {
             let ElfSegmentType::Dynamic { offset, size, stride } = segment.segment_type else { continue };
@@ -256,10 +207,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
         kernel_entry = unsafe { kernel_ptr.add(KERNEL_BINARY.program_entry() as usize - virtual_base) };
         kernel_stack_base = unsafe { stack_ptr.add((MEM_STACK_LEN) * PAGE_SIZE) };
 
-        //let (root_page_table_ret, virtual_map) = virtual_map.finish().unwrap();
-        //root_page_table = root_page_table_ret;
-        //kernel_offset = HIGHER_HALF_ADDRESS - kernel_ptr.addr();
-
         unsafe {
             let page_table_init = boot::allocate_pages(AllocateType::AnyPages, MEM_PAGE_TABLE, MEM_PAGE_TABLE_LEN).unwrap().as_ptr();
             page_table_init.write_bytes(0, MEM_PAGE_TABLE_LEN * PAGE_SIZE);
@@ -270,106 +217,36 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 MEM_BOOT_INFO_LEN,
             ).unwrap().as_ptr().cast::<BootInfo>();
             boot_info.write(BootInfo {
-                kernel_base: PAddr::new(kernel_ptr.addr()),
-                kernel_pages: kernel_base_pages + MEM_STACK_LEN,
+                //kernel_base: PAddr::new(kernel_ptr.addr()),
+                //kernel_pages: kernel_base_pages + MEM_STACK_LEN,
                 page_table_init: PAddr::new(page_table_init.addr()),
                 page_table_init_len: MEM_PAGE_TABLE_LEN,
-
-                memory_regions_base: [MaybeUninit::uninit(); _],
-                memory_regions_size: 0,
+                memory_regions: Default::default(),
             });
         }
-
-        /*
-        kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
-
-        // Identity-map the kernel switcher
-        let switcher_addr = (switch_to_kernel as *const ()).addr();
-        assert_eq!(switcher_addr % PAGE_SIZE, 0, "`switch_to_kernel` must be page-aligned");
-        virtual_map.map(PAddr::new(switcher_addr), VAddr::new(switcher_addr), VFlags::empty()).unwrap_or_else(|e| panic!("{e}"));
-
-        let mut next_free_page = |p_addr: PAddr, page_count: usize, flags: VFlags| {
-            let v_addr = next_v_addr;
-            next_v_addr += page_count * PAGE_SIZE;
-
-            for i in 0..page_count {
-                let offset = i * PAGE_SIZE;
-                virtual_map.map(
-                    PAddr::new(p_addr.addr() + offset),
-                    VAddr::new(v_addr + offset),
-                    VFlags::GLOBAL | flags,
-                ).unwrap_or_else(|e| panic!("{e}"));
-            }
-
-            VAddr::new(v_addr)
-        };
-
-        // Map the stack pointer
-        let stack_ptr = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_KERNEL_STACK, KERNEL_STACK_PAGES).unwrap().as_ptr();
-        let stack = next_free_page(PAddr::new(stack_ptr.addr()), KERNEL_STACK_PAGES, VFlags::WRITABLE);
-        kernel_stack_base = VAddr::new(stack.addr() + KERNEL_STACK_PAGES * PAGE_SIZE);
-
-        // Map the framebuffer
-        let fb_phys = frame_buffer_ptr.addr();
-        let fb_size = frame_buffer_size;
-
-        let fb_phys_base = fb_phys & !(PAGE_SIZE - 1);
-        let fb_phys_end = (fb_phys + fb_size).next_multiple_of(PAGE_SIZE);
-        let fb_page_count = (fb_phys_end - fb_phys_base) / PAGE_SIZE;
-
-        let (pml4_phys_ret, virtual_map) = virtual_map.finish().unwrap();
-        pml4_phys = pml4_phys_ret;
-        unsafe {
-            boot_info_ptr = kernel_ptr.add(KERNEL_BOOTINFO_ADDRESS - virtual_base).cast();
-            boot_info_ptr.write(BootInfo {
-                graphics_info,
-                virtual_map,
-                switcher_map: VAddr::new(switcher_addr),
-
-                // Initialized after exiting UEFI boot services
-                memory_regions_base: [MaybeUninit::uninit(); _],
-                memory_regions_size: 0,
-
-                v_addr_start: VAddr::new(next_v_addr),
-                v_addr_end: VAddr::new(usize::MAX),
-            });
-        }*/
     }
 
     unsafe {
         let memory_map = boot::exit_boot_services(Some(MemoryType::LOADER_DATA));
 
-        let mut len = 0;
-        //let mut region = None;
-
+        let mut region = None;
         for mut entry in memory_map.entries().copied() {
-            let reclaim = match entry.ty {
-                MemoryType::CONVENTIONAL => MemoryReclaimType::Free,
+            if !matches!(entry.ty,
                 MemoryType::LOADER_CODE | MemoryType::LOADER_DATA |
-                MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => MemoryReclaimType::AfterVirtualMapping,
-                _ => continue,
-            };
+                MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA |
+                MemoryType::CONVENTIONAL |
+                MEM_KERNEL_CODE | MEM_STACK | MEM_PAGE_TABLE | MEM_BOOT_INFO
+            ) {
+                continue
+            }
 
             // Skip the page if it contains null pointer
             if entry.phys_start == 0 {
                 entry.phys_start += PAGE_SIZE as u64;
                 entry.page_count -= 1;
             }
-
-            (&raw mut (*boot_info).memory_regions_base[len])
-                .cast::<MemoryRegion>()
-                .write(MemoryRegion {
-                    base: PAddr::new(entry.phys_start as usize),
-                    pages: entry.page_count as usize,
-                    reclaim,
-                });
-            len += 1;
-
-            if len == MAX_MEMORY_REGIONS {
-                break
-            }
-
-            /*let start = entry.phys_start as usize;
+ 
+            let start = entry.phys_start as usize;
             let count = entry.page_count as usize;
 
             match region.as_mut() {
@@ -381,30 +258,22 @@ fn setup_uefi_and_exit() -> UefiInfo {
                     if reg.base.addr() + reg.pages * PAGE_SIZE == start {
                         reg.pages += count;
                     } else {
-                        (&raw mut (*boot_info_ptr).memory_regions_base[len])
-                            .cast::<MemoryRegion>()
-                            .write(mem::replace(reg, MemoryRegion {
-                                base: PAddr::new(start),
-                                pages: count,
-                            }));
-
-                        len += 1;
-                        if len == MAX_MEMORY_REGIONS {
+                        if (*boot_info).memory_regions.try_push(mem::replace(reg, MemoryRegion {
+                            base: PAddr::new(start),
+                            pages: count,
+                        })).is_err() {
                             break
                         }
                     }
                 }
-            }*/
+            }
         }
 
-        /*if len < MAX_MEMORY_REGIONS && let Some(region) = region {
-            (&raw mut (*boot_info_ptr).memory_regions_base[len]).cast::<MemoryRegion>().write(region);
-            len += 1;
-        }*/
+        if let Some(region) = region {
+            _ = (*boot_info).memory_regions.try_push(region);
+        }
 
-        //slice::from_raw_parts_mut(&raw mut (*boot_info_ptr).memory_regions_base as *mut MemoryRegion, len).sort_unstable_by(|a, b| b.pages.cmp(&a.pages));
-
-        (&raw mut (*boot_info).memory_regions_size).write(len);
+        (*boot_info).memory_regions.sort_unstable_by(|a, b| b.pages.cmp(&a.pages));
     }
 
     UefiInfo {
@@ -429,18 +298,5 @@ fn entry() -> Status {
 
             options(noreturn)
         )
-        /*asm!(
-            "lea rsp, [{kernel_stack_base} - 8]",
-            "mov rdi, {root_page_table}",
-            "mov rsi, {kernel_offset}",
-            "jmp {kernel_entry}",
-
-            kernel_stack_base = in(reg) kernel_stack_base,
-            kernel_entry = in(reg) kernel_entry,
-            root_page_table = in(reg) root_page_table.addr(),
-            kernel_offset = in(reg) kernel_offset,
-
-            optons(noreturn)
-        )*/
     }
 }

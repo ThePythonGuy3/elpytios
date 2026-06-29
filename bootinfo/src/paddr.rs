@@ -30,6 +30,6 @@ impl fmt::Debug for PAddr {
 
 impl fmt::Pointer for PAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#018p}", self.0 as *const ())
+        write!(f, "{:#018x}", self.0)
     }
 }

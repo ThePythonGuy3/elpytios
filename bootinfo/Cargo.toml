@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.98"
 
 [dependencies]
+arrayvec = { version = "0.7", default-features = false }
 bytemuck = { version = "1", features = ["derive", "latest_stable_rust"] }
 derive_more = { version = "2", default-features = false, features = [
     "display",
