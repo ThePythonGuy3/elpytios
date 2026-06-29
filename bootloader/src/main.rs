@@ -8,14 +8,19 @@ use core::{arch::asm, mem::MaybeUninit};
 
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfRela64, ElfRela64Type}};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, MAX_MEMORY_REGIONS, MemoryReclaimType, MemoryRegion, paddr::PAddr};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, MAX_MEMORY_REGIONS, MemoryReclaimType, MemoryRegion, PAGE_SIZE, paddr::PAddr};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap}, proto::console::gop::*};
 
-const PAGE_SIZE: usize = 4096;
+const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
 
-const ELPYTI_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
-const ELPYTI_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0001);
-const ELPYTI_PAGE_TABLE_PAGES: usize  = 1;
+const MEM_KERNEL_CODE:    MemoryType = MemoryType::custom(0x8000_0000);
+const MEM_STACK:          MemoryType = MemoryType::custom(0x8000_0001);
+const MEM_PAGE_TABLE:     MemoryType = MemoryType::custom(0x8000_0002);
+const MEM_BOOT_INFO:      MemoryType = MemoryType::custom(0x8000_0003);
+
+const MEM_STACK_LEN:      usize      = 8;
+const MEM_PAGE_TABLE_LEN: usize      = 1;
+const MEM_BOOT_INFO_LEN:  usize      = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
@@ -47,32 +52,6 @@ const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
     }
 
     unsafe { out.assume_init() }
-};
-
-const KERNEL_BOOTINFO_ADDRESS: usize = {
-    let mut ret = 0;
-    for section in KERNEL_BINARY.sections() {
-        let section = match section {
-            Ok(section) => section,
-            Err(e) => concat_panic!(e),
-        };
-
-        if section.name(&KERNEL_BINARY) == b".bootinfo" {
-            ret = match usize::try_from(section.virtual_address) {
-                Ok(max) => max.next_multiple_of(PAGE_SIZE),
-                _ => concat_panic!("Integer doesn't fit: ", section.virtual_address),
-            };
-            break
-        }
-    }
-
-    if ret == 0 {
-        panic!("`.bootinfo` section not found")
-    } else if ret % PAGE_SIZE != 0 {
-        concat_panic!("`.bootinfo` section not aligned: ", ret)
-    } else {
-        ret
-    }
 };
 
 /// Index 0: Lowest virtual address of the kernel.
@@ -110,31 +89,16 @@ const KERNEL_VIRTUAL_ADDRESSES: [usize; 2] = {
     }
 };
 
-const KERNEL_STACK_PAGES: usize = 8;
-
 struct UefiInfo {
-    //pub root_page_table:    PAddr,
-
     pub kernel_entry:      *mut u8,
     pub kernel_stack_base: *mut u8,
-    //pub kernel_offset:      usize,
-    //pub pml4_phys:          PAddr,
-
-    //pub kernel_stack_base:  VAddr,
-    //pub kernel_entry:       VAddr,
+    pub boot_info:     *mut BootInfo,
 }
 
 fn setup_uefi_and_exit() -> UefiInfo {
-    //let root_page_table:    PAddr;
-
     let kernel_entry:      *mut u8;
     let kernel_stack_base: *mut u8;
-    //let kernel_offset:      usize;
-    //let pml4_phys:          PAddr;
-
-    let boot_info_ptr:     *mut BootInfo;
-    //let kernel_stack_base:  VAddr;
-    //let kernel_entry:       VAddr;
+    let boot_info:     *mut BootInfo;
     
     helpers::init().unwrap();
 
@@ -181,7 +145,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let pixel_format       = mode_info.pixel_format();
         let frame_buffer_ptr   = frame_buffer.as_mut_ptr();
 
-        let graphics_info = GraphicsInfo {
+        let _graphics_info = GraphicsInfo {
             w,
             h,
             stride,
@@ -213,9 +177,9 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let [virtual_base, virtual_max] = KERNEL_VIRTUAL_ADDRESSES;
         let kernel_base_pages = (virtual_max - virtual_base) / PAGE_SIZE;
         let kernel_ptr = boot::allocate_pages(
-            AllocateType::Address(0x200000),
-            ELPYTI_KERNEL_CODE,
-            kernel_base_pages + KERNEL_STACK_PAGES,
+            AllocateType::AnyPages,
+            MEM_KERNEL_CODE,
+            kernel_base_pages,
         ).unwrap().as_ptr();
 
         for segment in KERNEL_SEGMENTS {
@@ -283,33 +247,38 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         }
 
+        let stack_ptr = boot::allocate_pages(
+            AllocateType::AnyPages,
+            MEM_STACK,
+            MEM_STACK_LEN,
+        ).unwrap().as_ptr();
+
+        kernel_entry = unsafe { kernel_ptr.add(KERNEL_BINARY.program_entry() as usize - virtual_base) };
+        kernel_stack_base = unsafe { stack_ptr.add((MEM_STACK_LEN) * PAGE_SIZE) };
+
         //let (root_page_table_ret, virtual_map) = virtual_map.finish().unwrap();
         //root_page_table = root_page_table_ret;
         //kernel_offset = HIGHER_HALF_ADDRESS - kernel_ptr.addr();
 
         unsafe {
-            let page_table_init = boot::allocate_pages(AllocateType::AnyPages, ELPYTI_PAGE_TABLE, ELPYTI_PAGE_TABLE_PAGES).unwrap().as_ptr();
-            page_table_init.write_bytes(0, ELPYTI_PAGE_TABLE_PAGES * PAGE_SIZE);
+            let page_table_init = boot::allocate_pages(AllocateType::AnyPages, MEM_PAGE_TABLE, MEM_PAGE_TABLE_LEN).unwrap().as_ptr();
+            page_table_init.write_bytes(0, MEM_PAGE_TABLE_LEN * PAGE_SIZE);
 
-            boot_info_ptr = kernel_ptr.add(KERNEL_BOOTINFO_ADDRESS - virtual_base).cast::<BootInfo>();
-            boot_info_ptr.write(BootInfo {
-                //graphics_info,
-                //virtual_map,
-                //root_page_table,
-
-                //kernel_offset: HIGHER_HALF_ADDRESS - kernel_ptr.addr(),
+            boot_info = boot::allocate_pages(
+                AllocateType::AnyPages,
+                MEM_BOOT_INFO,
+                MEM_BOOT_INFO_LEN,
+            ).unwrap().as_ptr().cast::<BootInfo>();
+            boot_info.write(BootInfo {
                 kernel_base: PAddr::new(kernel_ptr.addr()),
-                kernel_pages: kernel_base_pages + KERNEL_STACK_PAGES,
+                kernel_pages: kernel_base_pages + MEM_STACK_LEN,
                 page_table_init: PAddr::new(page_table_init.addr()),
-                page_table_init_len: ELPYTI_PAGE_TABLE_PAGES,
+                page_table_init_len: MEM_PAGE_TABLE_LEN,
 
                 memory_regions_base: [MaybeUninit::uninit(); _],
                 memory_regions_size: 0,
-            })
+            });
         }
-
-        kernel_entry = unsafe { kernel_ptr.add(KERNEL_BINARY.program_entry() as usize - virtual_base) };
-        kernel_stack_base = unsafe { kernel_ptr.add((kernel_base_pages + KERNEL_STACK_PAGES) * PAGE_SIZE) };
 
         /*
         kernel_entry = VAddr::new(KERNEL_BINARY.program_entry() as usize);
@@ -387,7 +356,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 entry.page_count -= 1;
             }
 
-            (&raw mut (*boot_info_ptr).memory_regions_base[len])
+            (&raw mut (*boot_info).memory_regions_base[len])
                 .cast::<MemoryRegion>()
                 .write(MemoryRegion {
                     base: PAddr::new(entry.phys_start as usize),
@@ -435,26 +404,26 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
         //slice::from_raw_parts_mut(&raw mut (*boot_info_ptr).memory_regions_base as *mut MemoryRegion, len).sort_unstable_by(|a, b| b.pages.cmp(&a.pages));
 
-        (&raw mut (*boot_info_ptr).memory_regions_size).write(len);
+        (&raw mut (*boot_info).memory_regions_size).write(len);
     }
 
     UefiInfo {
-        //root_page_table,
-
         kernel_stack_base,
         kernel_entry,
-        //kernel_offset,
+        boot_info,
     }
 }
 
 #[entry]
 fn entry() -> Status {
-    let UefiInfo { kernel_entry, kernel_stack_base } = setup_uefi_and_exit();
+    let UefiInfo { kernel_entry, kernel_stack_base, boot_info } = setup_uefi_and_exit();
     unsafe {
         asm!(
+            "mov rdi, {boot_info}",
             "lea rsp, [{kernel_stack_base} - 8]",
             "jmp {kernel_entry}",
 
+            boot_info = in(reg) boot_info,
             kernel_stack_base = in(reg) kernel_stack_base,
             kernel_entry = in(reg) kernel_entry,
 

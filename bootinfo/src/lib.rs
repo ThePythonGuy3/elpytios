@@ -5,7 +5,7 @@
 
 pub mod paddr;
 
-use core::{mem::MaybeUninit, slice};
+use core::{fmt, mem::MaybeUninit, slice};
 
 use paddr::PAddr;
 
@@ -47,16 +47,8 @@ pub enum MemoryReclaimType {
 }
 
 // Note: Must uphold `BootInfo: Sync`
-#[derive(Debug)]
 #[repr(C, align(4096))]
 pub struct BootInfo {
-    //pub graphics_info:        GraphicsInfo,
-    //pub virtual_map:          VirtualMap,
-    //pub root_page_table:      PAddr,
-    /// Leftover identity-mapping from the bootloader, to be unmapped by the kernel
-    //pub switcher_map:         VAddr,
-
-    //pub kernel_offset:        usize,
     pub kernel_base:           PAddr,
     pub kernel_pages:          usize,
     pub page_table_init:       PAddr,
@@ -64,8 +56,6 @@ pub struct BootInfo {
 
     pub memory_regions_base:  [MaybeUninit<MemoryRegion>; MAX_MEMORY_REGIONS],
     pub memory_regions_size:   usize,
-    //pub v_addr_start:         VAddr,
-    //pub v_addr_end:           VAddr,
 }
 
 impl BootInfo {
@@ -78,4 +68,16 @@ impl BootInfo {
     pub fn v_addr_range(&self) -> [VAddr; 2] {
         [self.v_addr_start, self.v_addr_end]
     }*/
+}
+
+impl fmt::Debug for BootInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BootInfo")
+            .field("kernel_base", &self.kernel_base)
+            .field("kernel_pages", &self.kernel_pages)
+            .field("page_table_init", &self.page_table_init)
+            .field("page_table_init_len", &self.page_table_init_len)
+            .field("memory_regions", &self.memory_regions())
+            .finish()
+    }
 }

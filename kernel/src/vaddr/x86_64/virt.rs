@@ -114,6 +114,7 @@ impl<T: FnMut() -> Option<PAddr>> VirtualMapBuilder<T> {
 
     #[inline]
     pub fn map(&mut self, p_addr: PAddr, v_addr: VAddr, flags: VFlags) -> Result<(), VirtualMapError> {
+        crate::println!("Mapping {p_addr:p} to {v_addr:p}");
         unsafe { self.map.map(p_addr, v_addr, flags, &mut self.new_page_table) }
     }
 

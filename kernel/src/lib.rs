@@ -62,11 +62,9 @@ pub mod vaddr {
     }
 }
 
-use core::mem::MaybeUninit;
-
 use bitflags::bitflags;
 use derive_more::Display;
-use elpytios_bootinfo::{BootInfo, paddr::PAddr};
+use elpytios_bootinfo::paddr::PAddr;
 
 #[macro_export]
 macro_rules! print {
@@ -85,12 +83,4 @@ macro_rules! println {
         $crate::print!($($arg)*);
         $crate::print!("\n");
     }};
-}
-
-#[unsafe(link_section = ".bootinfo")]
-#[used]
-static BOOT_INFO: MaybeUninit<BootInfo> = MaybeUninit::uninit();
-
-pub fn boot_info() -> &'static BootInfo {
-    unsafe { (&raw const BOOT_INFO as *const BootInfo).as_ref_unchecked() }
 }

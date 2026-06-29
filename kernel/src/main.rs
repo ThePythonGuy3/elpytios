@@ -7,10 +7,10 @@ use core::{
     panic::PanicInfo,
 };
 
-use elpytios_bootinfo::{MemoryReclaimType, MemoryRegion, PAGE_SIZE};
+use elpytios_bootinfo::{BootInfo, MemoryReclaimType, MemoryRegion, PAGE_SIZE};
 use elpytios_kernel::{
     alloc::{AllocTree, PhysicalPageAllocator},
-    boot_info, println,
+    println,
     serial::{Com, Serial, serial_init, serial_write},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
@@ -23,7 +23,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
 
 #[unsafe(naked)]
 #[unsafe(export_name = "_start")]
-unsafe extern "sysv64" fn jump_from_bootloader() -> ! {
+unsafe extern "sysv64" fn jump_from_bootloader(info: &'static BootInfo) -> ! {
     naked_asm!(
         "lea rax, [rip + {setup}]",
         "jmp rax",
@@ -34,12 +34,14 @@ unsafe extern "sysv64" fn jump_from_bootloader() -> ! {
 
 const HIGHER_HALF_ADDRESS_BASE: VAddr = VAddr::new(0xffffffff80000000);
 
-unsafe extern "sysv64" fn setup() -> ! {
+unsafe extern "sysv64" fn setup(info: &'static BootInfo) -> ! {
     unsafe {
         serial_init(Com::Com3);
     }
 
-    let info = boot_info();
+    println!("Setting up kernel...");
+
+    println!("{info:?}");
 
     let max = info.page_table_init_len;
     let mut i = 0;
@@ -62,20 +64,23 @@ unsafe extern "sysv64" fn setup() -> ! {
         info.page_table_init_len, info.page_table_init
     );
 
+    println!("Kernel has {} pages", info.kernel_pages);
+    let base = info.kernel_base;
+    println!("Kernel base is at {base:p}");
+
     for i in 0..info.kernel_pages {
-        // OFFENDER HERE
         /*println!(
-            "{} -> {}",
+            "{:p} -> {:p}",
             info.kernel_base.byte_add(i * PAGE_SIZE),
             HIGHER_HALF_ADDRESS_BASE.byte_add(i * PAGE_SIZE),
-        );*/
+        );
         virtual_map.map(
             info.kernel_base.byte_add(i * PAGE_SIZE),
             HIGHER_HALF_ADDRESS_BASE.byte_add(i * PAGE_SIZE),
             VFlags::WRITABLE,
-        );
-        //.unwrap_or_else(|e| panic!("{e}"));
+        ).unwrap_or_else(|e| panic!("{e}"));*/
     }
+    println!("Never gets called");
 
     //virtual_map.finish();
     //let (virtual_map_addr, virtual_map) = virtual_map.finish().unwrap_or_else(|e| panic!("{e}"));
