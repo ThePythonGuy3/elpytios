@@ -1,14 +1,6 @@
-#![feature(
-    arbitrary_self_types_pointers,
-    const_trait_impl,
-    const_try,
-    custom_inner_attributes,
-    ptr_metadata,
-    slice_ptr_get
-)]
+#![feature(arbitrary_self_types_pointers, const_trait_impl, custom_inner_attributes)]
 #![no_std]
 
-pub mod alloc;
 pub mod rendering;
 pub mod serial {
     cfg_select! {
