@@ -144,7 +144,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let pixel_format       = mode_info.pixel_format();
         let frame_buffer_ptr   = frame_buffer.as_mut_ptr();
 
-        let _graphics_info = GraphicsInfo {
+        let graphics_info = GraphicsInfo {
             w,
             h,
             stride,
@@ -154,7 +154,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 PixelFormat::Bitmask => elpytios_bootinfo::PixelFormat::BIT_MASK,
                 PixelFormat::BltOnly => elpytios_bootinfo::PixelFormat::BLT_ONLY
             },
-            frame_buffer: frame_buffer_ptr,
+            frame_buffer: PAddr::new(frame_buffer_ptr.addr()),
             frame_buffer_size: frame_buffer_size,
         };
 
@@ -233,6 +233,8 @@ fn setup_uefi_and_exit() -> UefiInfo {
             page_table_init.write_bytes(0, MEM_PAGE_TABLE_LEN * PAGE_SIZE);
 
             boot_info.write(BootInfo {
+                graphics_info,
+
                 kernel_base: PAddr::new(base_ptr.addr()),
                 kernel_elf_base: PAddr::new(kernel_ptr.addr()),
                 kernel_virt_base: virtual_base,

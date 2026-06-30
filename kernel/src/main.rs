@@ -1,3 +1,5 @@
+#![forbid(unfulfilled_lint_expectations)]
+#![feature(core_float_math)]
 #![no_std]
 #![no_main]
 
@@ -11,8 +13,9 @@ use elpytios_bootinfo::{BootInfo, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Rel
 use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
     alloc::{AllocTree, PhysicalPageAllocator},
+    framebuffer::FrameBuffer,
     serial::{Com, Serial, serial_init},
-    statics::{get_virtual_map, set_phys_alloc, set_virtual_map},
+    statics::{get_phys_alloc, get_virtual_map, set_frame_buffer, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
 use log::{error, info};
@@ -265,6 +268,49 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
         unsafe { set_phys_alloc(phys_alloc) }
     }
 
+    // Virtual-map the framebuffer
+    {
+        let phys_alloc = &mut *get_phys_alloc().lock();
+
+        let fb_phys = info.graphics_info.frame_buffer.addr();
+        let fb_size = info.graphics_info.frame_buffer_size;
+
+        let fb_phys_base = fb_phys & !(PAGE_SIZE - 1);
+        let fb_phys_end = (fb_phys + fb_size).next_multiple_of(PAGE_SIZE);
+        let fb_page_count = (fb_phys_end - fb_phys_base) / PAGE_SIZE;
+
+        for i in 0..fb_page_count {
+            let offset = i * PAGE_SIZE;
+            unsafe {
+                v_map
+                    .map(
+                        PAddr::new(fb_phys_base + offset),
+                        next_v_addr.byte_add(offset),
+                        VFlags::GLOBAL | VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::CACHE_DISABLED,
+                        // TODO Should this discard the allocator information at all?
+                        //      Considering that the pages for page-table stuff doesn't need to be freed at all...
+                        || phys_alloc.alloc(1).ok().map(|id| id.addr()),
+                    )
+                    .unwrap_or_else(|e| panic!("{e}"));
+            }
+        }
+
+        unsafe {
+            set_frame_buffer(FrameBuffer {
+                width: info.graphics_info.w,
+                height: info.graphics_info.h,
+                stride: info.graphics_info.stride,
+                format: info.graphics_info.pixel_format,
+                pointer: next_v_addr.byte_add(fb_phys - fb_phys_base).ptr_mut(),
+            })
+        }
+
+        #[expect(unused, reason = "Keeping this here in case there's going to be another setup")]
+        {
+            next_v_addr = next_v_addr.byte_add(fb_page_count * PAGE_SIZE);
+        }
+    }
+
     unsafe { main() }
 }
 
@@ -273,6 +319,37 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
 ///   function.
 unsafe extern "sysv64" fn main() -> ! {
     info!("Hello, world! Kernel is now in higher-half addressing!");
+
+    {
+        use elpytios_bootinfo::PixelFormat;
+        use elpytios_kernel::statics::get_frame_buffer;
+
+        let fbo = get_frame_buffer();
+        match fbo.format {
+            fmt @ (PixelFormat::RGB_8_BIT | PixelFormat::BGR_8_BIT) => {
+                let invert_br = matches!(fmt, PixelFormat::BGR_8_BIT);
+                for y in 0..fbo.height {
+                    for x in 0..fbo.width {
+                        let fx = x as f32 / (fbo.width - 1) as f32;
+                        let fy = y as f32 / (fbo.height - 1) as f32;
+
+                        let r = (fx * 255.) as u8;
+                        let g = (fy * 255.) as u8;
+                        let b = (core::f32::math::sqrt((fx * 2. - 1.).abs() * (fy * 2. - 1.).abs()) * 255.) as u8;
+                        let a = 255;
+
+                        unsafe {
+                            fbo.pointer.cast::<[u8; 4]>().add(y * fbo.stride + x).write_volatile(match invert_br {
+                                false => [r, g, b, a],
+                                true => [b, g, r, a],
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
     loop {}
 }

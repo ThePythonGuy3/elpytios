@@ -1,4 +1,4 @@
-#![rustfmt::skip]
+/*#![rustfmt::skip]
 
 use core::fmt::Write;
 
@@ -145,7 +145,7 @@ impl<'a> DisplayWriter<'a> {
 
         if self.col >= (self.graphics_info.w / (FONT_WIDTH + HORIZONTAL_SPACING)) {
             self.col = 0;
-            
+
             self.advance_line();
         }
     }
@@ -195,3 +195,4 @@ impl<'a> Write for DisplayWriter<'a> {
         Ok(())
     }
 }
+*/

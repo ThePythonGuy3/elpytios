@@ -15,7 +15,7 @@ pub const MAX_IDENTITY_MAPS: usize  = 32;
 pub const MAX_RELOCATIONS: usize    = 8;
 
 #[allow(non_camel_case_types)]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(usize)]
 pub enum PixelFormat {
     RGB_8_BIT,
@@ -24,14 +24,14 @@ pub enum PixelFormat {
     BLT_ONLY
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct GraphicsInfo {
     pub w:                 usize,
     pub h:                 usize,
     pub stride:            usize,
     pub pixel_format:      PixelFormat,
-    pub frame_buffer:     *mut u8,
+    pub frame_buffer:      PAddr,
     pub frame_buffer_size: usize
 }
 
@@ -87,6 +87,8 @@ pub struct Reloc {
 #[derive(Debug)]
 #[repr(C, align(4096))]
 pub struct BootInfo {
+    pub graphics_info:       GraphicsInfo,
+
     /// Used to calculate slide for virtual mapping
     pub kernel_base:         PAddr,
     pub kernel_elf_base:     PAddr,
