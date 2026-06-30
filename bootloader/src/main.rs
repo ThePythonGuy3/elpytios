@@ -19,7 +19,7 @@ const MEM_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0001);
 
 const MEM_STACK_LEN:      usize = 64;
 const MEM_BOOT_INFO_LEN:  usize = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
-const MEM_PAGE_TABLE_LEN: usize = 11;
+const MEM_PAGE_TABLE_LEN: usize = 12;
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
