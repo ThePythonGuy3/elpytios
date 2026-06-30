@@ -1,4 +1,7 @@
-use core::fmt;
+use core::{
+    fmt,
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
+};
 
 use arrayvec::ArrayVec;
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
@@ -12,7 +15,13 @@ pub struct PhysicalPageAllocator {
 
 impl PhysicalPageAllocator {
     #[inline]
-    pub const fn new() -> PhysicalPageAllocator {
+    pub fn new() -> PhysicalPageAllocator {
+        static CREATED: AtomicBool = AtomicBool::new(false);
+
+        if CREATED.swap(true, Relaxed) {
+            panic!("Only one `PhysicalPageAllocator` instance may be created")
+        }
+
         Self {
             trees: ArrayVec::new_const(),
         }
