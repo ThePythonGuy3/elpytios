@@ -9,8 +9,10 @@ use bitflags::bitflags;
 use paddr::PAddr;
 
 pub const PAGE_SIZE: usize = 4096;
+
 pub const MAX_MEMORY_REGIONS: usize = 128;
-pub const MAX_IDENTITY_MAP: usize = 32;
+pub const MAX_IDENTITY_MAPS: usize  = 32;
+pub const MAX_RELOCATIONS: usize    = 8;
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
@@ -74,14 +76,26 @@ impl IdentityMap {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Reloc {
+    pub offset: usize,
+    pub size:   usize,
+    pub stride: usize,
+}
+
 // Note: Must uphold `BootInfo: Sync`
 #[derive(Debug)]
 #[repr(C, align(4096))]
 pub struct BootInfo {
     /// Used to calculate slide for virtual mapping
     pub kernel_base:         PAddr,
+    pub kernel_elf_base:     PAddr,
+    pub kernel_virt_base:    usize,
+
     pub page_table_init:     PAddr,
     pub page_table_init_len: usize,
+
     pub memory_regions:      ArrayVec<MemoryRegion, MAX_MEMORY_REGIONS>,
-    pub identity_maps:       ArrayVec<IdentityMap, MAX_IDENTITY_MAP>,
+    pub identity_maps:       ArrayVec<IdentityMap, MAX_IDENTITY_MAPS>,
+    pub relocations:         ArrayVec<Reloc, MAX_RELOCATIONS>,
 }

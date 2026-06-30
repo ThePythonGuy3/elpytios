@@ -226,6 +226,7 @@ dependencies = [
  "derive_more",
  "elpytios-abi",
  "elpytios-bootinfo",
+ "elpytios-elf",
  "log",
  "nonmax",
 ]

@@ -1,6 +1,14 @@
-#![feature(arbitrary_self_types_pointers, const_trait_impl, custom_inner_attributes)]
+#![feature(
+    arbitrary_self_types_pointers,
+    const_trait_impl,
+    const_try,
+    custom_inner_attributes,
+    ptr_metadata,
+    slice_ptr_get
+)]
 #![no_std]
 
+pub mod alloc;
 pub mod rendering;
 pub mod serial {
     cfg_select! {
@@ -63,8 +71,33 @@ pub mod vaddr {
     }
 }
 
-use core::fmt;
+use core::{fmt, mem::MaybeUninit};
 
 use bitflags::bitflags;
 use derive_more::Display;
 use elpytios_bootinfo::paddr::PAddr;
+
+use crate::vaddr::VirtualMap;
+
+/// # Safety
+/// Every single one of these statics must be set by their corresponding `set_*` functions below in
+/// the setup-phase of the kernel.
+///
+/// See `main.rs`.
+pub mod statics {
+    use super::*;
+
+    static mut VIRTUAL_MAP: MaybeUninit<VirtualMap> = MaybeUninit::uninit();
+
+    #[inline]
+    pub unsafe fn set_virtual_map(virtual_map: VirtualMap) {
+        unsafe {
+            statics::VIRTUAL_MAP = MaybeUninit::new(virtual_map);
+        }
+    }
+
+    #[inline]
+    pub fn get_virtual_map() -> &'static VirtualMap {
+        unsafe { (&raw const statics::VIRTUAL_MAP as *const VirtualMap).as_ref_unchecked() }
+    }
+}

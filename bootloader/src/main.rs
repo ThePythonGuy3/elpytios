@@ -9,7 +9,7 @@ use core::{arch::asm, mem::{self, MaybeUninit}};
 use arrayvec::ArrayVec;
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, IdentityMap, IdentityMapFlags, MemoryRegion, PAGE_SIZE, paddr::PAddr};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, IdentityMap, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap}, proto::console::gop::*};
 
 const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
@@ -19,7 +19,7 @@ const MEM_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0001);
 
 const MEM_STACK_LEN:      usize = 64;
 const MEM_BOOT_INFO_LEN:  usize = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
-const MEM_PAGE_TABLE_LEN: usize = 7;
+const MEM_PAGE_TABLE_LEN: usize = 11;
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
@@ -195,8 +195,10 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         }
 
+        let mut relocations = ArrayVec::new();
         for segment in KERNEL_SEGMENTS {
             let ElfSegmentType::Dynamic { offset, size, stride } = segment.segment_type else { continue };
+            relocations.push(Reloc { offset, size, stride });
             for i in 0..size / stride {
                 unsafe {
                     let rela = kernel_ptr.cast::<ElfRela64>().byte_add(offset - virtual_base).add(i).read_unaligned();
@@ -232,10 +234,15 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
             boot_info.write(BootInfo {
                 kernel_base: PAddr::new(base_ptr.addr()),
+                kernel_elf_base: PAddr::new(kernel_ptr.addr()),
+                kernel_virt_base: virtual_base,
+
                 page_table_init: PAddr::new(page_table_init.addr()),
                 page_table_init_len: MEM_PAGE_TABLE_LEN,
+
                 memory_regions: ArrayVec::new(),
                 identity_maps,
+                relocations,
             });
         }
     }
@@ -289,12 +296,10 @@ fn entry() -> Status {
     let UefiInfo { kernel_entry, kernel_stack_base, boot_info } = setup_uefi_and_exit();
     unsafe {
         asm!(
-            "mov rdi, {boot_info}",
             "mov rsp, {kernel_stack_base}",
-            //"lea rsp, [{kernel_stack_base} - 8]",
             "jmp {kernel_entry}",
 
-            boot_info = in(reg) boot_info,
+            in("rdi") boot_info,
             kernel_stack_base = in(reg) kernel_stack_base,
             kernel_entry = in(reg) kernel_entry,
 
