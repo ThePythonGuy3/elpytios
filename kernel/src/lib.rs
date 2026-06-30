@@ -4,7 +4,8 @@
     const_try,
     custom_inner_attributes,
     ptr_metadata,
-    slice_ptr_get
+    slice_ptr_get,
+    sync_unsafe_cell
 )]
 #![no_std]
 
@@ -21,6 +22,7 @@ pub mod serial {
         }
     }
 }
+pub mod spin_sync;
 pub mod vaddr {
     use super::*;
 
@@ -71,13 +73,14 @@ pub mod vaddr {
     }
 }
 
+use alloc::PhysicalPageAllocator;
 use core::{fmt, mem::MaybeUninit};
 
 use bitflags::bitflags;
 use derive_more::Display;
 use elpytios_bootinfo::paddr::PAddr;
-
-use crate::vaddr::VirtualMap;
+use spin_sync::SpinMutex;
+use vaddr::VirtualMap;
 
 /// # Safety
 /// Every single one of these statics must be set by their corresponding `set_*` functions below in
@@ -88,16 +91,29 @@ pub mod statics {
     use super::*;
 
     static mut VIRTUAL_MAP: MaybeUninit<VirtualMap> = MaybeUninit::uninit();
+    static PHYS_ALLOC: SpinMutex<PhysicalPageAllocator> = SpinMutex::new(PhysicalPageAllocator::new());
 
     #[inline]
     pub unsafe fn set_virtual_map(virtual_map: VirtualMap) {
         unsafe {
-            statics::VIRTUAL_MAP = MaybeUninit::new(virtual_map);
+            VIRTUAL_MAP = MaybeUninit::new(virtual_map);
+        }
+    }
+
+    #[inline]
+    pub unsafe fn set_phys_alloc(phys_alloc: PhysicalPageAllocator) {
+        unsafe {
+            *PHYS_ALLOC.get_mut_unchecked() = phys_alloc;
         }
     }
 
     #[inline]
     pub fn get_virtual_map() -> &'static VirtualMap {
-        unsafe { (&raw const statics::VIRTUAL_MAP as *const VirtualMap).as_ref_unchecked() }
+        unsafe { (&raw const VIRTUAL_MAP as *const VirtualMap).as_ref_unchecked() }
+    }
+
+    #[inline]
+    pub fn get_phys_alloc() -> &'static SpinMutex<PhysicalPageAllocator> {
+        &PHYS_ALLOC
     }
 }

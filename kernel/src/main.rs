@@ -12,7 +12,7 @@ use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
     alloc::{AllocTree, PhysicalPageAllocator},
     serial::{Com, Serial, serial_init},
-    statics::{get_virtual_map, set_virtual_map},
+    statics::{get_virtual_map, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
 use log::{error, info};
@@ -120,7 +120,6 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
 
     unsafe {
         set_virtual_map(virtual_map);
-
         asm!(
             "mov cr3, {page_table_phys}",
             "add rsp, {v_slide}",
@@ -218,9 +217,8 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
     let v_map = get_virtual_map();
 
     // Setup global physical page allocator
-    // TODO ^ do just that
     {
-        let mut alloc = PhysicalPageAllocator::new();
+        let mut phys_alloc = PhysicalPageAllocator::new();
         for &MemoryRegion { mut base, mut pages } in &info.memory_regions {
             if base.addr() == 0 {
                 base = base.byte_add(PAGE_SIZE);
@@ -251,7 +249,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
                             }
 
                             let tree = AllocTree::new(next_v_addr.ptr_mut(), layout);
-                            alloc.push_tree(base.byte_add(meta_pages * PAGE_SIZE), tree);
+                            phys_alloc.push_tree(base.byte_add(meta_pages * PAGE_SIZE), tree);
 
                             next_v_addr = next_v_addr.byte_add(meta_pages * PAGE_SIZE);
                         }
@@ -263,11 +261,16 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
                 }
             }
         }
+
+        unsafe { set_phys_alloc(phys_alloc) }
     }
 
     unsafe { main() }
 }
 
+/// # Safety
+/// - All [`statics`](elpytios_kernel::statics) must have been initialized prior to calling this
+///   function.
 unsafe extern "sysv64" fn main() -> ! {
     info!("Hello, world! Kernel is now in higher-half addressing!");
 

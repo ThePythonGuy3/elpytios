@@ -1,5 +1,5 @@
 #[cfg(debug_assertions)]
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use core::{
     alloc::{Layout, LayoutError},
     mem::MaybeUninit,
@@ -15,11 +15,9 @@ use crate::alloc::AllocBitset;
 static TREE_ID: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Display, Clone, Copy)]
-pub enum AllocError {
+pub enum TreeAllocError {
     #[display("Can't create a zero-sized allocation")]
     Zero,
-    #[display("Requested size {requested} larger than maximum size of {maximum}")]
-    TooLarge { requested: usize, maximum: usize },
     #[display("Tree can no longer contain allocation of size {requested}")]
     InsufficientSpace { requested: usize },
 }
@@ -51,7 +49,7 @@ impl AllocTree {
         let this = ptr::from_raw_parts_mut::<Self>(at, layout.size() - layout.free_nodes_offset_abs);
         unsafe {
             #[cfg(debug_assertions)]
-            (&raw mut (*this).id).write(TREE_ID.fetch_add(1, Ordering::Relaxed));
+            (&raw mut (*this).id).write(TREE_ID.fetch_add(1, Relaxed));
 
             (&raw mut (*this).max_order).write(layout.max_order);
             (&raw mut (*this).nodes_offset).write(layout.nodes_offset_abs - layout.free_nodes_offset_abs);
@@ -102,9 +100,9 @@ impl AllocTree {
     /// # Notes
     /// - This will round allocations up to the next power of two, so it's best to use power of twos
     ///   directly.
-    pub fn alloc(&mut self, size: usize) -> Result<Alloc, AllocError> {
+    pub fn alloc(&mut self, size: usize) -> Result<TreeAllocId, TreeAllocError> {
         if size == 0 {
-            return Err(AllocError::Zero)
+            return Err(TreeAllocError::Zero)
         }
 
         let AllocTreeFields {
@@ -118,10 +116,7 @@ impl AllocTree {
 
         let order = usize::BITS - (size - 1).leading_zeros();
         if order > max_order {
-            return Err(AllocError::TooLarge {
-                requested: size,
-                maximum: 1 << max_order,
-            })
+            return Err(TreeAllocError::InsufficientSpace { requested: size })
         }
 
         let mut current = None;
@@ -137,7 +132,7 @@ impl AllocTree {
             }
         }
 
-        let Some((index, mut current_order)) = current else { return Err(AllocError::InsufficientSpace { requested: size }) };
+        let Some((index, mut current_order)) = current else { return Err(TreeAllocError::InsufficientSpace { requested: size }) };
         while current_order > order {
             let next_order = current_order - 1;
 
@@ -154,7 +149,7 @@ impl AllocTree {
             current_order = next_order;
         }
 
-        Ok(Alloc {
+        Ok(TreeAllocId {
             #[cfg(debug_assertions)]
             tree_id: id,
             index,
@@ -199,17 +194,22 @@ impl AllocTree {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Alloc {
+pub struct TreeAllocId {
     #[cfg(debug_assertions)]
     tree_id: u32,
     index: u32,
     order: u32,
 }
 
-impl Alloc {
+impl TreeAllocId {
     #[inline]
     pub const fn index(&self) -> u32 {
         self.index
+    }
+
+    #[inline]
+    pub const fn order(&self) -> u32 {
+        self.order
     }
 }
 
