@@ -1,7 +1,7 @@
 #![feature(arbitrary_self_types_pointers, const_trait_impl, const_try, ptr_metadata, slice_ptr_get, sync_unsafe_cell)]
 #![no_std]
 
-pub mod alloc;
+pub mod allocator;
 pub mod framebuffer;
 pub mod rendering;
 pub mod serial {
@@ -66,9 +66,9 @@ pub mod vaddr {
     }
 }
 
-use alloc::PhysicalPageAllocator;
 use core::{fmt, mem::MaybeUninit};
 
+use allocator::PhysicalPageAllocator;
 use bitflags::bitflags;
 use derive_more::Display;
 use elpytios_bootinfo::paddr::PAddr;

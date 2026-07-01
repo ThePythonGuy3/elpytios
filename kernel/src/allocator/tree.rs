@@ -9,7 +9,7 @@ use core::{
 use derive_more::Display;
 use nonmax::NonMaxU32;
 
-use crate::alloc::AllocBitset;
+use crate::allocator::AllocBitset;
 
 #[cfg(debug_assertions)]
 static TREE_ID: AtomicU32 = AtomicU32::new(0);

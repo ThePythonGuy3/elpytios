@@ -332,6 +332,7 @@ def run_qemu(args):
         [
             f"qemu-system-{platform.machine().replace("AMD64", "x86_64")}",
             "-accel", accel,
+            "-cpu", "host",
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_CODE.4m.fd"}",
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_VARS.4m.fd"}",
             "-drive", f"format=raw,file=fat:rw:{runner_esp}",

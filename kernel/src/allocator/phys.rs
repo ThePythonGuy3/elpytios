@@ -6,7 +6,7 @@ use core::{
 use arrayvec::ArrayVec;
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
 
-use crate::alloc::{AllocTree, TreeAllocError, TreeAllocId};
+use crate::allocator::{AllocTree, TreeAllocError, TreeAllocId};
 
 #[derive(Debug)]
 pub struct PhysicalPageAllocator {

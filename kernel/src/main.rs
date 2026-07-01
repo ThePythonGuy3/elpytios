@@ -12,7 +12,7 @@ use core::{
 use elpytios_bootinfo::{BootInfo, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
 use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
-    alloc::{AllocTree, PhysicalPageAllocator},
+    allocator::{AllocTree, PhysicalPageAllocator},
     framebuffer::FrameBuffer,
     serial::{Com, Serial, serial_init},
     statics::{get_phys_alloc, get_virtual_map, set_frame_buffer, set_phys_alloc, set_virtual_map},
