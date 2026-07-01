@@ -1,9 +1,18 @@
 #![forbid(unfulfilled_lint_expectations)]
-#![feature(arbitrary_self_types_pointers, const_trait_impl, const_try, ptr_metadata, slice_ptr_get, sync_unsafe_cell)]
+#![feature(
+    arbitrary_self_types_pointers,
+    const_trait_impl,
+    const_try,
+    layout_for_ptr,
+    ptr_metadata,
+    slice_ptr_get,
+    sync_unsafe_cell
+)]
 #![no_std]
 
 pub mod allocator;
 pub mod framebuffer;
+pub mod interrupt;
 pub mod rendering;
 pub mod serial;
 pub mod spin_sync;

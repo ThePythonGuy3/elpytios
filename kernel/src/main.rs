@@ -15,6 +15,7 @@ use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
     allocator::{AllocTree, PhysicalPageAllocator},
     framebuffer::FrameBuffer,
+    interrupt::init_interrupts,
     serial::{Com, Serial, serial_init},
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
@@ -244,6 +245,11 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
         debug!("Continuing!");
     }
 
+    // Setup interrupt handlers
+    unsafe {
+        init_interrupts();
+    }
+
     // Setup global physical page allocator
     {
         info!(
@@ -349,6 +355,7 @@ unsafe extern "sysv64" fn main() -> ! {
                         let a = 255;
 
                         unsafe {
+                            (core::ptr::null_mut::<u8>().write(0));
                             fbo.pointer.cast::<[u8; 4]>().add(y * fbo.stride + x).write_volatile(match invert_br {
                                 false => [r, g, b, a],
                                 true => [b, g, r, a],
