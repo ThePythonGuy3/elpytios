@@ -109,6 +109,7 @@ bitflags! {
 #[repr(usize)]
 pub enum IdtIndex {
     // Hard-coded by CPU
+    DoubleFault = 8,
     PageFault = 14,
 }
 
@@ -140,6 +141,27 @@ macro_rules! clobbered {
         pop rax
         "#
     };
+}
+
+#[unsafe(naked)]
+pub unsafe extern "sysv64" fn double_fault() -> ! {
+    unsafe extern "sysv64" fn handle(code: usize) -> ! {
+        panic!("Double-fault caught (Hardware error code: {code})")
+    }
+
+    naked_asm!(
+        clobbered!(push),
+
+        "mov rdi, [rsp + {clobbered}]",
+        "call {handle}",
+
+        clobbered!(pop),
+        "add rsp, 8",
+        "iretq",
+
+        clobbered = const CLOBBERED,
+        handle = sym handle,
+    )
 }
 
 #[unsafe(naked)]
@@ -200,13 +222,14 @@ pub unsafe fn init_interrupts() {
     #[repr(C, packed)]
     struct IdtPointer {
         limit: u16,
-        base: *mut GdtEntry,
+        base: *mut IdtEntry,
     }
 
     unsafe {
         // Global descriptor table is x86-specific
         init_gdt();
 
+        IDT_ENTRIES[IdtIndex::DoubleFault as usize] = IdtEntry::new(double_fault);
         IDT_ENTRIES[IdtIndex::PageFault as usize] = IdtEntry::new(page_fault);
 
         let ptr = IdtPointer {
