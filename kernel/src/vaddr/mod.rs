@@ -1,0 +1,64 @@
+pub(crate) use imp::*;
+pub use imp::{VAddr, VirtualMap, VirtualMapBuilder};
+
+cfg_select! {
+    target_arch = "x86_64" => {
+        mod x86_64;
+        use x86_64 as imp;
+    }
+    _ => {
+        compile_error!("Unsupported architecture");
+    }
+}
+
+use core::fmt;
+
+use bitflags::bitflags;
+use elpytios_bootinfo::paddr::PAddr;
+
+#[derive(Debug, Clone, Copy)]
+#[repr(transparent)]
+pub struct VFlags(usize);
+bitflags! {
+    impl VFlags: usize {
+        const WRITABLE        = 1 << 0;
+        const USER_MODE       = 1 << 1;
+        const WRITE_THROUGH   = 1 << 2;
+        const CACHE_DISABLED  = 1 << 3;
+        const ACCESSED        = 1 << 4;
+
+        /// Don't flush translation lookaside buffers when switching virtual map tables
+        const GLOBAL          = 1 << 5;
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub enum VirtualMapError {
+    PageTable,
+    Reserved { p_addr: PAddr, v_addr: VAddr },
+    AlreadyMapped { p_addr: PAddr, v_addr: VAddr, p_addr_existing: PAddr },
+}
+
+impl fmt::Debug for VirtualMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for VirtualMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PageTable => writeln!(f, "Couldn't allocate a page table"),
+            Self::Reserved { p_addr, v_addr } => writeln!(f, "Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is reserved"),
+            Self::AlreadyMapped {
+                p_addr,
+                v_addr,
+                p_addr_existing,
+            } => writeln!(
+                f,
+                "Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is already mapped to {p_addr_existing:p}"
+            ),
+        }
+    }
+}

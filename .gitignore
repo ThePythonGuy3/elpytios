@@ -6,4 +6,5 @@
 /esp
 *.qcow2
 
+/Cargo.lock
 /rustc-ice-*

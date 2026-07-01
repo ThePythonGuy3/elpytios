@@ -2,11 +2,11 @@
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use core::{
     alloc::{Layout, LayoutError},
+    fmt,
     mem::MaybeUninit,
     ptr, slice,
 };
 
-use derive_more::Display;
 use nonmax::NonMaxU32;
 
 use crate::allocator::AllocBitset;
@@ -14,12 +14,25 @@ use crate::allocator::AllocBitset;
 #[cfg(debug_assertions)]
 static TREE_ID: AtomicU32 = AtomicU32::new(0);
 
-#[derive(Debug, Display, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub enum TreeAllocError {
-    #[display("Can't create a zero-sized allocation")]
     Zero,
-    #[display("Tree can no longer contain allocation of size {requested}")]
     InsufficientSpace { requested: usize },
+}
+
+impl fmt::Debug for TreeAllocError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for TreeAllocError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => writeln!(f, "Can't create a zero-sized allocation"),
+            Self::InsufficientSpace { requested } => writeln!(f, "Tree can no longer contain allocation of size {requested}"),
+        }
+    }
 }
 
 /// A binary buddy tree, implemented with a split bitset and free lists. The tree operates on number

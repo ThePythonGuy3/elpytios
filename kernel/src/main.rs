@@ -291,7 +291,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
                         //      Considering that the pages for page-table stuff doesn't need to be freed at all...
                         || phys_alloc.alloc(1).ok().map(|id| id.addr()),
                     )
-                    .unwrap_or_else(|e| panic!("{e}"));
+                    .unwrap();
             }
         }
 
