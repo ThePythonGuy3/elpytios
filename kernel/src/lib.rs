@@ -11,6 +11,7 @@
 #![no_std]
 
 pub mod allocator;
+pub mod device_tree;
 pub mod framebuffer;
 pub mod interrupt;
 pub mod rendering;

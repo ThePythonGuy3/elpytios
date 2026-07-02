@@ -83,11 +83,18 @@ pub struct Reloc {
     pub stride: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Acpi {
+    Acpi(PAddr),
+    Acpi2(PAddr),
+}
+
 // Note: Must uphold `BootInfo: Sync`
 #[derive(Debug)]
 #[repr(C, align(4096))]
 pub struct BootInfo {
     pub graphics_info:       GraphicsInfo,
+    pub acpi:                Acpi,
 
     /// Used to calculate slide for virtual mapping
     pub kernel_base:         PAddr,

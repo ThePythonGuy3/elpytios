@@ -9,8 +9,8 @@ use core::{arch::asm, mem::{self, MaybeUninit}};
 use arrayvec::ArrayVec;
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, IdentityMap, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
-use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap}, proto::console::gop::*};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, IdentityMap, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, Acpi, paddr::PAddr};
+use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMap, proto::console::gop::*, table::cfg::ConfigTableEntry};
 
 const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
 
@@ -223,8 +223,25 @@ fn setup_uefi_and_exit() -> UefiInfo {
         identity_maps.push(IdentityMap::new(PAddr::new(boot_info.addr()), MEM_BOOT_INFO_LEN, IdentityMapFlags::READABLE));
 
         unsafe {
+            let acpi = uefi::system::with_config_table(|slice| {
+                let mut out = None;
+                for i in slice {
+                    match i.guid {
+                        ConfigTableEntry::ACPI_GUID if out.is_none() => out = Some(Acpi::Acpi(PAddr::new(i.address.addr()))),
+                        ConfigTableEntry::ACPI2_GUID => {
+                            out = Some(Acpi::Acpi2(PAddr::new(i.address.addr())));
+                            break
+                        },
+                        _ => {}
+                    }
+                }
+
+                out.expect("No ACPI or ACPI2 table found")
+            });
+
             boot_info.write(BootInfo {
                 graphics_info,
+                acpi,
 
                 kernel_base: PAddr::new(base_ptr.addr()),
                 kernel_elf_base: PAddr::new(kernel_ptr.addr()),
@@ -239,13 +256,22 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
     unsafe {
         let memory_map = boot::exit_boot_services(Some(MemoryType::LOADER_DATA));
+        for entry in memory_map.entries() {
+            if matches!(entry.ty, MemoryType::ACPI_RECLAIM) {
+                (*boot_info).identity_maps.push(IdentityMap {
+                    region: MemoryRegion::at(PAddr::new(entry.phys_start as usize), entry.page_count as usize),
+                    flags: IdentityMapFlags::READABLE,
+                });
+            }
+        }
 
         let mut region = None;
-        for entry in memory_map.entries().copied() {
+        for entry in memory_map.entries() {
             if !matches!(entry.ty,
                 MemoryType::LOADER_CODE | MemoryType::LOADER_DATA |
                 MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA |
-                MemoryType::CONVENTIONAL
+                MemoryType::CONVENTIONAL |
+                MemoryType::ACPI_RECLAIM
             ) {
                 continue
             }

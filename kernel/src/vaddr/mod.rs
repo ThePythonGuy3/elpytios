@@ -49,12 +49,17 @@ impl fmt::Debug for VirtualMapError {
 impl fmt::Display for VirtualMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+<<<<<<< HEAD
             Self::PageTable => writeln!(f, "Couldn't allocate a page table"),
+=======
+            Self::PageTable => write!(f, "Couldn't allocate a page table"),
+            Self::Reserved { p_addr, v_addr } => write!(f, "Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is reserved"),
+>>>>>>> 4dccca6 (Parse ACPI headers)
             Self::AlreadyMapped {
                 p_addr,
                 v_addr,
                 p_addr_existing,
-            } => writeln!(
+            } => write!(
                 f,
                 "Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is already mapped to {p_addr_existing:p}"
             ),

@@ -29,8 +29,8 @@ impl fmt::Debug for TreeAllocError {
 impl fmt::Display for TreeAllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Zero => writeln!(f, "Can't create a zero-sized allocation"),
-            Self::InsufficientSpace { requested } => writeln!(f, "Tree can no longer contain allocation of size {requested}"),
+            Self::Zero => write!(f, "Can't create a zero-sized allocation"),
+            Self::InsufficientSpace { requested } => write!(f, "Tree can no longer contain allocation of size {requested}"),
         }
     }
 }

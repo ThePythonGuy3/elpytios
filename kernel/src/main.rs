@@ -14,6 +14,7 @@ use elpytios_bootinfo::{BootInfo, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Rel
 use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
     allocator::{AllocTree, PhysicalPageAllocator},
+    device_tree::init_device_tree,
     framebuffer::FrameBuffer,
     interrupt::init_interrupts,
     serial::{Com, Serial, serial_init},
@@ -223,13 +224,16 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
 
     // When running through `x qemu run --debug`, wait until a corresponding GDB client executes this:
     //
+    //     target remote [host, usuallty `localhost`]:[port, usually `1234`]
+    //     add-symbol-file [path/to]/elpytios-kernel -o 0xffff_8000_0000_0000
+    //
     //     set language c
     //     set *(unsigned char*)&__DEBUG_HALT = 0
     //     set language rust
     //     continue
     //
     // This is to ensure the kernel has been loaded to memory at offset 0xffff_8000_0000_0000 before
-    // inserting software breakpoints and looking up symbosl at the same offset
+    // inserting software breakpoints and looking up symbols at the same offset
     #[cfg(debug_assertions)]
     {
         use log::debug;
