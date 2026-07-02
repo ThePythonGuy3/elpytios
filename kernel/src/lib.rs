@@ -1,5 +1,6 @@
 #![forbid(unfulfilled_lint_expectations)]
 #![feature(
+    anonymous_lifetime_in_impl_trait,
     arbitrary_self_types_pointers,
     const_trait_impl,
     const_try,

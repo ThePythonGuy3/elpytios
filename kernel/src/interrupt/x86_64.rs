@@ -5,6 +5,7 @@ use core::{
 
 use bitflags::bitflags;
 use bytemuck::Zeroable;
+use log::info;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -225,6 +226,7 @@ pub unsafe fn init_interrupts() {
         base: *mut IdtEntry,
     }
 
+    info!("Initializing interrupts");
     unsafe {
         // Global descriptor table is x86-specific
         init_gdt();

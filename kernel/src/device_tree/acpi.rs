@@ -70,6 +70,11 @@ impl Rsdp {
     pub unsafe fn new(this: *const Self) -> Result<Self, AcpiError> {
         unsafe { Self::parse(this) }
     }
+
+    #[inline]
+    pub fn rsdt(&self) -> Result<SystemTableType<'_, Rsdt>, AcpiError> {
+        unsafe { SystemTable::parse(self.rsdt_addr as usize as *const SystemTableHeader).and_then(SystemTable::typed) }
+    }
 }
 
 impl AcpiParse for Rsdp {
@@ -102,7 +107,7 @@ pub struct Xsdp {
 
 impl Xsdp {
     /// # Safety
-    /// - The pointer must be valid for unaligned reads of `Rsdp`.
+    /// - The pointer must be valid for unaligned reads of `Xsdp`.
     /// - The pointer must point to a firmware-provided data to ensure validations.
     /// - The resulting output must be dropped before identity-mapping is disabled.
     #[inline]
@@ -276,6 +281,20 @@ impl<'root, T: sealed::TypedSystemTable<Kind = Multiple>> ExactSizeIterator for 
 }
 
 impl<'root, T: sealed::TypedSystemTable<Kind = Multiple>> FusedIterator for SystemTableType<'root, T> {}
+
+pub struct Rsdt;
+unsafe impl sealed::TypedSystemTable for Rsdt {
+    const SIGNATURE: [u8; 4] = *b"RSDT";
+
+    type Kind = Multiple;
+    type EntryRepr = u32;
+    type Entry<'root> = SystemTable<'root>;
+
+    #[inline]
+    unsafe fn entry<'root>(repr: Self::EntryRepr) -> Result<Self::Entry<'root>, AcpiError> {
+        unsafe { SystemTable::parse(repr as usize as *const SystemTableHeader) }
+    }
+}
 
 pub struct Xsdt;
 unsafe impl sealed::TypedSystemTable for Xsdt {

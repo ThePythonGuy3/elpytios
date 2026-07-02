@@ -253,7 +253,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
     // Setup global physical page allocator
     {
         info!(
-            "Setting up physical page allocator: found {} usable memory regions",
+            "Initializing physical page allocator: found {} usable memory regions",
             info.memory_regions.len()
         );
 
