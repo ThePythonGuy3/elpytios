@@ -35,12 +35,12 @@ impl fmt::Display for AcpiError {
     }
 }
 
-pub trait AcpiParse {
-    type Output;
+pub trait AcpiParse: Sized {
+    type Input;
 
     /// # Safety
-    /// The pointer must be valid for unaligned reads of `Self`.
-    unsafe fn new(self: *const Self) -> Result<Self::Output, AcpiError>;
+    /// The pointer must be valid for unaligned reads of `Self:Input`.
+    unsafe fn new(input: *const Self::Input) -> Result<Self, AcpiError>;
 }
 
 #[repr(C, packed)]
@@ -53,18 +53,18 @@ pub struct Rsdp {
 }
 
 impl AcpiParse for Rsdp {
-    type Output = Self;
+    type Input = Self;
 
-    unsafe fn new(self: *const Self) -> Result<Self::Output, AcpiError> {
+    unsafe fn new(input: *const Self::Input) -> Result<Self, AcpiError> {
         unsafe {
-            ((*self).signature == ROOT_SIGNATURE).ok_or(AcpiError::InvalidRootSignature { found: (*self).signature })?;
+            ((*input).signature == ROOT_SIGNATURE).ok_or(AcpiError::InvalidRootSignature { found: (*input).signature })?;
             let mut checksum = 0u8;
-            for &byte in slice::from_raw_parts(&raw const *self as *const u8, size_of::<Self>()) {
+            for &byte in slice::from_raw_parts(&raw const *input as *const u8, size_of::<Self>()) {
                 checksum = checksum.wrapping_add(byte);
             }
 
             match NonZeroU8::new(checksum) {
-                None => Ok(self.read_unaligned()),
+                None => Ok(input.read_unaligned()),
                 Some(invalid) => Err(AcpiError::InvalidChecksum(invalid)),
             }
         }
@@ -81,19 +81,19 @@ pub struct Xsdp {
 }
 
 impl AcpiParse for Xsdp {
-    type Output = Self;
+    type Input = Self;
 
-    unsafe fn new(self: *const Self) -> Result<Self::Output, AcpiError> {
+    unsafe fn new(input: *const Self::Input) -> Result<Self, AcpiError> {
         unsafe {
-            (&raw const (*self).rsdp).new()?;
+            Rsdp::new(&raw const (*input).rsdp)?;
 
             let mut checksum = 0u8;
-            for &byte in slice::from_raw_parts(&raw const (*self).len as *const u8, size_of::<Self>() - offset_of!(Self, len)) {
+            for &byte in slice::from_raw_parts(&raw const (*input).len as *const u8, size_of::<Self>() - offset_of!(Self, len)) {
                 checksum = checksum.wrapping_add(byte);
             }
 
             match NonZeroU8::new(checksum) {
-                None => Ok(self.read_unaligned()),
+                None => Ok(input.read_unaligned()),
                 Some(invalid) => Err(AcpiError::InvalidChecksum(invalid)),
             }
         }
