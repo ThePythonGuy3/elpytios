@@ -5,6 +5,7 @@
     const_trait_impl,
     const_try,
     debug_closure_helpers,
+    impl_trait_in_assoc_type,
     layout_for_ptr,
     ptr_metadata,
     slice_ptr_get,

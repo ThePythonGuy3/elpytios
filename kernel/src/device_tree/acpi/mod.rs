@@ -1,6 +1,11 @@
 use core::{any::type_name, fmt, iter::FusedIterator, marker::PhantomData, mem::offset_of, num::NonZeroU8, ptr, slice};
 
+mod root;
+pub use root::*;
+
 pub const ROOT_SIGNATURE: [u8; 8] = *b"RSD PTR ";
+
+pub type AcpiResult<T> = Result<T, AcpiError>;
 
 struct BytesFmt<'a>(&'a [u8]);
 impl fmt::Debug for BytesFmt<'_> {
@@ -49,7 +54,7 @@ impl fmt::Display for AcpiError {
 trait AcpiParse: Sized {
     type Input;
 
-    unsafe fn parse(input: *const Self::Input) -> Result<Self, AcpiError>;
+    unsafe fn parse(input: *const Self::Input) -> AcpiResult<Self>;
 }
 
 #[repr(C, packed)]
@@ -67,20 +72,20 @@ impl Rsdp {
     /// - The pointer must point to a firmware-provided data to ensure validations.
     /// - The resulting output must be dropped before identity-mapping is disabled.
     #[inline]
-    pub unsafe fn new(this: *const Self) -> Result<Self, AcpiError> {
+    pub unsafe fn new(this: *const Self) -> AcpiResult<Self> {
         unsafe { Self::parse(this) }
     }
 
     #[inline]
-    pub fn rsdt(&self) -> Result<SystemTableType<'_, Rsdt>, AcpiError> {
-        unsafe { SystemTable::parse(self.rsdt_addr as usize as *const SystemTableHeader).and_then(SystemTable::typed) }
+    pub fn rsdt(&self) -> AcpiResult<Rsdt<'_>> {
+        unsafe { SystemTable::parse(self.rsdt_addr as usize as *const SystemTableHeader).and_then(|table| table.typed()) }
     }
 }
 
 impl AcpiParse for Rsdp {
     type Input = Self;
 
-    unsafe fn parse(input: *const Self::Input) -> Result<Self, AcpiError> {
+    unsafe fn parse(input: *const Self::Input) -> AcpiResult<Self> {
         unsafe {
             ((*input).signature == ROOT_SIGNATURE).ok_or(AcpiError::InvalidRootSignature { found: (*input).signature })?;
             let mut checksum = 0u8;
@@ -111,20 +116,20 @@ impl Xsdp {
     /// - The pointer must point to a firmware-provided data to ensure validations.
     /// - The resulting output must be dropped before identity-mapping is disabled.
     #[inline]
-    pub unsafe fn new(this: *const Self) -> Result<Self, AcpiError> {
+    pub unsafe fn new(this: *const Self) -> AcpiResult<Self> {
         unsafe { Self::parse(this) }
     }
 
     #[inline]
-    pub fn xsdt(&self) -> Result<SystemTableType<'_, Xsdt>, AcpiError> {
-        unsafe { SystemTable::parse(self.xsdt_addr as usize as *const SystemTableHeader).and_then(SystemTable::typed) }
+    pub fn xsdt(&self) -> AcpiResult<Xsdt<'_>> {
+        unsafe { SystemTable::parse(self.xsdt_addr as usize as *const SystemTableHeader).and_then(|table| table.typed()) }
     }
 }
 
 impl AcpiParse for Xsdp {
     type Input = Self;
 
-    unsafe fn parse(input: *const Self::Input) -> Result<Self, AcpiError> {
+    unsafe fn parse(input: *const Self::Input) -> AcpiResult<Self> {
         unsafe {
             Rsdp::parse(&raw const (*input).rsdp)?;
 
@@ -162,6 +167,18 @@ pub struct SystemTable<'root> {
     _marker: PhantomData<&'root ()>,
 }
 
+impl<'root> SystemTable<'root> {
+    #[inline]
+    pub fn typed<T: TypedSystemTable<Out<'root> = T>>(&self) -> AcpiResult<T> {
+        (self.signature == T::SIGNATURE)
+            .then(|| unsafe { T::from_table(self) })
+            .ok_or(AcpiError::InvalidTableSignature {
+                expected: T::SIGNATURE,
+                found: self.signature,
+            })
+    }
+}
+
 impl fmt::Debug for SystemTable<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct(type_name::<Self>())
@@ -174,7 +191,7 @@ impl fmt::Debug for SystemTable<'_> {
 impl AcpiParse for SystemTable<'_> {
     type Input = SystemTableHeader;
 
-    unsafe fn parse(input: *const Self::Input) -> Result<Self, AcpiError> {
+    unsafe fn parse(input: *const Self::Input) -> AcpiResult<Self> {
         unsafe {
             let entries = slice::from_raw_parts(
                 &raw const (*input).system_table as *const u8,
@@ -202,66 +219,20 @@ impl AcpiParse for SystemTable<'_> {
     }
 }
 
-impl<'root> SystemTable<'root> {
-    #[inline]
-    pub fn typed<T: sealed::TypedSystemTable>(self) -> Result<SystemTableType<'root, T>, AcpiError> {
-        (self.signature == T::SIGNATURE)
-            .then_some(SystemTableType {
-                entries: ptr::slice_from_raw_parts(
-                    self.entries as *const u8 as *const T::EntryRepr,
-                    self.entries.len() / size_of::<T::EntryRepr>(),
-                ),
-                _marker: PhantomData,
-            })
-            .ok_or(AcpiError::InvalidTableSignature {
-                expected: T::SIGNATURE,
-                found: self.signature,
-            })
-    }
-}
-
-pub struct SystemTableType<'root, T: sealed::TypedSystemTable> {
-    entries: *const [T::EntryRepr],
+struct UnalignedPtrIter<'root, T: 'root> {
+    entries: *const [T],
     _marker: PhantomData<&'root ()>,
 }
 
-impl<T: sealed::TypedSystemTable> Copy for SystemTableType<'_, T> {}
-impl<T: sealed::TypedSystemTable> Clone for SystemTableType<'_, T> {
-    fn clone(&self) -> Self {
-        Self {
-            entries: self.entries,
-            _marker: self._marker,
-        }
-    }
-}
-
-impl<'root, T: sealed::TypedSystemTable<Kind = Multiple, Entry<'root>: fmt::Debug>> fmt::Debug for SystemTableType<'root, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct(type_name::<T>())
-            .field("signature", &BytesFmt(&T::SIGNATURE))
-            .field_with("entries", |f| {
-                let mut list = f.debug_list();
-                for entry in *self {
-                    _ = match entry {
-                        Ok(entry) => list.entry(&entry),
-                        Err(e) => list.entry_with(|f| write!(f, "[ERROR: {e}]")),
-                    }
-                }
-                list.finish()
-            })
-            .finish()
-    }
-}
-
-impl<'root, T: sealed::TypedSystemTable<Kind = Multiple>> Iterator for SystemTableType<'root, T> {
-    type Item = Result<T::Entry<'root>, AcpiError>;
+impl<'root, T: 'root> Iterator for UnalignedPtrIter<'root, T> {
+    type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
         let len = self.entries.len();
         let new_len = len.checked_sub(1)?;
 
-        let first = self.entries.cast::<T::EntryRepr>();
-        let result = unsafe { T::entry(first.read_unaligned()) };
+        let first = self.entries.cast::<T>();
+        let result = unsafe { first.read_unaligned() };
 
         self.entries = ptr::slice_from_raw_parts(unsafe { first.add(1) }, new_len);
         Some(result)
@@ -273,56 +244,23 @@ impl<'root, T: sealed::TypedSystemTable<Kind = Multiple>> Iterator for SystemTab
     }
 }
 
-impl<'root, T: sealed::TypedSystemTable<Kind = Multiple>> ExactSizeIterator for SystemTableType<'root, T> {
+impl<'root, T: 'root> ExactSizeIterator for UnalignedPtrIter<'root, T> {
     #[inline]
     fn len(&self) -> usize {
         self.entries.len()
     }
 }
 
-impl<'root, T: sealed::TypedSystemTable<Kind = Multiple>> FusedIterator for SystemTableType<'root, T> {}
+impl<'root, T: 'root> FusedIterator for UnalignedPtrIter<'root, T> {}
 
-pub struct Rsdt;
-unsafe impl sealed::TypedSystemTable for Rsdt {
-    const SIGNATURE: [u8; 4] = *b"RSDT";
-
-    type Kind = Multiple;
-    type EntryRepr = u32;
-    type Entry<'root> = SystemTable<'root>;
-
-    #[inline]
-    unsafe fn entry<'root>(repr: Self::EntryRepr) -> Result<Self::Entry<'root>, AcpiError> {
-        unsafe { SystemTable::parse(repr as usize as *const SystemTableHeader) }
-    }
-}
-
-pub struct Xsdt;
-unsafe impl sealed::TypedSystemTable for Xsdt {
-    const SIGNATURE: [u8; 4] = *b"XSDT";
-
-    type Kind = Multiple;
-    type EntryRepr = u64;
-    type Entry<'root> = SystemTable<'root>;
-
-    #[inline]
-    unsafe fn entry<'root>(repr: Self::EntryRepr) -> Result<Self::Entry<'root>, AcpiError> {
-        unsafe { SystemTable::parse(repr as usize as *const SystemTableHeader) }
-    }
-}
-
-pub struct Single;
-pub struct Multiple;
-
+use sealed::*;
 mod sealed {
     use super::*;
 
-    pub unsafe trait TypedSystemTable {
+    pub unsafe trait TypedSystemTable: Sized {
         const SIGNATURE: [u8; 4];
+        type Out<'root>: TypedSystemTable;
 
-        type Kind;
-        type EntryRepr;
-        type Entry<'root>;
-
-        unsafe fn entry<'root>(repr: Self::EntryRepr) -> Result<Self::Entry<'root>, AcpiError>;
+        unsafe fn from_table<'root>(table: &SystemTable<'root>) -> Self::Out<'root>;
     }
 }
