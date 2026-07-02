@@ -3,6 +3,7 @@
     arbitrary_self_types_pointers,
     const_trait_impl,
     const_try,
+    debug_closure_helpers,
     layout_for_ptr,
     ptr_metadata,
     slice_ptr_get,
