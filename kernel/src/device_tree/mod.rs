@@ -10,7 +10,11 @@ unsafe fn init_device_tree_impl(_next_v_addr: &mut VAddr, system_tables: impl It
     info!("Initializing device tree: found {} system tables", system_tables.len());
     for system_table in system_tables {
         let system_table = system_table.expect("Couldn't parse system table");
-        info!("\t> {system_table:?}");
+        if let Ok(madt) = system_table.typed::<Madt>() {
+            for pic in madt {
+                //
+            }
+        }
     }
 }
 

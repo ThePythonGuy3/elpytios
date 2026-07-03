@@ -1,14 +1,13 @@
-use core::{any::type_name, fmt, iter::FusedIterator, marker::PhantomData, ptr};
+use core::{any::type_name, fmt, iter::FusedIterator};
 
 use crate::device_tree::{
     AcpiResult, SystemTable, SystemTableHeader,
-    acpi::{AcpiParse, UnalignedPtrIter, sealed::TypedSystemTable},
+    acpi::{AcpiParse, PackedPtr, UnalignedPtrIter, sealed::TypedSystemTable},
 };
 
 #[derive(Clone, Copy)]
 pub struct Rsdt<'root> {
-    entries: *const [u32],
-    _marker: PhantomData<&'root ()>,
+    entries: PackedPtr<'root>,
 }
 
 impl fmt::Debug for Rsdt<'_> {
@@ -25,11 +24,7 @@ impl<'root> IntoIterator for Rsdt<'root> {
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        UnalignedPtrIter {
-            entries: self.entries,
-            _marker: self._marker,
-        }
-        .map(|addr| unsafe { SystemTable::parse(addr as usize as *const SystemTableHeader) })
+        UnalignedPtrIter::<u32>::new(self.entries).map(|addr| unsafe { SystemTable::parse(addr as usize as *const SystemTableHeader) })
     }
 }
 
@@ -40,16 +35,14 @@ unsafe impl TypedSystemTable for Rsdt<'_> {
     #[inline]
     unsafe fn from_table<'root>(table: &SystemTable<'root>) -> Rsdt<'root> {
         Rsdt {
-            entries: ptr::slice_from_raw_parts(table.entries.cast(), table.entries.len() / size_of::<u32>()),
-            _marker: table._marker,
+            entries: PackedPtr::new(table.entries),
         }
     }
 }
 
 #[derive(Clone, Copy)]
 pub struct Xsdt<'root> {
-    entries: *const [u64],
-    _marker: PhantomData<&'root ()>,
+    entries: PackedPtr<'root>,
 }
 
 impl fmt::Debug for Xsdt<'_> {
@@ -66,11 +59,7 @@ impl<'root> IntoIterator for Xsdt<'root> {
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        UnalignedPtrIter {
-            entries: self.entries,
-            _marker: self._marker,
-        }
-        .map(|addr| unsafe { SystemTable::parse(addr as usize as *const SystemTableHeader) })
+        UnalignedPtrIter::<u64>::new(self.entries).map(|addr| unsafe { SystemTable::parse(addr as usize as *const SystemTableHeader) })
     }
 }
 
@@ -81,8 +70,7 @@ unsafe impl TypedSystemTable for Xsdt<'_> {
     #[inline]
     unsafe fn from_table<'root>(table: &SystemTable<'root>) -> Xsdt<'root> {
         Xsdt {
-            entries: ptr::slice_from_raw_parts(table.entries.cast(), table.entries.len() / size_of::<u64>()),
-            _marker: table._marker,
+            entries: PackedPtr::new(table.entries),
         }
     }
 }

@@ -1,6 +1,8 @@
 use core::{any::type_name, fmt, iter::FusedIterator, marker::PhantomData, mem::offset_of, num::NonZeroU8, ptr, slice};
 
+mod madt;
 mod root;
+pub use madt::*;
 pub use root::*;
 
 pub const ROOT_SIGNATURE: [u8; 8] = *b"RSD PTR ";
@@ -219,35 +221,79 @@ impl AcpiParse for SystemTable<'_> {
     }
 }
 
-struct UnalignedPtrIter<'root, T: 'root> {
-    entries: *const [T],
+#[derive(Clone, Copy)]
+struct PackedPtr<'root> {
+    ptr: *const [u8],
     _marker: PhantomData<&'root ()>,
+}
+
+impl<'root> PackedPtr<'root> {
+    #[inline]
+    fn new(ptr: *const [u8]) -> Self {
+        Self { ptr, _marker: PhantomData }
+    }
+
+    #[inline]
+    fn len(self) -> usize {
+        self.ptr.len()
+    }
+
+    #[inline]
+    unsafe fn slice(&mut self, len: usize) -> &'root [u8] {
+        unsafe {
+            let new_len = self.ptr.len().checked_sub(len).expect("Not enough bytes");
+            let first = self.ptr.as_ptr();
+            let result = slice::from_raw_parts(first, len);
+
+            self.ptr = ptr::slice_from_raw_parts(first.add(len), new_len);
+            result
+        }
+    }
+
+    #[inline]
+    unsafe fn read<T: 'root>(&mut self) -> T {
+        unsafe {
+            let new_len = self.ptr.len().checked_sub(size_of::<T>()).expect("Not enough bytes");
+            let first = self.ptr.cast::<T>();
+            let result = first.read_unaligned();
+
+            self.ptr = ptr::slice_from_raw_parts(first.add(1).cast(), new_len);
+            result
+        }
+    }
+}
+
+struct UnalignedPtrIter<'root, T: 'root> {
+    entries: PackedPtr<'root>,
+    _marker: PhantomData<&'root [T]>,
+}
+
+impl<'root, T: 'root> UnalignedPtrIter<'root, T> {
+    fn new(entries: PackedPtr<'root>) -> Self {
+        Self {
+            entries,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<'root, T: 'root> Iterator for UnalignedPtrIter<'root, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let len = self.entries.len();
-        let new_len = len.checked_sub(1)?;
-
-        let first = self.entries.cast::<T>();
-        let result = unsafe { first.read_unaligned() };
-
-        self.entries = ptr::slice_from_raw_parts(unsafe { first.add(1) }, new_len);
-        Some(result)
+        (self.entries.len() != 0).then(|| unsafe { self.entries.read() })
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.entries.len(), Some(self.entries.len()))
+        (self.entries.len() / size_of::<T>(), Some(self.entries.len() / size_of::<T>()))
     }
 }
 
 impl<'root, T: 'root> ExactSizeIterator for UnalignedPtrIter<'root, T> {
     #[inline]
     fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.len() / size_of::<T>()
     }
 }
 
