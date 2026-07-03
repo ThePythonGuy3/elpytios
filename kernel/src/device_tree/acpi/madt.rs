@@ -4,7 +4,7 @@ use bitflags::bitflags;
 
 use crate::device_tree::{
     SystemTable,
-    acpi::{PackedPtr, sealed::TypedSystemTable},
+    acpi::{PackedPtr, TypedSystemTable},
 };
 
 #[derive(Clone, Copy)]
@@ -15,7 +15,7 @@ pub struct Madt<'root> {
 }
 
 impl<'root> IntoIterator for Madt<'root> {
-    type IntoIter = impl Iterator<Item = Pic<'root>> + 'root;
+    type IntoIter = impl Iterator<Item = Pic> + 'root;
     type Item = <Self::IntoIter as Iterator>::Item;
 
     #[inline]
@@ -41,7 +41,9 @@ impl<'root> IntoIterator for Madt<'root> {
                         LOCAL_ADDR_OVERRIDE => Pic::LocalAddrOverride(payload.read()),
                         IO_STREAMLINED => Pic::IoStreamlined(payload.read()),
                         PROCESSOR_LOCAL_STREAMLINED => {
-                            Pic::ProcessorLocalStreamlined(payload.read(), payload.slice(len as usize - 2 - size_of::<ProcessorLocalStreamlined>()))
+                            let data = payload.read();
+                            let _acpi_processor_uid_string = payload.slice(len as usize - 2 - size_of::<ProcessorLocalStreamlined>());
+                            Pic::ProcessorLocalStreamlined(data)
                         }
                         PLATFORM_INTERRUPT_SOURCES => Pic::PlatformInterruptSources(payload.read()),
                         PROCESSOR_LOCAL_X2 => Pic::ProcessLocalX2(payload.read()),
@@ -107,7 +109,7 @@ pub const RESERVED_FOR_OEM: RangeInclusive<u8> = 0x80..=0xff;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
-pub enum Pic<'root> {
+pub enum Pic {
     ProcessorLocal(ProcessorLocal) = PROCESSOR_LOCAL,
     Io(Io) = IO,
     InterruptSourceOverride(InterruptSourceOverride) = INTERRUPT_SOURCE_OVERRIDE,
@@ -115,10 +117,7 @@ pub enum Pic<'root> {
     LocalNmi(LocalNmi) = LOCAL_NMI,
     LocalAddrOverride(LocalAddrOverride) = LOCAL_ADDR_OVERRIDE,
     IoStreamlined(IoStreamlined) = IO_STREAMLINED,
-    ProcessorLocalStreamlined(
-        ProcessorLocalStreamlined,
-        &'root [u8], // `acpi_processor_uid_string`
-    ) = PROCESSOR_LOCAL_STREAMLINED,
+    ProcessorLocalStreamlined(ProcessorLocalStreamlined) = PROCESSOR_LOCAL_STREAMLINED,
     PlatformInterruptSources(PlatformInterruptSources) = PLATFORM_INTERRUPT_SOURCES,
     ProcessLocalX2(ProcessLocalX2) = PROCESSOR_LOCAL_X2,
     LocalNmiX2(LocalNmiX2) = LOCAL_NMI_X2,

@@ -9,14 +9,15 @@ pub const ROOT_SIGNATURE: [u8; 8] = *b"RSD PTR ";
 
 pub type AcpiResult<T> = Result<T, AcpiError>;
 
-struct BytesFmt<'a>(&'a [u8]);
-impl fmt::Debug for BytesFmt<'_> {
+#[derive(Clone, Copy)]
+pub struct SignatureFmt<'a>(pub &'a [u8]);
+impl fmt::Debug for SignatureFmt<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
-impl fmt::Display for BytesFmt<'_> {
+impl fmt::Display for SignatureFmt<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for chunk in self.0.utf8_chunks() {
             for ch in chunk.valid().chars() {
@@ -46,8 +47,8 @@ impl fmt::Debug for AcpiError {
 impl fmt::Display for AcpiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidRootSignature { found } => write!(f, "Expected 'RSD PTR ', found '{}'", BytesFmt(found)),
-            Self::InvalidTableSignature { expected, found } => write!(f, "Expected '{}', found '{}'", BytesFmt(expected), BytesFmt(found)),
+            Self::InvalidRootSignature { found } => write!(f, "Expected 'RSD PTR ', found '{}'", SignatureFmt(found)),
+            Self::InvalidTableSignature { expected, found } => write!(f, "Expected '{}', found '{}'", SignatureFmt(expected), SignatureFmt(found)),
             Self::InvalidChecksum(checksum) => write!(f, "Invalid checksum, found {checksum}"),
         }
     }
@@ -184,7 +185,7 @@ impl<'root> SystemTable<'root> {
 impl fmt::Debug for SystemTable<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct(type_name::<Self>())
-            .field("signature", &BytesFmt(&self.signature))
+            .field("signature", &SignatureFmt(&self.signature))
             .field("byte_len", &self.entries.len())
             .finish()
     }
@@ -219,6 +220,13 @@ impl AcpiParse for SystemTable<'_> {
             }
         }
     }
+}
+
+pub unsafe trait TypedSystemTable: Sized {
+    const SIGNATURE: [u8; 4];
+    type Out<'root>: TypedSystemTable + 'root;
+
+    unsafe fn from_table<'root>(table: &SystemTable<'root>) -> Self::Out<'root>;
 }
 
 #[derive(Clone, Copy)]
@@ -298,15 +306,3 @@ impl<'root, T: 'root> ExactSizeIterator for UnalignedPtrIter<'root, T> {
 }
 
 impl<'root, T: 'root> FusedIterator for UnalignedPtrIter<'root, T> {}
-
-use sealed::*;
-mod sealed {
-    use super::*;
-
-    pub unsafe trait TypedSystemTable: Sized {
-        const SIGNATURE: [u8; 4];
-        type Out<'root>: TypedSystemTable;
-
-        unsafe fn from_table<'root>(table: &SystemTable<'root>) -> Self::Out<'root>;
-    }
-}

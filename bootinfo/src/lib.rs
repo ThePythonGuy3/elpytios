@@ -84,7 +84,7 @@ pub struct Reloc {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Acpi {
+pub enum DeviceTree {
     Acpi(PAddr),
     Acpi2(PAddr),
 }
@@ -94,7 +94,7 @@ pub enum Acpi {
 #[repr(C, align(4096))]
 pub struct BootInfo {
     pub graphics_info:       GraphicsInfo,
-    pub acpi:                Acpi,
+    pub device_tree:         DeviceTree,
 
     /// Used to calculate slide for virtual mapping
     pub kernel_base:         PAddr,

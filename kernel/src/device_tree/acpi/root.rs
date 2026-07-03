@@ -2,7 +2,7 @@ use core::{any::type_name, fmt, iter::FusedIterator};
 
 use crate::device_tree::{
     AcpiResult, SystemTable, SystemTableHeader,
-    acpi::{AcpiParse, PackedPtr, UnalignedPtrIter, sealed::TypedSystemTable},
+    acpi::{AcpiParse, PackedPtr, TypedSystemTable, UnalignedPtrIter},
 };
 
 #[derive(Clone, Copy)]

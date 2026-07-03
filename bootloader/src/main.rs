@@ -9,7 +9,7 @@ use core::{arch::asm, mem::{self, MaybeUninit}};
 use arrayvec::ArrayVec;
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, IdentityMap, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, Acpi, paddr::PAddr};
+use elpytios_bootinfo::{BootInfo, GraphicsInfo, IdentityMap, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, DeviceTree, paddr::PAddr};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMap, proto::console::gop::*, table::cfg::ConfigTableEntry};
 
 const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
@@ -223,13 +223,24 @@ fn setup_uefi_and_exit() -> UefiInfo {
         identity_maps.push(IdentityMap::new(PAddr::new(boot_info.addr()), MEM_BOOT_INFO_LEN, IdentityMapFlags::READABLE));
 
         unsafe {
+<<<<<<< HEAD
             let acpi = uefi::system::with_config_table(|slice| {
+=======
+            let page_table_init = boot::allocate_pages(
+                AllocateType::AnyPages,
+                MEM_PAGE_TABLE,
+                MEM_PAGE_TABLE_LEN,
+            ).unwrap().as_ptr();
+            page_table_init.write_bytes(0, MEM_PAGE_TABLE_LEN * PAGE_SIZE);
+
+            let device_tree = uefi::system::with_config_table(|slice| {
+>>>>>>> 7fa362d (Cleaner macros)
                 let mut out = None;
                 for i in slice {
                     match i.guid {
-                        ConfigTableEntry::ACPI_GUID if out.is_none() => out = Some(Acpi::Acpi(PAddr::new(i.address.addr()))),
+                        ConfigTableEntry::ACPI_GUID if out.is_none() => out = Some(DeviceTree::Acpi(PAddr::new(i.address.addr()))),
                         ConfigTableEntry::ACPI2_GUID => {
-                            out = Some(Acpi::Acpi2(PAddr::new(i.address.addr())));
+                            out = Some(DeviceTree::Acpi2(PAddr::new(i.address.addr())));
                             break
                         },
                         _ => {}
@@ -241,7 +252,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
             boot_info.write(BootInfo {
                 graphics_info,
-                acpi,
+                device_tree,
 
                 kernel_base: PAddr::new(base_ptr.addr()),
                 kernel_elf_base: PAddr::new(kernel_ptr.addr()),
