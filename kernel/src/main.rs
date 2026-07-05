@@ -6,6 +6,7 @@
 use core::{
     arch::{asm, naked_asm},
     fmt::Write,
+    iter::once,
     panic::PanicInfo,
 };
 
@@ -15,7 +16,7 @@ use elpytios_kernel::{
     allocator::{AllocTree, PhysicalPageAllocator},
     framebuffer::FrameBuffer,
     serial::{Com, Serial, serial_init},
-    statics::{get_phys_alloc, get_virtual_map, set_frame_buffer, set_phys_alloc, set_virtual_map},
+    statics::{get_phys_alloc, get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
 use log::{error, info};
@@ -107,7 +108,6 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
 
     let mut v_map = unsafe {
         VirtualMapBuilder::new(
-            510,
             || regions.take_head().inspect(|addr| (addr.addr() as *mut u8).write_bytes(0, PAGE_SIZE)),
             |p_addr| p_addr.addr() as *mut (),
         )
@@ -138,6 +138,8 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
 
     // Direct map *all* of RAM to the specified direct-map offset
     let direct_map_offset = direct_map_offset.next_multiple_of(2 << 30); // Align to a gigabyte
+    unsafe { set_direct_map_offset(direct_map_offset) }
+
     for region in &info.memory_regions {
         v_map
             .map(
@@ -149,7 +151,7 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
             .unwrap();
     }
 
-    let (page_table_phys, virtual_map) = v_map.finish().expect("Couldn't build virtual map table");
+    let (page_table_phys, virtual_map) = unsafe { v_map.finish() }.expect("Couldn't build virtual map table");
     let setup_virtual_mapped = (setup_virtual_mapped as *const ())
         .addr()
         .checked_add(v_slide)
@@ -157,23 +159,25 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
 
     unsafe {
         set_virtual_map(virtual_map);
+
         asm!(
             "mov cr3, {page_table_phys}",
             "add rsp, {v_slide}",
             "and rsp, -16",
-            "call {setup_virtual_mapped}",
+            "jmp {setup_virtual_mapped}",
 
             page_table_phys = in(reg) page_table_phys.addr(),
             v_slide = in(reg) v_slide,
             setup_virtual_mapped = in(reg) setup_virtual_mapped,
             in("rdi") (info as *const BootInfo).byte_add(v_slide).as_ref_unchecked(),
+            in("rsi") &regions,
 
             options(noreturn),
         )
     }
 }
 
-unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo) -> ! {
+unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions: &MemoryRegions) -> ! {
     // Relocate all symbols to higher-half addressing
     // Identity-mapping is still present at this point, so it is okay to cast `PAddr` into pointers
     {
@@ -242,20 +246,15 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo) -> ! {
         debug!("Continuing!");
     }
 
-    info!(
-        "Setting up physical page allocator: found {} usable memory regions",
-        info.memory_regions.len()
-    );
-
     // Setup global physical page allocator
-    /*{
-        let mut phys_alloc = PhysicalPageAllocator::new();
-        for &MemoryRegion { mut base, mut pages } in &info.memory_regions {
-            if base.addr() == 0 {
-                base = base.byte_add(PAGE_SIZE);
-                pages -= 1;
-            }
+    {
+        info!(
+            "Setting up physical page allocator: found {} usable memory regions",
+            info.memory_regions.len()
+        );
 
+        let mut phys_alloc = PhysicalPageAllocator::new();
+        for MemoryRegion { mut base, mut pages } in regions.available.iter().copied().chain(once(regions.head)) {
             while pages > 1 {
                 let mut taken_pages = pages;
                 loop {
@@ -267,22 +266,8 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo) -> ! {
                         taken_pages /= 2;
                     } else {
                         unsafe {
-                            for i in 0..meta_pages {
-                                let offset = i * PAGE_SIZE;
-                                v_map
-                                    .map(
-                                        base.byte_add(offset),
-                                        next_v_addr.byte_add(offset),
-                                        VFlags::GLOBAL | VFlags::WRITABLE,
-                                        reserved_pages_allocator(info, &mut used_pages),
-                                    )
-                                    .expect("Couldn't virtual map alloc tree");
-                            }
-
-                            let tree = AllocTree::new(next_v_addr.ptr_mut(), layout);
+                            let tree = AllocTree::new(phys_to_virt(base).ptr_mut(), layout);
                             phys_alloc.push_tree(base.byte_add(meta_pages * PAGE_SIZE), tree);
-
-                            next_v_addr = next_v_addr.byte_add(meta_pages * PAGE_SIZE);
                         }
 
                         base = base.byte_add(try_take * PAGE_SIZE);
@@ -294,10 +279,10 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo) -> ! {
         }
 
         unsafe { set_phys_alloc(phys_alloc) }
-    }*/
+    }
 
     // Virtual-map the framebuffer
-    /*{
+    {
         let v_map = get_virtual_map();
         let phys_alloc = &mut *get_phys_alloc().lock();
 
@@ -308,20 +293,23 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo) -> ! {
         let fb_phys_end = (fb_phys + fb_size).next_multiple_of(PAGE_SIZE);
         let fb_page_count = (fb_phys_end - fb_phys_base) / PAGE_SIZE;
 
-        for i in 0..fb_page_count {
-            let offset = i * PAGE_SIZE;
-            unsafe {
-                v_map
-                    .map(
-                        PAddr::new(fb_phys_base + offset),
-                        next_v_addr.byte_add(offset),
-                        VFlags::GLOBAL | VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::CACHE_DISABLED,
-                        // TODO Should this discard the allocator information at all?
-                        //      Considering that the pages for page-table stuff doesn't need to be freed at all...
-                        || phys_alloc.alloc(1).ok().map(|id| id.addr()),
-                    )
-                    .unwrap();
-            }
+        unsafe {
+            let p_addr = PAddr::new(fb_phys_base);
+            v_map
+                .map(
+                    p_addr,
+                    phys_to_virt(p_addr),
+                    fb_page_count,
+                    VFlags::GLOBAL | VFlags::WRITABLE | VFlags::WRITE_THROUGH,
+                    || {
+                        phys_alloc
+                            .alloc(1)
+                            .ok()
+                            .map(|id| id.addr())
+                            .inspect(|&addr| phys_to_virt(addr).ptr_mut::<u8>().write_bytes(0, PAGE_SIZE))
+                    },
+                )
+                .unwrap();
         }
 
         unsafe {
@@ -330,15 +318,10 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo) -> ! {
                 height: info.graphics_info.h,
                 stride: info.graphics_info.stride,
                 format: info.graphics_info.pixel_format,
-                pointer: next_v_addr.byte_add(fb_phys - fb_phys_base).ptr_mut(),
+                pointer: phys_to_virt(PAddr::new(fb_phys)).ptr_mut(),
             })
         }
-
-        #[expect(unused, reason = "Keeping this here in case there's going to be another setup")]
-        {
-            next_v_addr = next_v_addr.byte_add(fb_page_count * PAGE_SIZE);
-        }
-    }*/
+    }
 
     unsafe { main() }
 }
@@ -349,7 +332,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo) -> ! {
 unsafe extern "sysv64" fn main() -> ! {
     info!("Hello, world! Kernel is now in higher-half addressing!");
 
-    /*{
+    {
         use elpytios_bootinfo::PixelFormat;
         use elpytios_kernel::statics::get_frame_buffer;
 
@@ -378,7 +361,7 @@ unsafe extern "sysv64" fn main() -> ! {
             }
             _ => {}
         }
-    }*/
+    }
 
     loop {}
 }

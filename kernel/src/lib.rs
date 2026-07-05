@@ -12,9 +12,10 @@ pub mod vaddr;
 use core::mem::MaybeUninit;
 
 use allocator::PhysicalPageAllocator;
+use elpytios_bootinfo::paddr::PAddr;
 use framebuffer::FrameBuffer;
 use spin_sync::SpinMutex;
-use vaddr::VirtualMap;
+use vaddr::{VAddr, VirtualMap};
 
 /// # Safety
 /// Every single one of these statics must be set by their corresponding `set_*` functions below in
@@ -24,9 +25,17 @@ use vaddr::VirtualMap;
 pub mod statics {
     use super::*;
 
+    static mut DIRECT_MAP_OFFSET: MaybeUninit<usize> = MaybeUninit::uninit();
     static mut VIRTUAL_MAP: MaybeUninit<VirtualMap> = MaybeUninit::uninit();
     static mut PHYS_ALLOC: MaybeUninit<SpinMutex<PhysicalPageAllocator>> = MaybeUninit::uninit();
     static mut FRAME_BUFFER: MaybeUninit<FrameBuffer> = MaybeUninit::uninit();
+
+    #[inline]
+    pub unsafe fn set_direct_map_offset(offset: usize) {
+        unsafe {
+            DIRECT_MAP_OFFSET = MaybeUninit::new(offset);
+        }
+    }
 
     #[inline]
     pub unsafe fn set_virtual_map(virtual_map: VirtualMap) {
@@ -47,6 +56,11 @@ pub mod statics {
         unsafe {
             FRAME_BUFFER = MaybeUninit::new(frame_buffer);
         }
+    }
+
+    #[inline]
+    pub fn phys_to_virt(p_addr: PAddr) -> VAddr {
+        VAddr::new(p_addr.addr() + unsafe { (&raw const DIRECT_MAP_OFFSET as *const usize).read() })
     }
 
     #[inline]

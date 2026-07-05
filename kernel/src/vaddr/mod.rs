@@ -37,7 +37,6 @@ bitflags! {
 #[repr(C)]
 pub enum VirtualMapError {
     PageTable,
-    Reserved { p_addr: PAddr, v_addr: VAddr },
     AlreadyMapped { p_addr: PAddr, v_addr: VAddr, p_addr_existing: PAddr },
 }
 
@@ -51,7 +50,6 @@ impl fmt::Display for VirtualMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::PageTable => writeln!(f, "Couldn't allocate a page table"),
-            Self::Reserved { p_addr, v_addr } => writeln!(f, "Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is reserved"),
             Self::AlreadyMapped {
                 p_addr,
                 v_addr,
