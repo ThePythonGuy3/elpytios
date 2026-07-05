@@ -33,8 +33,7 @@ unsafe extern "sysv64" fn jump_from_bootloader(info: &'static BootInfo) -> ! {
     naked_asm!(
         "cli",
         "cld",
-        "lea rax, [rip + {setup_identity_mapped}]",
-        "jmp rax",
+        "jmp {setup_identity_mapped}",
 
         setup_identity_mapped = sym setup_identity_mapped,
     )
