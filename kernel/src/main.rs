@@ -17,7 +17,6 @@ use elpytios_kernel::{
     device_tree::init_device_tree,
     framebuffer::FrameBuffer,
     interrupt::init_interrupts,
-    reserved_pages_allocator,
     serial::{Com, Serial, serial_init},
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
@@ -288,6 +287,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
 
     // Setup interrupt handlers
     unsafe {
+        init_device_tree(info);
         init_interrupts();
     }
 
