@@ -246,11 +246,6 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
         debug!("Continuing!");
     }
 
-    // Setup interrupt handlers
-    unsafe {
-        init_interrupts();
-    }
-
     // Setup global physical page allocator
     {
         info!(
@@ -284,6 +279,11 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
         }
 
         unsafe { set_phys_alloc(phys_alloc) }
+    }
+
+    // Setup interrupt handlers
+    unsafe {
+        init_interrupts();
     }
 
     // Virtual-map the framebuffer
@@ -356,7 +356,6 @@ unsafe extern "sysv64" fn main() -> ! {
                         let a = 255;
 
                         unsafe {
-                            (core::ptr::null_mut::<u8>().write(0));
                             fbo.pointer.cast::<[u8; 4]>().add(y * fbo.stride + x).write_volatile(match invert_br {
                                 false => [r, g, b, a],
                                 true => [b, g, r, a],
