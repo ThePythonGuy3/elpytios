@@ -159,7 +159,6 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
 
     unsafe {
         set_virtual_map(virtual_map);
-
         asm!(
             "mov cr3, {page_table_phys}",
             "add rsp, {v_slide}",
