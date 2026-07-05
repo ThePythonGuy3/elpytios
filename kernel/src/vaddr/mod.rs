@@ -29,6 +29,7 @@ bitflags! {
 
         /// Don't flush translation lookaside buffers when switching virtual map tables
         const GLOBAL          = 1 << 5;
+        const EXECUTE_DISABLE = 1 << 6;
     }
 }
 

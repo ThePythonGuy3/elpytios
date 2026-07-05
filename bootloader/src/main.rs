@@ -15,11 +15,9 @@ use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::
 const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
 
 const MEM_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
-const MEM_PAGE_TABLE:   MemoryType = MemoryType::custom(0x8000_0001);
 
 const MEM_STACK_LEN:      usize = 64;
 const MEM_BOOT_INFO_LEN:  usize = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
-const MEM_PAGE_TABLE_LEN: usize = 12;
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
@@ -225,22 +223,12 @@ fn setup_uefi_and_exit() -> UefiInfo {
         identity_maps.push(IdentityMap::new(PAddr::new(boot_info.addr()), MEM_BOOT_INFO_LEN, IdentityMapFlags::READABLE));
 
         unsafe {
-            let page_table_init = boot::allocate_pages(
-                AllocateType::AnyPages,
-                MEM_PAGE_TABLE,
-                MEM_PAGE_TABLE_LEN,
-            ).unwrap().as_ptr();
-            page_table_init.write_bytes(0, MEM_PAGE_TABLE_LEN * PAGE_SIZE);
-
             boot_info.write(BootInfo {
                 graphics_info,
 
                 kernel_base: PAddr::new(base_ptr.addr()),
                 kernel_elf_base: PAddr::new(kernel_ptr.addr()),
                 kernel_virt_base: virtual_base,
-
-                page_table_init: PAddr::new(page_table_init.addr()),
-                page_table_init_len: MEM_PAGE_TABLE_LEN,
 
                 memory_regions: ArrayVec::new(),
                 identity_maps,

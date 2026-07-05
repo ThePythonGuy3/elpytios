@@ -41,19 +41,6 @@ unsafe extern "sysv64" fn jump_from_bootloader(info: &'static BootInfo) -> ! {
 
 const HIGHER_HALF_ADDRESS_BASE: VAddr = VAddr::new(0xffff_8000_0000_0000);
 
-#[inline]
-fn reserved_pages_allocator(info: &BootInfo, used_pages: &mut usize) -> impl FnMut() -> Option<PAddr> {
-    || {
-        (*used_pages < info.page_table_init_len).then(|| {
-            let ptr = info.page_table_init.byte_add(*used_pages * PAGE_SIZE);
-            *used_pages += 1;
-
-            debug_assert_eq!(ptr.addr() % PAGE_SIZE, 0, "Page table pointer isn't page-aligned");
-            ptr
-        })
-    }
-}
-
 struct SerialLogger(Com);
 impl log::Log for SerialLogger {
     fn enabled(&self, _metadata: &log::Metadata) -> bool {
@@ -74,48 +61,95 @@ impl log::Log for SerialLogger {
 
 static LOGGER: SerialLogger = SerialLogger(Com::Com3);
 
+struct MemoryRegions<'a> {
+    available: &'a [MemoryRegion],
+    head: MemoryRegion,
+}
+
+impl<'a> MemoryRegions<'a> {
+    fn new(source: &'a [MemoryRegion]) -> Self {
+        let &[ref available @ .., head] = source else { panic!("Not enough memory to start the kernel") };
+        Self { available, head }
+    }
+
+    fn take_head(&mut self) -> Option<PAddr> {
+        let head = loop {
+            match self.head.pages {
+                0 => {
+                    let &[ref available @ .., head] = self.available else { return None };
+                    self.available = available;
+                    self.head = head;
+                }
+                n => {
+                    self.head.pages = n - 1;
+                    break self.head.base.byte_add((n - 1) * PAGE_SIZE)
+                }
+            }
+        };
+        Some(head)
+    }
+}
+
+/// # Safety
+/// - Available memory regions must *not* include the kernel code, stack, and boot info itself;
+///   i.e., they must be usable immediately.
+/// - Any references must point to the defined custom `MEM_*` memory types in the bootloader.
+/// - See safety notes of [`setup_virtual_mapped`].
 unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
     // Notes:
     // - `log` mustn't be setup here; wait until symbols are relocated
 
+    let mut regions = MemoryRegions::new(&info.memory_regions);
     let v_slide = HIGHER_HALF_ADDRESS_BASE
         .addr()
         .checked_sub(info.kernel_base.addr())
         .expect("Kernel physical address somehow higher than higher-half addressing base");
 
-    let mut used_pages = 0;
-    let mut virtual_map = unsafe { VirtualMapBuilder::new(510, reserved_pages_allocator(info, &mut used_pages), |p_addr| p_addr.addr() as *mut ()) };
+    let mut v_map = unsafe {
+        VirtualMapBuilder::new(
+            510,
+            || regions.take_head().inspect(|addr| (addr.addr() as *mut u8).write_bytes(0, PAGE_SIZE)),
+            |p_addr| p_addr.addr() as *mut (),
+        )
+    };
 
-    let mut max_virt = usize::MIN;
+    let mut direct_map_offset = usize::MIN;
     for map in &info.identity_maps {
-        for i in 0..map.region.pages {
-            let phys = map.region.base.byte_add(i * PAGE_SIZE).addr();
-            let virt = phys + v_slide;
-            max_virt = max_virt.max(virt);
-
-            virtual_map
-                .map(PAddr::new(phys), VAddr::new(phys), {
-                    let mut flags = VFlags::GLOBAL;
-                    if map.flags.contains(IdentityMapFlags::WRITABLE) {
-                        flags |= VFlags::WRITABLE
-                    }
-                    flags
-                })
-                .expect("Couldn't identity map kernel segment");
-
-            virtual_map
-                .map(PAddr::new(phys), VAddr::new(virt), {
-                    let mut flags = VFlags::GLOBAL;
-                    if map.flags.contains(IdentityMapFlags::WRITABLE) {
-                        flags |= VFlags::WRITABLE
-                    }
-                    flags
-                })
-                .expect("Couldn't virtual map kernel segment");
+        let mut flags = VFlags::empty();
+        if map.flags.contains(IdentityMapFlags::WRITABLE) {
+            flags |= VFlags::WRITABLE;
+        } else {
+            flags |= VFlags::GLOBAL;
         }
+        if !map.flags.contains(IdentityMapFlags::EXECUTABLE) {
+            flags |= VFlags::EXECUTE_DISABLE;
+        }
+
+        v_map
+            .map(map.region.base, VAddr::new(map.region.base.addr()), map.region.pages, flags)
+            .expect("Couldn't identity map kernel segment");
+
+        v_map
+            .map(map.region.base, VAddr::new(map.region.base.addr() + v_slide), map.region.pages, flags)
+            .expect("Couldn't virtual map kernel segment");
+
+        direct_map_offset = direct_map_offset.max(map.region.base.addr() + v_slide + map.region.pages * PAGE_SIZE);
     }
 
-    let (page_table_phys, virtual_map) = virtual_map.finish().expect("Couldn't build virtual map table");
+    // Direct map *all* of RAM to the specified direct-map offset
+    let direct_map_offset = direct_map_offset.next_multiple_of(2 << 30); // Align to a gigabyte
+    for region in &info.memory_regions {
+        v_map
+            .map(
+                region.base,
+                VAddr::new(region.base.addr() + direct_map_offset),
+                region.pages,
+                VFlags::WRITABLE,
+            )
+            .unwrap();
+    }
+
+    let (page_table_phys, virtual_map) = v_map.finish().expect("Couldn't build virtual map table");
     let setup_virtual_mapped = (setup_virtual_mapped as *const ())
         .addr()
         .checked_add(v_slide)
@@ -133,19 +167,15 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
             v_slide = in(reg) v_slide,
             setup_virtual_mapped = in(reg) setup_virtual_mapped,
             in("rdi") (info as *const BootInfo).byte_add(v_slide).as_ref_unchecked(),
-            in("rsi") max_virt + PAGE_SIZE,
-            in("rdx") used_pages,
 
             options(noreturn),
         )
     }
 }
 
-unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next_v_addr: VAddr, mut used_pages: usize) -> ! {
+unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo) -> ! {
     // Relocate all symbols to higher-half addressing
     // Identity-mapping is still present at this point, so it is okay to cast `PAddr` into pointers
-    // Identity-mapping will be gone after this scope is exited
-    // TODO ^ do just that
     {
         let kernel_ptr = info.kernel_elf_base.addr() as *mut u8;
         let v_slide = HIGHER_HALF_ADDRESS_BASE
@@ -217,10 +247,8 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
         info.memory_regions.len()
     );
 
-    let v_map = get_virtual_map();
-
     // Setup global physical page allocator
-    {
+    /*{
         let mut phys_alloc = PhysicalPageAllocator::new();
         for &MemoryRegion { mut base, mut pages } in &info.memory_regions {
             if base.addr() == 0 {
@@ -266,10 +294,11 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
         }
 
         unsafe { set_phys_alloc(phys_alloc) }
-    }
+    }*/
 
     // Virtual-map the framebuffer
-    {
+    /*{
+        let v_map = get_virtual_map();
         let phys_alloc = &mut *get_phys_alloc().lock();
 
         let fb_phys = info.graphics_info.frame_buffer.addr();
@@ -309,7 +338,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
         {
             next_v_addr = next_v_addr.byte_add(fb_page_count * PAGE_SIZE);
         }
-    }
+    }*/
 
     unsafe { main() }
 }
@@ -320,7 +349,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, mut next
 unsafe extern "sysv64" fn main() -> ! {
     info!("Hello, world! Kernel is now in higher-half addressing!");
 
-    {
+    /*{
         use elpytios_bootinfo::PixelFormat;
         use elpytios_kernel::statics::get_frame_buffer;
 
@@ -349,7 +378,7 @@ unsafe extern "sysv64" fn main() -> ! {
             }
             _ => {}
         }
-    }
+    }*/
 
     loop {}
 }

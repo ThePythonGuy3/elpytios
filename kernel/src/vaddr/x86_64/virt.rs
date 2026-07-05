@@ -1,9 +1,12 @@
 use core::{cell::RefCell, fmt, ops::DerefMut};
 
 use bytemuck::Zeroable;
-use elpytios_bootinfo::paddr::PAddr;
+use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
 
-use crate::vaddr::{Entry, NodeEntry, PdEntry, PdTable, PdptEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VFlags, VirtualMapError};
+use crate::vaddr::{
+    Entry, NodeEntry, PdEntry, PdLeafEntry, PdTable, PdptEntry, PdptLeafEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VFlags,
+    VirtualMapError,
+};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Zeroable)]
 #[repr(transparent)]
@@ -113,8 +116,8 @@ impl<T: FnMut() -> Option<PAddr>> VirtualMapBuilder<T> {
     }
 
     #[inline]
-    pub fn map(&mut self, p_addr: PAddr, v_addr: VAddr, flags: VFlags) -> Result<(), VirtualMapError> {
-        unsafe { self.map.map(p_addr, v_addr, flags, &mut self.new_page_table) }
+    pub fn map(&mut self, p_addr: PAddr, v_addr: VAddr, page_count: usize, flags: VFlags) -> Result<(), VirtualMapError> {
+        unsafe { self.map.map(p_addr, v_addr, page_count, flags, &mut self.new_page_table) }
     }
 
     pub fn finish(self) -> Result<(PAddr, VirtualMap), VirtualMapError> {
@@ -124,7 +127,7 @@ impl<T: FnMut() -> Option<PAddr>> VirtualMapBuilder<T> {
         } = self;
 
         let pml4_phys = (new_page_table)().ok_or(VirtualMapError::PageTable)?;
-        match mapper.table.get_mut().pdpt_entries[mapper.recursion_index] {
+        match mapper.table.get_mut().pml4_to_pdpt[mapper.recursion_index] {
             e if e.is_present() => unreachable!("`recursion_index` is checked in earlier methods"),
             ref mut e => *e = unsafe { NodeEntry::new(Entry::WRITABLE, pml4_phys) },
         }
@@ -162,7 +165,7 @@ unsafe impl sealed::VirtualMapper for LocalMapper {
     #[inline]
     unsafe fn pdpt(&self, pml4_index: usize) -> &mut PdptTable {
         unsafe {
-            (self.page_table_ptr)(self.pml4().pdpt_entries[pml4_index].child_addr())
+            (self.page_table_ptr)(self.pml4().pml4_to_pdpt[pml4_index].child_addr())
                 .cast::<PdptTable>()
                 .as_mut()
                 .expect("Null pointer on PML4 entry")
@@ -172,7 +175,7 @@ unsafe impl sealed::VirtualMapper for LocalMapper {
     #[inline]
     unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
         unsafe {
-            (self.page_table_ptr)(match self.pdpt(pml4_index).pd_entries[pdpt_index].kind() {
+            (self.page_table_ptr)(match self.pdpt(pml4_index).pdpt_to_pd[pdpt_index].kind() {
                 UnionEntry::Node(e) => e.child_addr(),
                 UnionEntry::Leaf(..) => unreachable!("PDPT entry is a huge page entry"),
             })
@@ -185,7 +188,7 @@ unsafe impl sealed::VirtualMapper for LocalMapper {
     #[inline]
     unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
         unsafe {
-            (self.page_table_ptr)(match self.pd(pml4_index, pdpt_index).pt_entries[pd_index].kind() {
+            (self.page_table_ptr)(match self.pd(pml4_index, pdpt_index).pd_to_pt[pd_index].kind() {
                 UnionEntry::Node(e) => e.child_addr(),
                 UnionEntry::Leaf(..) => unreachable!("PD entry is a huge page entry"),
             })
@@ -213,8 +216,9 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
     ///   virtual page occupied by `v_addr`.
     pub unsafe fn map(
         &self,
-        p_addr: PAddr,
-        v_addr: VAddr,
+        mut p_addr: PAddr,
+        mut v_addr: VAddr,
+        mut page_count: usize,
         flags: VFlags,
         mut new_page_table: impl FnMut() -> Option<PAddr>,
     ) -> Result<(), VirtualMapError> {
@@ -222,52 +226,81 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
             return Err(VirtualMapError::Reserved { p_addr, v_addr })
         }
 
-        let VAddrInfo {
-            pt_index,
-            pd_index,
-            pdpt_index,
-            pml4_index,
-            ..
-        } = v_addr.info();
-        unsafe {
-            match &mut self.mapper.pml4().pdpt_entries[pml4_index] {
-                e if !e.is_present() => *e = NodeEntry::new(Entry::WRITABLE, new_page_table().ok_or(VirtualMapError::PageTable)?),
-                _ => {}
-            }
+        while page_count > 0 {
+            let VAddrInfo {
+                pt_index,
+                pd_index,
+                pdpt_index,
+                pml4_index,
+                ..
+            } = v_addr.info();
 
-            match &mut self.mapper.pdpt(pml4_index).pd_entries[pdpt_index] {
-                e if !e.is_present() => *e = PdptEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table().ok_or(VirtualMapError::PageTable)?)),
-                e if let UnionEntry::Leaf(e) = e.kind() => {
-                    return Err(VirtualMapError::AlreadyMapped {
-                        p_addr,
-                        v_addr,
-                        p_addr_existing: e.addr(),
-                    })
+            unsafe {
+                match &mut self.mapper.pml4().pml4_to_pdpt[pml4_index] {
+                    e if !e.is_present() => *e = NodeEntry::new(Entry::WRITABLE, new_page_table().ok_or(VirtualMapError::PageTable)?),
+                    _ => {}
                 }
-                _ => {}
-            }
 
-            match &mut self.mapper.pd(pml4_index, pdpt_index).pt_entries[pd_index] {
-                e if !e.is_present() => *e = PdEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table().ok_or(VirtualMapError::PageTable)?)),
-                e if let UnionEntry::Leaf(e) = e.kind() => {
-                    return Err(VirtualMapError::AlreadyMapped {
-                        p_addr,
-                        v_addr,
-                        p_addr_existing: e.addr(),
-                    })
+                match &mut self.mapper.pdpt(pml4_index).pdpt_to_pd[pdpt_index] {
+                    e if !e.is_present() => {
+                        if pd_index == 0 && page_count >= 512 * 512 {
+                            *e = PdptEntry::leaf(PdptLeafEntry::new(flags.into(), p_addr) | flags.into());
+                            p_addr = p_addr.byte_add(512 * 512 * PAGE_SIZE);
+                            v_addr = v_addr.byte_add(512 * 512 * PAGE_SIZE);
+                            page_count -= 512 * 512;
+                            continue
+                        } else {
+                            *e = PdptEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table().ok_or(VirtualMapError::PageTable)?))
+                        }
+                    }
+                    e if let UnionEntry::Leaf(e) = e.kind() => {
+                        return Err(VirtualMapError::AlreadyMapped {
+                            p_addr,
+                            v_addr,
+                            p_addr_existing: e.addr(),
+                        })
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
 
-            match &mut self.mapper.pt(pml4_index, pdpt_index, pd_index).phys_pages[pt_index] {
-                e if e.is_present() => {
-                    return Err(VirtualMapError::AlreadyMapped {
-                        p_addr,
-                        v_addr,
-                        p_addr_existing: e.addr(),
-                    })
+                match &mut self.mapper.pd(pml4_index, pdpt_index).pd_to_pt[pd_index] {
+                    e if !e.is_present() => {
+                        if pt_index == 0 && page_count >= 512 {
+                            *e = PdEntry::leaf(PdLeafEntry::new(flags.into(), p_addr) | flags.into());
+                            p_addr = p_addr.byte_add(512 * PAGE_SIZE);
+                            v_addr = v_addr.byte_add(512 * PAGE_SIZE);
+                            page_count -= 512;
+                            continue
+                        } else {
+                            *e = PdEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table().ok_or(VirtualMapError::PageTable)?))
+                        }
+                    }
+                    e if let UnionEntry::Leaf(e) = e.kind() => {
+                        return Err(VirtualMapError::AlreadyMapped {
+                            p_addr,
+                            v_addr,
+                            p_addr_existing: e.addr(),
+                        })
+                    }
+                    _ => {}
                 }
-                e => *e = PtEntry::new(flags.into(), p_addr) | if flags.contains(VFlags::GLOBAL) { PtEntry::GLOBAL } else { PtEntry::empty() },
+
+                match &mut self.mapper.pt(pml4_index, pdpt_index, pd_index).phys_pages[pt_index] {
+                    e if e.is_present() => {
+                        return Err(VirtualMapError::AlreadyMapped {
+                            p_addr,
+                            v_addr,
+                            p_addr_existing: e.addr(),
+                        })
+                    }
+                    e => {
+                        *e = PtEntry::new(flags.into(), p_addr) | flags.into();
+                        p_addr = p_addr.byte_add(PAGE_SIZE);
+                        v_addr = v_addr.byte_add(PAGE_SIZE);
+                        page_count -= 1;
+                        continue
+                    }
+                }
             }
         }
 

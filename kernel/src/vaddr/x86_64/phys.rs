@@ -49,7 +49,9 @@ impl From<VFlags> for Entry {
         if value.contains(VFlags::ACCESSED) {
             out |= Self::ACCESSED
         }
-
+        if value.contains(VFlags::EXECUTE_DISABLE) {
+            out |= Self::EXECUTE_DISABLE;
+        }
         out
     }
 }
@@ -85,13 +87,13 @@ bitflags! {
 #[derive(Debug, Zeroable)]
 #[repr(C, align(4096))]
 pub struct Pml4Table {
-    pub pdpt_entries: [NodeEntry; PAGE_SIZE / size_of::<NodeEntry>()],
+    pub pml4_to_pdpt: [NodeEntry; PAGE_SIZE / size_of::<NodeEntry>()],
 }
 
 #[derive(Debug, Zeroable)]
 #[repr(C, align(4096))]
 pub struct PdptTable {
-    pub pd_entries: [PdptEntry; PAGE_SIZE / size_of::<PdptEntry>()],
+    pub pdpt_to_pd: [PdptEntry; PAGE_SIZE / size_of::<PdptEntry>()],
 }
 
 #[derive(Debug, Copy, Clone, Zeroable)]
@@ -103,15 +105,10 @@ impl PdptLeafEntry {
         PAddr::new(self.0 & Self::ADDRESS_MASK.0)
     }
 
-    /*#[inline]
+    #[inline]
     pub const fn new(entry: Entry, addr: PAddr) -> Self {
         Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
     }
-
-    #[inline]
-    pub const fn is_present(self) -> bool {
-        self.0 & Entry::PRESENT.0 != 0
-    }*/
 }
 bitflags! {
     impl PdptLeafEntry: usize {
@@ -120,6 +117,17 @@ bitflags! {
 
         const ADDRESS_MASK = ((1 << 22) - 1) << 30;
         const PROTECTION_KEY = ((1 << 4) - 1) << 59;
+    }
+}
+
+impl From<VFlags> for PdptLeafEntry {
+    #[inline]
+    fn from(value: VFlags) -> Self {
+        let mut out = Self::empty();
+        if value.contains(VFlags::GLOBAL) {
+            out |= Self::GLOBAL;
+        }
+        out
     }
 }
 
@@ -135,12 +143,6 @@ impl<Node, Leaf> UnionEntry<Node, Leaf> {
         let Self::Node(node) = self else { panic!("Not a node!") };
         node
     }
-
-    /*#[inline]
-    pub fn force_leaf(self) -> Leaf {
-        let Self::Leaf(leaf) = self else { panic!("Not a node!") };
-        leaf
-    }*/
 }
 
 #[derive(Copy, Clone, Zeroable)]
@@ -163,10 +165,10 @@ impl PdptEntry {
         Self { node }
     }
 
-    /*#[inline]
+    #[inline]
     pub const fn leaf(leaf: PdptLeafEntry) -> Self {
-        unsafe { mem::transmute::<usize, Self>(mem::transmute::<Self, usize>(Self { leaf }) | NODE_IS_LEAF) }
-    }*/
+        unsafe { mem::transmute::<usize, Self>(mem::transmute::<Self, usize>(Self { leaf }) | UNION_IS_LEAF) }
+    }
 
     #[inline]
     pub const fn kind(self) -> UnionEntry<NodeEntry, PdptLeafEntry> {
@@ -179,17 +181,6 @@ impl PdptEntry {
         }
     }
 
-    /*#[inline]
-    pub const fn kind_mut(&mut self) -> UnionEntry<&mut NodeEntry, &mut PdptLeafEntry> {
-        unsafe {
-            if mem::transmute::<Self, usize>(*self) & UNION_IS_LEAF != 0 {
-                UnionEntry::Leaf(&mut self.leaf)
-            } else {
-                UnionEntry::Node(&mut self.node)
-            }
-        }
-    }*/
-
     #[inline]
     pub const fn is_present(self) -> bool {
         unsafe { mem::transmute::<Self, usize>(self) & Entry::PRESENT.0 != 0 }
@@ -199,7 +190,7 @@ impl PdptEntry {
 #[derive(Zeroable)]
 #[repr(C, align(4096))]
 pub struct PdTable {
-    pub pt_entries: [PdEntry; PAGE_SIZE / size_of::<PdEntry>()],
+    pub pd_to_pt: [PdEntry; PAGE_SIZE / size_of::<PdEntry>()],
 }
 
 #[derive(Debug, Copy, Clone, Zeroable)]
@@ -211,15 +202,10 @@ impl PdLeafEntry {
         PAddr::new(self.0 & Self::ADDRESS_MASK.0)
     }
 
-    /*#[inline]
+    #[inline]
     pub const fn new(entry: Entry, addr: PAddr) -> Self {
         Self((entry.0 | Entry::PRESENT.0) & !Self::ADDRESS_MASK.0 | addr.addr() & Self::ADDRESS_MASK.0)
     }
-
-    #[inline]
-    pub const fn is_present(self) -> bool {
-        unsafe { mem::transmute::<Self, usize>(self) & Entry::PRESENT.0 != 0 }
-    }*/
 }
 bitflags! {
     impl PdLeafEntry: usize {
@@ -228,6 +214,17 @@ bitflags! {
 
         const ADDRESS_MASK = ((1 << 31) - 1) << 21;
         const PROTECTION_KEY = ((1 << 4) - 1) << 59;
+    }
+}
+
+impl From<VFlags> for PdLeafEntry {
+    #[inline]
+    fn from(value: VFlags) -> Self {
+        let mut out = Self::empty();
+        if value.contains(VFlags::GLOBAL) {
+            out |= Self::GLOBAL;
+        }
+        out
     }
 }
 
@@ -251,10 +248,10 @@ impl PdEntry {
         Self { node }
     }
 
-    /*#[inline]
+    #[inline]
     pub const fn leaf(leaf: PdLeafEntry) -> Self {
-        unsafe { mem::transmute::<usize, Self>(mem::transmute::<Self, usize>(Self { leaf }) | NODE_IS_LEAF) }
-    }*/
+        unsafe { mem::transmute::<usize, Self>(mem::transmute::<Self, usize>(Self { leaf }) | UNION_IS_LEAF) }
+    }
 
     #[inline]
     pub const fn kind(self) -> UnionEntry<NodeEntry, PdLeafEntry> {
@@ -266,17 +263,6 @@ impl PdEntry {
             }
         }
     }
-
-    /*#[inline]
-    pub const fn kind_mut(&mut self) -> UnionEntry<&mut NodeEntry, &mut PdLeafEntry> {
-        unsafe {
-            if mem::transmute::<Self, usize>(*self) & NODE_IS_LEAF != 0 {
-                UnionEntry::Leaf(&mut self.leaf)
-            } else {
-                UnionEntry::Node(&mut self.node)
-            }
-        }
-    }*/
 
     #[inline]
     pub const fn is_present(self) -> bool {
@@ -316,5 +302,16 @@ bitflags! {
 
         const ADDRESS_MASK = ((1 << 40) - 1) << 12;
         const PROTECTION_KEY = ((1 << 4) - 1) << 59;
+    }
+}
+
+impl From<VFlags> for PtEntry {
+    #[inline]
+    fn from(value: VFlags) -> Self {
+        let mut out = Self::empty();
+        if value.contains(VFlags::GLOBAL) {
+            out |= Self::GLOBAL;
+        }
+        out
     }
 }

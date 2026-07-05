@@ -94,9 +94,6 @@ pub struct BootInfo {
     pub kernel_elf_base:     PAddr,
     pub kernel_virt_base:    usize,
 
-    pub page_table_init:     PAddr,
-    pub page_table_init_len: usize,
-
     pub memory_regions:      ArrayVec<MemoryRegion, MAX_MEMORY_REGIONS>,
     pub identity_maps:       ArrayVec<IdentityMap, MAX_IDENTITY_MAPS>,
     pub relocations:         ArrayVec<Reloc, MAX_RELOCATIONS>,
