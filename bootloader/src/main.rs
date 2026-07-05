@@ -223,18 +223,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         identity_maps.push(IdentityMap::new(PAddr::new(boot_info.addr()), MEM_BOOT_INFO_LEN, IdentityMapFlags::READABLE));
 
         unsafe {
-<<<<<<< HEAD
-            let acpi = uefi::system::with_config_table(|slice| {
-=======
-            let page_table_init = boot::allocate_pages(
-                AllocateType::AnyPages,
-                MEM_PAGE_TABLE,
-                MEM_PAGE_TABLE_LEN,
-            ).unwrap().as_ptr();
-            page_table_init.write_bytes(0, MEM_PAGE_TABLE_LEN * PAGE_SIZE);
-
             let device_tree = uefi::system::with_config_table(|slice| {
->>>>>>> 7fa362d (Cleaner macros)
                 let mut out = None;
                 for i in slice {
                     match i.guid {
@@ -281,8 +270,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
             if !matches!(entry.ty,
                 MemoryType::LOADER_CODE | MemoryType::LOADER_DATA |
                 MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA |
-                MemoryType::CONVENTIONAL |
-                MemoryType::ACPI_RECLAIM
+                MemoryType::CONVENTIONAL
             ) {
                 continue
             }

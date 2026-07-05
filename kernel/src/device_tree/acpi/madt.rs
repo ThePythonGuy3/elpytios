@@ -1,3 +1,5 @@
+#![allow(unused, reason = "Not all ACPI features are used, but they are needed for parsing")]
+
 use core::{iter, ops::RangeInclusive};
 
 use bitflags::bitflags;

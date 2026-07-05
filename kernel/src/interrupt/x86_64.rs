@@ -216,7 +216,7 @@ pub unsafe extern "sysv64" fn page_fault() -> ! {
 }
 
 /// # Safety
-/// Only call this once in setup phase after higher-half addressing is finished.
+/// Only call this once per CPU core in setup phase after higher-half addressing is finished.
 pub unsafe fn init_interrupts() {
     static mut IDT_ENTRIES: [IdtEntry; 256] = [bytemuck::zeroed(); 256];
 
@@ -226,7 +226,6 @@ pub unsafe fn init_interrupts() {
         base: *mut IdtEntry,
     }
 
-    info!("Initializing interrupts");
     unsafe {
         // Global descriptor table is x86-specific
         init_gdt();
@@ -241,7 +240,6 @@ pub unsafe fn init_interrupts() {
 
         asm!(
             "lidt [{ptr}]",
-
             ptr = in(reg) &ptr,
         );
     }
