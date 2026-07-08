@@ -99,7 +99,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
     
     helpers::init().unwrap();
 
-    boot::allocate_pages(AllocateType::MaxAddress(2 << u16::BITS), MEM_KERNEL_CODE, 16).unwrap();
+    //boot::allocate_pages(AllocateType::MaxAddress(2 << u16::BITS), MEM_KERNEL_CODE, 16).unwrap();
 
     {
         // Graphics Info Fetching
@@ -236,7 +236,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 graphics_info,
                 device_tree,
 
-                kernel_base: PAddr::new(base_ptr.addr()),
                 kernel_elf_base: PAddr::new(kernel_ptr.addr()),
                 kernel_virt_base: virtual_base,
 

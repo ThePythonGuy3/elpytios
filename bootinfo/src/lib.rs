@@ -97,7 +97,6 @@ pub struct BootInfo {
     pub device_tree:         DeviceTree,
 
     /// Used to calculate slide for virtual mapping
-    pub kernel_base:         PAddr,
     pub kernel_elf_base:     PAddr,
     pub kernel_virt_base:    usize,
 

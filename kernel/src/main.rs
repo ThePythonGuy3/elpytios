@@ -102,9 +102,16 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
     // - `log` mustn't be setup here; wait until symbols are relocated
 
     let mut regions = MemoryRegions::new(&info.memory_regions);
+    let kernel_base = info
+        .identity_maps
+        .iter()
+        .min_by_key(|map| map.region.base)
+        .expect("Didn't find any identity maps")
+        .region
+        .base;
     let v_slide = HIGHER_HALF_ADDRESS_BASE
         .addr()
-        .checked_sub(info.kernel_base.addr())
+        .checked_sub(kernel_base.addr())
         .expect("Kernel physical address somehow higher than higher-half addressing base");
 
     let (page_table_phys, setup_virtual_mapped) = {
@@ -175,20 +182,21 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
             setup_virtual_mapped = in(reg) setup_virtual_mapped,
             in("rdi") (info as *const BootInfo).byte_add(v_slide).as_ref_unchecked(),
             in("rsi") &regions,
+            in("rdx") kernel_base.addr(),
 
             options(noreturn),
         )
     }
 }
 
-unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions: &MemoryRegions) -> ! {
+unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions: &MemoryRegions, kernel_base: PAddr) -> ! {
     // Relocate all symbols to higher-half addressing
     // Identity-mapping is still present at this point, so it is okay to cast `PAddr` into pointers
     {
         let kernel_ptr = info.kernel_elf_base.addr() as *mut u8;
         let v_slide = HIGHER_HALF_ADDRESS_BASE
             .addr()
-            .checked_sub(info.kernel_base.addr())
+            .checked_sub(kernel_base.addr())
             .expect("Kernel physical address somehow higher than higher-half addressing base")
             .cast_signed() as i64;
 
