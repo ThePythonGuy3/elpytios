@@ -31,6 +31,25 @@ use framebuffer::FrameBuffer;
 use spin_sync::SpinMutex;
 use vaddr::{VAddr, VirtualMap};
 
+#[repr(transparent)]
+pub struct ScratchPages<'a> {
+    pub pages: &'a [PAddr],
+}
+
+impl ScratchPages<'_> {
+    pub fn take(&mut self) -> Option<PAddr> {
+        loop {
+            match self.pages.split_at_checked(1) {
+                Some((&[next], pages)) => {
+                    self.pages = pages;
+                    if next.addr() == 0 { continue } else { break Some(next) }
+                }
+                _ => break None,
+            }
+        }
+    }
+}
+
 /// # Safety
 /// Every single one of these statics must be set by their corresponding `set_*` functions below in
 /// the setup-phase of the kernel.

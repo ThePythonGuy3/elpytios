@@ -13,6 +13,7 @@ use core::{
 use elpytios_bootinfo::{BootInfo, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
 use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
+    ScratchPages,
     allocator::{AllocTree, PhysicalPageAllocator},
     device_tree::init_device_tree,
     framebuffer::FrameBuffer,
@@ -92,25 +93,6 @@ impl<'a> MemoryRegions<'a> {
     }
 }
 
-#[repr(transparent)]
-struct ScratchPages<'a> {
-    pages: &'a [PAddr],
-}
-
-impl ScratchPages<'_> {
-    fn take(&mut self) -> PAddr {
-        loop {
-            match self.pages.split_at_checked(1) {
-                Some((&[next], pages)) => {
-                    self.pages = pages;
-                    if next.addr() == 0 { continue } else { break next }
-                }
-                _ => panic!("Not enough scratch pages"),
-            }
-        }
-    }
-}
-
 /// # Safety
 /// - Available memory regions must *not* include the kernel code, stack, and boot info itself;
 ///   i.e., they must be usable immediately.
@@ -135,7 +117,7 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
         .checked_sub(kernel_base.addr())
         .expect("Kernel physical address somehow higher than higher-half addressing base");
 
-    let page_table_phys = scratch_pages.take();
+    let page_table_phys = scratch_pages.take().expect("Not enough scratch pages for page table");
     let setup_virtual_mapped = {
         let mut v_map = unsafe {
             VirtualMapBuilder::new(
