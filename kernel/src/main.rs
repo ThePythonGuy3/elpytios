@@ -212,7 +212,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
 ) -> ! {
     // Relocate all symbols to higher-half addressing
     // Identity-mapping is still present at this point, so it is okay to cast `PAddr` into pointers
-    let kernel_ptr = info.kernel_elf_base; //.addr() as *mut u8;
+    let kernel_ptr = info.kernel_elf_base;
     let v_slide = HIGHER_HALF_ADDRESS_BASE
         .addr()
         .checked_sub(kernel_base.addr())
@@ -320,10 +320,8 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
         unsafe { set_phys_alloc(phys_alloc) }
     }
 
-    // Setup interrupt handlers
-    unsafe {
-        init_device_tree(info);
-    }
+    // Setup device tree, which includes waking up all AP and setting up interrupt handlers
+    unsafe { init_device_tree(info.device_tree, scratch_pages) }
 
     // Virtual-map the framebuffer
     {

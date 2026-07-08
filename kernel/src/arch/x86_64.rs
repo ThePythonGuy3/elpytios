@@ -1,5 +1,34 @@
 use core::arch::asm;
 
+#[inline(always)]
+pub unsafe fn outb(port: u16, value: u8) {
+    unsafe {
+        asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") value,
+
+            options(nomem, nostack, preserves_flags)
+        )
+    }
+}
+
+#[inline(always)]
+pub unsafe fn inb(port: u16) -> u8 {
+    unsafe {
+        let value: u8;
+        asm!(
+            "in al, dx",
+
+            out("al") value,
+            in("dx") port,
+
+            options(nomem, nostack, preserves_flags),
+        );
+        value
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum Msr {
@@ -25,28 +54,28 @@ pub enum Msr {
     Ia32Fmask = 0xc000_0084,
     /// - Read-only register.
     /// - Bit 0-31: Unique 32-bit physical hardware ID.
-    X2ApicId = 0x802,
+    Ia32X2ApicId = 0x802,
     /// - Read-only register.
     /// - Bit 0-7: Version number.
     /// - Bit 16-23: Max LVT entries.
-    X2ApicVersion = 0x803,
+    Ia32X2ApicVersion = 0x803,
     /// - Write-only register.
     /// - Write a dummy 0 to clear in-service flag.
-    X2ApicEoi = 0x80b,
+    Ia32X2ApicEoi = 0x80b,
     /// - Read-write register.
     /// - Bit 0-7: Set fallback handler vector.
     /// - Bit 8: APIC enable in software.
-    X2ApicSivr = 0x80f,
+    Ia32X2ApicSivr = 0x80f,
     /// - Read-write register.
     /// - Bit 0-7: Vector.
     /// - Bit 8-10: Delivery mode (000=Fixed, 100=INIT, 101=SIPI).
     /// - Bit 14: Assert flag.
     /// - Bit 32-63: Target core destination APIC ID (as specified in [`Self::X2ApicId`]).
-    X2ApicIcr = 0x830,
+    Ia32X2ApicIcr = 0x830,
     /// - Read-write register.
     /// - Bit 0-7: Vector.
     /// - Bit 17-18: Mode (00=One-shot, 01=Periodic).
-    X2ApicLvtTimer = 0x832,
+    Ia32X2ApicLvtTimer = 0x832,
 }
 
 #[inline(always)]

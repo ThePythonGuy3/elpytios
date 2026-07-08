@@ -8,13 +8,18 @@ cfg_select! {
     }
 }
 
-use elpytios_bootinfo::{BootInfo, DeviceTree};
+use elpytios_bootinfo::DeviceTree;
 use log::info;
 
 mod acpi;
 use acpi::*;
 
-unsafe fn init_device_tree_impl(system_tables: impl IntoIterator<IntoIter: ExactSizeIterator, Item = Result<SystemTable, AcpiError>>) {
+use crate::ScratchPages;
+
+unsafe fn init_device_tree_impl(
+    scratch_pages: &mut ScratchPages,
+    system_tables: impl IntoIterator<IntoIter: ExactSizeIterator, Item = Result<SystemTable, AcpiError>>,
+) {
     let system_tables = system_tables.into_iter();
     info!("Initializing device tree: found {} system tables", system_tables.len());
 
@@ -41,23 +46,23 @@ unsafe fn init_device_tree_impl(system_tables: impl IntoIterator<IntoIter: Exact
         madt: Madt;
     }
 
-    unsafe { imp::init_device_tree(madt) }
+    unsafe { imp::init_device_tree(scratch_pages, madt) }
 }
 
 /// # Safety
 /// - Only call this once in setup phase after higher-half addressing is finished.
 /// - Identity-mapping must still be available.
-pub unsafe fn init_device_tree(info: &BootInfo) {
-    match info.device_tree {
+pub unsafe fn init_device_tree(device_tree: DeviceTree, scratch_pages: &mut ScratchPages) {
+    match device_tree {
         DeviceTree::Acpi(addr) => {
             let rsdp = unsafe { Rsdp::new(addr.addr() as *const Rsdp) }.expect("Couldn't parse RSDP");
             let rsdt = rsdp.rsdt().expect("Couldn't parse RSDT");
-            unsafe { init_device_tree_impl(rsdt) }
+            unsafe { init_device_tree_impl(scratch_pages, rsdt) }
         }
         DeviceTree::Acpi2(addr) => {
             let xsdp = unsafe { Xsdp::new(addr.addr() as *const Xsdp) }.expect("Couldn't parse XSDP");
             let xsdt = xsdp.xsdt().expect("Couldn't parse XSDT");
-            unsafe { init_device_tree_impl(xsdt) }
+            unsafe { init_device_tree_impl(scratch_pages, xsdt) }
         }
     };
 }
