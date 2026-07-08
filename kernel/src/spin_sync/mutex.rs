@@ -40,11 +40,6 @@ impl<T: ?Sized> SpinMutex<T> {
     pub fn get_mut(&mut self) -> &mut T {
         self.value.get_mut()
     }
-
-    #[inline]
-    pub unsafe fn get_mut_unchecked(&self) -> &mut T {
-        unsafe { self.value.get().as_mut_unchecked() }
-    }
 }
 
 #[derive(Debug)]

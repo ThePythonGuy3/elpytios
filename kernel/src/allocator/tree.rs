@@ -155,13 +155,6 @@ impl AllocTree {
 
         // `order`
         let layout = Layout::new::<u32>();
-        cfg_select! {
-            debug_assertions => {
-                // `id`
-                let (layout, ..) = layout.extend(Layout::new::<u32>())?;
-            }
-            _ => {}
-        }
         // `nodes_offset`
         let (layout, ..) = layout.extend(Layout::new::<usize>())?;
         // `split_bitset_offset`
