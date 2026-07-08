@@ -185,12 +185,19 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
     };
 
     unsafe {
+        let tmp = 0usize;
         asm!(
+            // Enable `GLOBAL` mapping, i.e. pages in TLB that don't get flushed
+            "mov {tmp}, cr4",
+            "or {tmp}, 1 << 7",
+            "mov cr4, {tmp}",
+
             "mov cr3, {page_table_phys}",
             "add rsp, {v_slide}",
             "and rsp, -16",
             "jmp {setup_virtual_mapped}",
 
+            tmp = in(reg) tmp,
             page_table_phys = in(reg) page_table_phys.addr(),
             v_slide = in(reg) v_slide,
             setup_virtual_mapped = in(reg) setup_virtual_mapped,

@@ -1,10 +1,14 @@
 use core::{
     arch::{asm, global_asm, x86_64::__cpuid_count},
+    sync::atomic::{
+        AtomicBool,
+        Ordering::{AcqRel, Relaxed, Release},
+    },
     time::Duration,
 };
 
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
-use log::{debug, info};
+use log::{debug, error, info};
 
 use crate::{
     ScratchPages,
@@ -18,7 +22,8 @@ use crate::{
 global_asm!(include_str!("trampolines/x86_64.s"));
 unsafe extern "sysv64" {
     static __ap_trampoline_start: u8;
-    static __ap_pml4_phys: u8;
+    static __ap_cr3: u8;
+    static __ap_cr4: u8;
     static __ap_stack: u8;
     static __ap_kernel_entry: u8;
     static __ap_trampoline_end: u8;
@@ -40,7 +45,7 @@ impl ApicDriver {
     }
 
     #[inline]
-    unsafe fn init(self, trampoline_phys: PAddr, apic_id: u32) {
+    unsafe fn init(self, send_init: bool, trampoline_phys: PAddr, apic_id: u32) {
         match self {
             Self::XApic { .. } => unimplemented!("Waking up cores via legacy xAPIC isn't implemented yet"),
             Self::X2Apic => unsafe {
@@ -51,8 +56,11 @@ impl ApicDriver {
                 // - Bit 32-63: Target core destination APIC ID
                 let id = (apic_id as u64) << 32;
                 let assert = 1 << 14;
-                wrmsr(Msr::Ia32X2ApicIcr, (5 << 8) | assert | id);
-                pit_delay(Duration::from_millis(10));
+
+                if send_init {
+                    wrmsr(Msr::Ia32X2ApicIcr, (5 << 8) | assert | id);
+                    pit_delay(Duration::from_millis(10));
+                }
 
                 wrmsr(
                     Msr::Ia32X2ApicIcr,
@@ -111,7 +119,7 @@ pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
         let trampoline_len = (&raw const __ap_trampoline_end).offset_from_unsigned(&raw const __ap_trampoline_start);
         trampoline.copy_from_nonoverlapping(&raw const __ap_trampoline_start, trampoline_len);
         trampoline
-            .add((&raw const __ap_pml4_phys).offset_from_unsigned(&raw const __ap_trampoline_start))
+            .add((&raw const __ap_cr3).offset_from_unsigned(&raw const __ap_trampoline_start))
             .cast::<u32>()
             .write_unaligned({
                 let cr3: usize;
@@ -119,13 +127,27 @@ pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
                 u32::try_from(cr3).expect("Page table physical address must be within 32-bit address")
             });
         trampoline
+            .add((&raw const __ap_cr4).offset_from_unsigned(&raw const __ap_trampoline_start))
+            .cast::<u32>()
+            .write_unaligned({
+                let cr4: usize;
+                asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+                u32::try_from(cr4).expect("Page table physical address must be within 32-bit address")
+            });
+        trampoline
             .add((&raw const __ap_kernel_entry).offset_from_unsigned(&raw const __ap_trampoline_start))
             .cast::<u64>()
             .write_unaligned(ap_kernel_entry as *const () as u64);
 
-        debug!("Copied {trampoline_len} bytes into {trampoline:p} (physical address at {trampoline_phys:p}) for AP cores entry");
+        debug!("\tCopied {trampoline_len} bytes into {trampoline:p} (physical address at {trampoline_phys:p}) for AP cores entry");
+
+        #[unsafe(no_mangle)]
+        static AP_INIT: AtomicBool = AtomicBool::new(false);
 
         unsafe extern "sysv64" fn ap_kernel_entry() -> ! {
+            unsafe { init_interrupts() }
+
+            AP_INIT.store(true, Release);
             loop {}
         }
 
@@ -140,7 +162,24 @@ pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
                     .cast::<u64>()
                     .write_unaligned(stack_top);
 
-                driver.init(trampoline_phys, id);
+                driver.init(true, trampoline_phys, id);
+                for i in 0..2 {
+                    pit_delay(Duration::from_micros(200));
+                    match AP_INIT.compare_exchange(true, false, AcqRel, Relaxed) {
+                        Ok(..) => {
+                            info!("\tAP core {id} is up and running");
+                            break
+                        }
+                        Err(..) => {
+                            if i == 0 {
+                                driver.init(false, trampoline_phys, id);
+                                error!("\tCouldn't start up AP core {id}; retrying");
+                            } else {
+                                error!("\tCouldn't start up AP core {id} at all");
+                            }
+                        }
+                    }
+                }
             }
         };
 

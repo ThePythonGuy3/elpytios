@@ -1,7 +1,8 @@
 .section .ap_trampoline, "a"
 
 .global __ap_trampoline_start
-.global __ap_pml4_phys
+.global __ap_cr3
+.global __ap_cr4
 .global __ap_stack
 .global __ap_kernel_entry
 .global __ap_trampoline_end
@@ -79,19 +80,18 @@ ap_entry_32:
     mov gs, ax
 
     # Set physical page table
-    mov eax, [ebx + PML4_PHYS]
+    mov eax, [ebx + AP_CR3]
     mov cr3, eax
 
-    # Enable Page Address Extension
-    mov eax, cr4
-    or eax, 1 << 5
+    # Copy CR4 (which importantly includes Page Address Extension)
+    mov eax, [ebx + AP_CR4]
     mov cr4, eax
 
     # Enable 64-bit long mode
     mov ecx, 0xc0000080 # `IA32_EFER`
     rdmsr
-    # # `IA32_EFER`
     or eax, 1 << 8
+    or eax, 1 << 11
     wrmsr
 
     # Set `.jmp_64 + 2` to `ap_entry_64` relative to `ebx`
@@ -111,16 +111,20 @@ ap_entry_32:
     .long 0x00000000
     .word 0x0018
 
-    __ap_pml4_phys:             .long 0x00000000
+    __ap_cr3:                   .long 0x00000000
+    __ap_cr4:                   .long 0x00000000
     .jmp_64_lookup:             .long .jmp_64 - __ap_trampoline_start
     .ap_entry_64_lookup:        .long ap_entry_64 - __ap_trampoline_start
-    .equ PML4_PHYS,             __ap_pml4_phys - __ap_trampoline_start
+    .equ AP_CR3,                __ap_cr3 - __ap_trampoline_start
+    .equ AP_CR4,                __ap_cr4 - __ap_trampoline_start
     .equ JMP_64_LOOKUP,         .jmp_64_lookup - __ap_trampoline_start
     .equ AP_ENTRY_64_LOOKUP,    .ap_entry_64_lookup - __ap_trampoline_start
 
 .code64
 ap_entry_64:
-1:  jmp 1b
+    mov rsp, [rip + __ap_stack]
+    and rsp, -16
+    jmp [rip + __ap_kernel_entry]
 
     __ap_stack:         .quad 0x0000000000000000
     __ap_kernel_entry:  .quad 0x0000000000000000
