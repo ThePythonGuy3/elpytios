@@ -5,19 +5,19 @@
 
 .code16
 __ap_trampoline_start:
-ap_entry:
+ap_entry_16:
     jmp 1f
 
     # Rust's inline assembler really doesn't like immediates for some reason
-    .offsets:
-        .word .gdt_start - __ap_trampoline_start
-        .word .gdt_desc - __ap_trampoline_start
-        .word ap_entry_protected - __ap_trampoline_start
-        .word .jmp_buf - __ap_trampoline_start
-    .set GDT_START_LOOKUP, .offsets - __ap_trampoline_start
-    .set GDT_DESC_LOOKUP, .offsets - __ap_trampoline_start + 2
-    .set ENTRY_PROTECTED_LOOKUP, .offsets - __ap_trampoline_start + 4
-    .set JMP_BUF_LOOKUP, .offsets - __ap_trampoline_start + 6
+    .gdt_start_lookup:          .word .gdt_start - __ap_trampoline_start
+    .gdt_desc_lookup:           .word .gdt_desc - __ap_trampoline_start
+    .jmp_buf_lookup:            .word .jmp_buf - __ap_trampoline_start
+    .ap_entry_32_lookup:        .word ap_entry_32 - __ap_trampoline_start
+
+    .set GDT_START_LOOKUP,      .gdt_start_lookup - __ap_trampoline_start
+    .set GDT_DESC_LOOKUP,       .gdt_desc_lookup - __ap_trampoline_start
+    .set JMP_BUF_LOOKUP,        .jmp_buf_lookup - __ap_trampoline_start
+    .set AP_ENTRY_32_LOOKUP,    .ap_entry_32_lookup - __ap_trampoline_start
 
     # Clear interrupts and zero out segments
 1:  cli
@@ -38,9 +38,9 @@ ap_entry:
     mov [bx + di + 2], si
     lgdt [bx + di]
 
-    # Set `.jmp_buf + 2` to `ap_entry_protected` relative to `bx`
+    # Set `.jmp_buf + 2` to `ap_entry_32` relative to `bx`
     mov si, bx
-    add si, [bx + ENTRY_PROTECTED_LOOKUP]
+    add si, [bx + AP_ENTRY_32_LOOKUP]
     mov di, [bx + JMP_BUF_LOOKUP]
     mov [bx + di + 2], si
 
@@ -65,7 +65,7 @@ ap_entry:
     .long 0x00000000
 
 .code32
-ap_entry_protected:
+ap_entry_32:
     mov ax, 0x10
     mov ds, ax
     mov es, ax
