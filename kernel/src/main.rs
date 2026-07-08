@@ -192,32 +192,30 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
 unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions: &MemoryRegions, kernel_base: PAddr) -> ! {
     // Relocate all symbols to higher-half addressing
     // Identity-mapping is still present at this point, so it is okay to cast `PAddr` into pointers
-    {
-        let kernel_ptr = info.kernel_elf_base.addr() as *mut u8;
-        let v_slide = HIGHER_HALF_ADDRESS_BASE
-            .addr()
-            .checked_sub(kernel_base.addr())
-            .expect("Kernel physical address somehow higher than higher-half addressing base")
-            .cast_signed() as i64;
+    let kernel_ptr = info.kernel_elf_base; //.addr() as *mut u8;
+    let v_slide = HIGHER_HALF_ADDRESS_BASE
+        .addr()
+        .checked_sub(kernel_base.addr())
+        .expect("Kernel physical address somehow higher than higher-half addressing base")
+        .cast_signed() as i64;
 
-        for &Reloc { offset, size, stride } in &info.relocations {
-            for i in 0..size / stride {
-                unsafe {
-                    let rela = kernel_ptr
-                        .cast::<ElfRela64>()
-                        .byte_add(offset - info.kernel_virt_base)
-                        .add(i)
-                        .read_unaligned();
+    for &Reloc { offset, size, stride } in &info.relocations {
+        for i in 0..size / stride {
+            unsafe {
+                let rela = (kernel_ptr.addr() as *mut u8)
+                    .cast::<ElfRela64>()
+                    .byte_add(offset - info.kernel_virt_base)
+                    .add(i)
+                    .read_unaligned();
 
-                    match rela.info.kind {
-                        ElfRela64Type::X86_64_RELATIVE => {
-                            let slide = v_slide + kernel_ptr.addr() as i64 - info.kernel_virt_base as i64;
-                            let patch_addr = kernel_ptr.add(rela.offset as usize - info.kernel_virt_base);
-                            let value = slide + rela.addend;
-                            patch_addr.cast::<i64>().write(value);
-                        }
-                        kind => panic!("Unsupported Elf64_Rela kind: {}", kind.0),
+                match rela.info.kind {
+                    ElfRela64Type::X86_64_RELATIVE => {
+                        let slide = v_slide + kernel_ptr.addr() as i64 - info.kernel_virt_base as i64;
+                        let patch_addr = (kernel_ptr.addr() as *mut u8).add(rela.offset as usize - info.kernel_virt_base);
+                        let value = slide + rela.addend;
+                        patch_addr.cast::<i64>().write(value);
                     }
+                    kind => panic!("Unsupported Elf64_Rela kind: {}", kind.0),
                 }
             }
         }
@@ -231,20 +229,26 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
             debug_assertions => log::LevelFilter::Trace,
             not(debug_assertions) => log::LevelFilter::Info,
         });
+
+        //
+        info!(
+            "Setting up kernel at {kernel_ptr:p} -> {:p}",
+            VAddr::new(kernel_ptr.addr().wrapping_add_signed(v_slide as isize))
+        );
     }
 
     // When running through `x qemu run --debug`, wait until a corresponding GDB client executes this:
     //
     //     target remote [host, usuallty `localhost`]:[port, usually `1234`]
-    //     add-symbol-file [path/to]/elpytios-kernel -o 0xffff_8000_0000_0000
+    //     add-symbol-file [path/to]/elpytios-kernel -o [offset; see "Setting up kernel at ..." log]
     //
     //     set language c
     //     set *(unsigned char*)&__DEBUG_HALT = 0
     //     set language rust
     //     continue
     //
-    // This is to ensure the kernel has been loaded to memory at offset 0xffff_8000_0000_0000 before
-    // inserting software breakpoints and looking up symbols at the same offset
+    // This is to ensure the kernel has been loaded to memory at higher-half address before inserting
+    // software breakpoints and looking up symbols at the same offset
     #[cfg(debug_assertions)]
     {
         use log::debug;
