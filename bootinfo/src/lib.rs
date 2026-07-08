@@ -11,8 +11,9 @@ use paddr::PAddr;
 pub const PAGE_SIZE: usize = 4096;
 
 pub const MAX_MEMORY_REGIONS: usize = 128;
-pub const MAX_IDENTITY_MAPS: usize  = 32;
-pub const MAX_RELOCATIONS: usize    = 8;
+pub const MAX_IDENTITY_MAPS:  usize = 32;
+pub const MAX_SCRATCH:        usize = 16;
+pub const MAX_RELOCATIONS:    usize = 8;
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy)]
@@ -102,5 +103,6 @@ pub struct BootInfo {
 
     pub memory_regions:      ArrayVec<MemoryRegion, MAX_MEMORY_REGIONS>,
     pub identity_maps:       ArrayVec<IdentityMap, MAX_IDENTITY_MAPS>,
+    pub scratch_pages:       ArrayVec<PAddr, MAX_SCRATCH>,
     pub relocations:         ArrayVec<Reloc, MAX_RELOCATIONS>,
 }

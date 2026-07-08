@@ -92,6 +92,25 @@ impl<'a> MemoryRegions<'a> {
     }
 }
 
+#[repr(transparent)]
+struct ScratchPages<'a> {
+    pages: &'a [PAddr],
+}
+
+impl ScratchPages<'_> {
+    fn take(&mut self) -> PAddr {
+        loop {
+            match self.pages.split_at_checked(1) {
+                Some((&[next], pages)) => {
+                    self.pages = pages;
+                    if next.addr() == 0 { continue } else { break next }
+                }
+                _ => panic!("Not enough scratch pages"),
+            }
+        }
+    }
+}
+
 /// # Safety
 /// - Available memory regions must *not* include the kernel code, stack, and boot info itself;
 ///   i.e., they must be usable immediately.
@@ -102,6 +121,8 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
     // - `log` mustn't be setup here; wait until symbols are relocated
 
     let mut regions = MemoryRegions::new(&info.memory_regions);
+    let mut scratch_pages = ScratchPages { pages: &info.scratch_pages };
+
     let kernel_base = info
         .identity_maps
         .iter()
@@ -114,9 +135,11 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
         .checked_sub(kernel_base.addr())
         .expect("Kernel physical address somehow higher than higher-half addressing base");
 
-    let (page_table_phys, setup_virtual_mapped) = {
+    let page_table_phys = scratch_pages.take();
+    let setup_virtual_mapped = {
         let mut v_map = unsafe {
             VirtualMapBuilder::new(
+                page_table_phys,
                 || regions.take_head().inspect(|addr| (addr.addr() as *mut u8).write_bytes(0, PAGE_SIZE)),
                 |p_addr| p_addr.addr() as *mut (),
             )
@@ -149,6 +172,15 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
         let direct_map_offset = direct_map_offset.next_multiple_of(2 << 30); // Align to a gigabyte
         unsafe { set_direct_map_offset(direct_map_offset) }
 
+        v_map
+            .map(
+                page_table_phys,
+                VAddr::new(page_table_phys.addr() + direct_map_offset),
+                1,
+                VFlags::WRITABLE,
+            )
+            .unwrap();
+
         for region in &info.memory_regions {
             v_map
                 .map(
@@ -160,14 +192,14 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
                 .unwrap();
         }
 
-        let (page_table_phys, virtual_map) = unsafe { v_map.finish() }.expect("Couldn't build virtual map table");
+        let virtual_map = unsafe { v_map.finish() };
         let setup_virtual_mapped = (setup_virtual_mapped as *const ())
             .addr()
             .checked_add(v_slide)
             .expect("`setup_virtual_mapped()` virtual address overflowed");
 
         unsafe { set_virtual_map(virtual_map) }
-        (page_table_phys, setup_virtual_mapped)
+        setup_virtual_mapped
     };
 
     unsafe {
@@ -182,14 +214,20 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
             setup_virtual_mapped = in(reg) setup_virtual_mapped,
             in("rdi") (info as *const BootInfo).byte_add(v_slide).as_ref_unchecked(),
             in("rsi") &regions,
-            in("rdx") kernel_base.addr(),
+            in("rdx") &mut scratch_pages,
+            in("rcx") kernel_base.addr(),
 
             options(noreturn),
         )
     }
 }
 
-unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions: &MemoryRegions, kernel_base: PAddr) -> ! {
+unsafe extern "sysv64" fn setup_virtual_mapped(
+    info: &'static BootInfo,
+    regions: &MemoryRegions,
+    scratch_pages: &mut ScratchPages,
+    kernel_base: PAddr,
+) -> ! {
     // Relocate all symbols to higher-half addressing
     // Identity-mapping is still present at this point, so it is okay to cast `PAddr` into pointers
     let kernel_ptr = info.kernel_elf_base; //.addr() as *mut u8;
