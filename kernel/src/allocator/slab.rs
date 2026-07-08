@@ -14,20 +14,22 @@ use crate::{
     statics::{get_phys_alloc, phys_to_virt},
 };
 
-pub struct SlotAllocator<T> {
-    slots: SpinMutex<Option<[NonNull<Slot<T>>; 2]>>,
+pub struct SlabAllocator<T> {
+    slots: SpinMutex<Option<[NonNull<Slab<T>>; 2]>>,
 }
 
-impl<T> SlotAllocator<T> {
+unsafe impl<T> Sync for SlabAllocator<T> {}
+
+impl<T> SlabAllocator<T> {
     #[inline]
     pub const fn new() -> Self {
         Self { slots: SpinMutex::new(None) }
     }
 
-    pub fn alloc(&self, mut item: T) -> SlotId<'_, T> {
+    pub fn alloc(&self, mut item: T) -> SlabId<'_, T> {
         let mut slots = self.slots.lock();
         let [free, ..] = slots.get_or_insert_with(|| {
-            let slot = Slot::new();
+            let slot = Slab::new();
             [slot, slot]
         });
 
@@ -41,14 +43,14 @@ impl<T> SlotAllocator<T> {
             }
         };
 
-        SlotId {
+        SlabId {
             alloc: self,
             slot: *free,
             ptr,
         }
     }
 
-    unsafe fn dealloc(&self, mut slot: NonNull<Slot<T>>, ptr: NonNull<T>) {
+    unsafe fn dealloc(&self, mut slot: NonNull<Slab<T>>, ptr: NonNull<T>) {
         let mut slots = self.slots.lock();
         unsafe {
             slot.as_mut().dealloc(ptr);
@@ -57,24 +59,31 @@ impl<T> SlotAllocator<T> {
     }
 }
 
-pub struct SlotId<'a, T> {
-    alloc: &'a SlotAllocator<T>,
-    slot: NonNull<Slot<T>>,
+pub struct SlabId<'a, T> {
+    alloc: &'a SlabAllocator<T>,
+    slot: NonNull<Slab<T>>,
     ptr: NonNull<T>,
 }
 
-impl<T> SlotId<'_, T> {
+impl<'a, T> SlabId<'a, T> {
     #[inline]
-    pub fn into_inner(self) -> T {
+    pub fn into_inner(this: Self) -> T {
+        let this = ManuallyDrop::new(this);
         unsafe {
-            let out = self.ptr.read();
-            self.alloc.dealloc(self.slot, self.ptr);
+            let out = this.ptr.read();
+            this.alloc.dealloc(this.slot, this.ptr);
             out
         }
     }
+
+    #[inline]
+    pub fn leak(this: Self) -> &'a mut T {
+        let mut this = ManuallyDrop::new(this);
+        unsafe { this.ptr.as_mut() }
+    }
 }
 
-impl<T> Drop for SlotId<'_, T> {
+impl<T> Drop for SlabId<'_, T> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
@@ -84,7 +93,7 @@ impl<T> Drop for SlotId<'_, T> {
     }
 }
 
-impl<T> Deref for SlotId<'_, T> {
+impl<T> Deref for SlabId<'_, T> {
     type Target = T;
 
     #[inline]
@@ -93,7 +102,7 @@ impl<T> Deref for SlotId<'_, T> {
     }
 }
 
-impl<T> DerefMut for SlotId<'_, T> {
+impl<T> DerefMut for SlabId<'_, T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { self.ptr.as_mut() }
@@ -101,14 +110,14 @@ impl<T> DerefMut for SlotId<'_, T> {
 }
 
 #[repr(C, align(4096))]
-struct Slot<T> {
+struct Slab<T> {
     data: [MaybeUninit<u8>; PAGE_SIZE],
-    _marker: PhantomData<[Entry<T>]>,
+    _marker: PhantomData<[Slot<T>]>,
 }
 
-impl<T> Slot<T> {
+impl<T> Slab<T> {
     const LEN: usize = {
-        let len = (PAGE_SIZE - size_of::<SlotMeta<T>>()) / size_of::<Entry<T>>();
+        let len = (PAGE_SIZE - size_of::<SlabMeta<T>>()) / size_of::<Slot<T>>();
         assert!(len != 0, "`T` is too large!");
         len
     };
@@ -118,13 +127,13 @@ impl<T> Slot<T> {
         unsafe {
             let ptr = phys_to_virt(id.addr()).ptr_mut::<Self>();
             let (entries, meta) = ptr.fields();
-            meta.write(SlotMeta {
+            meta.write(SlabMeta {
                 id,
-                len: SlotLen::Available { free: 0 },
+                len: SlabLen::Available { free: 0 },
             });
 
             for i in 0..Self::LEN {
-                entries.add(i).write(Entry {
+                entries.add(i).write(Slot {
                     free: NonZeroU16::new(((i + 1) % Self::LEN) as u16),
                 });
             }
@@ -134,24 +143,24 @@ impl<T> Slot<T> {
     }
 
     #[inline]
-    unsafe fn fields(self: *mut Self) -> (*mut Entry<T>, *mut SlotMeta<T>) {
-        unsafe { (self.cast(), self.byte_add(Self::LEN * size_of::<Entry<T>>()).cast()) }
+    unsafe fn fields(self: *mut Self) -> (*mut Slot<T>, *mut SlabMeta<T>) {
+        unsafe { (self.cast(), self.byte_add(Self::LEN * size_of::<Slot<T>>()).cast()) }
     }
 
     fn alloc(&mut self, item: T) -> Result<NonNull<T>, (T, NonNull<Self>)> {
         unsafe {
             let (entries, meta) = (&raw mut *self).fields();
             match &mut (*meta).len {
-                SlotLen::Full { next_slot } => Err((item, *next_slot)),
-                SlotLen::Available { free } => Ok({
+                SlabLen::Full { next_slot } => Err((item, *next_slot)),
+                SlabLen::Available { free } => Ok({
                     let out = entries.add(*free as usize);
-                    match ptr::replace(out, Entry {
+                    match ptr::replace(out, Slot {
                         taken: ManuallyDrop::new(item),
                     })
                     .free
                     {
                         Some(next_free) => *free = next_free.get(),
-                        None => (*meta).len = SlotLen::Full { next_slot: Self::new() },
+                        None => (*meta).len = SlabLen::Full { next_slot: Self::new() },
                     }
 
                     NonNull::new_unchecked(out.cast())
@@ -163,27 +172,27 @@ impl<T> Slot<T> {
     unsafe fn dealloc(&mut self, ptr: NonNull<T>) {
         unsafe {
             let (entries, meta) = (&raw mut *self).fields();
-            let ptr = ptr.as_ptr().cast::<Entry<T>>();
+            let ptr = ptr.as_ptr().cast::<Slot<T>>();
 
             let index = ptr.offset_from_unsigned(entries) as u16;
             match &mut (*meta).len {
-                SlotLen::Full { .. } => {
-                    ptr.write(Entry { free: None });
-                    (*meta).len = SlotLen::Available { free: index };
+                SlabLen::Full { .. } => {
+                    ptr.write(Slot { free: None });
+                    (*meta).len = SlabLen::Available { free: index };
                 }
-                SlotLen::Available { free } => {
+                SlabLen::Available { free } => {
                     // `free` must be the lowest index
                     let free_ptr = entries.add(*free as usize);
                     if *free < index {
                         // From: head:free  --> [next_free]
                         // To  : head:free  --> index       --> [next_free]
-                        ptr.write(ptr::replace(free_ptr, Entry {
+                        ptr.write(ptr::replace(free_ptr, Slot {
                             free: Some(NonZeroU16::new_unchecked(index)),
                         }));
                     } else {
                         // From: head:free  --> [next_free]
                         // To  : head:index --> free        --> [next_free]
-                        ptr.write(Entry {
+                        ptr.write(Slot {
                             free: Some(NonZeroU16::new_unchecked(*free)),
                         });
                         *free = index;
@@ -195,17 +204,17 @@ impl<T> Slot<T> {
 }
 
 #[repr(C)]
-struct SlotMeta<T> {
+struct SlabMeta<T> {
     id: AllocId,
-    len: SlotLen<T>,
+    len: SlabLen<T>,
 }
 
-enum SlotLen<T> {
-    Full { next_slot: NonNull<Slot<T>> },
+enum SlabLen<T> {
+    Full { next_slot: NonNull<Slab<T>> },
     Available { free: u16 },
 }
 
-union Entry<T> {
+union Slot<T> {
     taken: ManuallyDrop<T>,
     free: Option<NonZeroU16>,
 }

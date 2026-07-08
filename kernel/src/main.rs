@@ -16,7 +16,6 @@ use elpytios_kernel::{
     allocator::{AllocTree, PhysicalPageAllocator},
     device_tree::init_device_tree,
     framebuffer::FrameBuffer,
-    interrupt::init_interrupts,
     serial::{Com, Serial, serial_init},
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
@@ -108,59 +107,63 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
         .checked_sub(info.kernel_base.addr())
         .expect("Kernel physical address somehow higher than higher-half addressing base");
 
-    let mut v_map = unsafe {
-        VirtualMapBuilder::new(
-            || regions.take_head().inspect(|addr| (addr.addr() as *mut u8).write_bytes(0, PAGE_SIZE)),
-            |p_addr| p_addr.addr() as *mut (),
-        )
+    let (page_table_phys, setup_virtual_mapped) = {
+        let mut v_map = unsafe {
+            VirtualMapBuilder::new(
+                || regions.take_head().inspect(|addr| (addr.addr() as *mut u8).write_bytes(0, PAGE_SIZE)),
+                |p_addr| p_addr.addr() as *mut (),
+            )
+        };
+
+        let mut direct_map_offset = usize::MIN;
+        for map in &info.identity_maps {
+            let mut flags = VFlags::empty();
+            if map.flags.contains(IdentityMapFlags::WRITABLE) {
+                flags |= VFlags::WRITABLE;
+            } else {
+                flags |= VFlags::GLOBAL;
+            }
+            if !map.flags.contains(IdentityMapFlags::EXECUTABLE) {
+                flags |= VFlags::EXECUTE_DISABLE;
+            }
+
+            v_map
+                .map(map.region.base, VAddr::new(map.region.base.addr()), map.region.pages, flags)
+                .expect("Couldn't identity map kernel segment");
+
+            v_map
+                .map(map.region.base, VAddr::new(map.region.base.addr() + v_slide), map.region.pages, flags)
+                .expect("Couldn't virtual map kernel segment");
+
+            direct_map_offset = direct_map_offset.max(map.region.base.addr() + v_slide + map.region.pages * PAGE_SIZE);
+        }
+
+        // Direct map *all* of RAM to the specified direct-map offset
+        let direct_map_offset = direct_map_offset.next_multiple_of(2 << 30); // Align to a gigabyte
+        unsafe { set_direct_map_offset(direct_map_offset) }
+
+        for region in &info.memory_regions {
+            v_map
+                .map(
+                    region.base,
+                    VAddr::new(region.base.addr() + direct_map_offset),
+                    region.pages,
+                    VFlags::WRITABLE,
+                )
+                .unwrap();
+        }
+
+        let (page_table_phys, virtual_map) = unsafe { v_map.finish() }.expect("Couldn't build virtual map table");
+        let setup_virtual_mapped = (setup_virtual_mapped as *const ())
+            .addr()
+            .checked_add(v_slide)
+            .expect("`setup_virtual_mapped()` virtual address overflowed");
+
+        unsafe { set_virtual_map(virtual_map) }
+        (page_table_phys, setup_virtual_mapped)
     };
 
-    let mut direct_map_offset = usize::MIN;
-    for map in &info.identity_maps {
-        let mut flags = VFlags::empty();
-        if map.flags.contains(IdentityMapFlags::WRITABLE) {
-            flags |= VFlags::WRITABLE;
-        } else {
-            flags |= VFlags::GLOBAL;
-        }
-        if !map.flags.contains(IdentityMapFlags::EXECUTABLE) {
-            flags |= VFlags::EXECUTE_DISABLE;
-        }
-
-        v_map
-            .map(map.region.base, VAddr::new(map.region.base.addr()), map.region.pages, flags)
-            .expect("Couldn't identity map kernel segment");
-
-        v_map
-            .map(map.region.base, VAddr::new(map.region.base.addr() + v_slide), map.region.pages, flags)
-            .expect("Couldn't virtual map kernel segment");
-
-        direct_map_offset = direct_map_offset.max(map.region.base.addr() + v_slide + map.region.pages * PAGE_SIZE);
-    }
-
-    // Direct map *all* of RAM to the specified direct-map offset
-    let direct_map_offset = direct_map_offset.next_multiple_of(2 << 30); // Align to a gigabyte
-    unsafe { set_direct_map_offset(direct_map_offset) }
-
-    for region in &info.memory_regions {
-        v_map
-            .map(
-                region.base,
-                VAddr::new(region.base.addr() + direct_map_offset),
-                region.pages,
-                VFlags::WRITABLE,
-            )
-            .unwrap();
-    }
-
-    let (page_table_phys, virtual_map) = unsafe { v_map.finish() }.expect("Couldn't build virtual map table");
-    let setup_virtual_mapped = (setup_virtual_mapped as *const ())
-        .addr()
-        .checked_add(v_slide)
-        .expect("`setup_virtual_mapped()` virtual address overflowed");
-
     unsafe {
-        set_virtual_map(virtual_map);
         asm!(
             "mov cr3, {page_table_phys}",
             "add rsp, {v_slide}",
@@ -288,7 +291,6 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
     // Setup interrupt handlers
     unsafe {
         init_device_tree(info);
-        init_interrupts();
     }
 
     // Virtual-map the framebuffer

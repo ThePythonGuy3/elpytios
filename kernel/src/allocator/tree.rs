@@ -1,5 +1,3 @@
-#[cfg(debug_assertions)]
-use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use core::{
     alloc::{Layout, LayoutError},
     fmt,
@@ -10,9 +8,6 @@ use core::{
 use nonmax::NonMaxU32;
 
 use crate::allocator::AllocBitset;
-
-#[cfg(debug_assertions)]
-static TREE_ID: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy)]
 pub enum TreeAllocError {
@@ -40,8 +35,6 @@ impl fmt::Display for TreeAllocError {
 #[repr(C)]
 pub struct AllocTree {
     max_order: u32,
-    #[cfg(debug_assertions)]
-    id: u32,
     // The offsets here are relative to the offset of `data`...
     nodes_offset: usize,
     split_bitset_offset: usize,
@@ -50,8 +43,6 @@ pub struct AllocTree {
 
 struct AllocTreeFields<'a> {
     max_order: u32,
-    #[cfg(debug_assertions)]
-    id: u32,
     free_lists: &'a mut [ListHead],
     list_nodes: &'a mut [ListNode],
     split_bitset: &'a mut AllocBitset,
@@ -61,9 +52,6 @@ impl AllocTree {
     pub unsafe fn new(at: *mut (), layout: AllocTreeLayout) -> *mut Self {
         let this = ptr::from_raw_parts_mut::<Self>(at, layout.size() - layout.free_nodes_offset_abs);
         unsafe {
-            #[cfg(debug_assertions)]
-            (&raw mut (*this).id).write(TREE_ID.fetch_add(1, Relaxed));
-
             (&raw mut (*this).max_order).write(layout.max_order);
             (&raw mut (*this).nodes_offset).write(layout.nodes_offset_abs - layout.free_nodes_offset_abs);
             (&raw mut (*this).split_bitset_offset).write(layout.split_bitset_offset_abs - layout.free_nodes_offset_abs);
@@ -99,8 +87,6 @@ impl AllocTree {
         let data = self.data.0.as_mut_ptr();
         unsafe {
             AllocTreeFields {
-                #[cfg(debug_assertions)]
-                id: self.id,
                 max_order,
                 free_lists: slice::from_raw_parts_mut(data.cast(), max_order as usize + 1),
                 list_nodes: slice::from_raw_parts_mut(data.add(self.nodes_offset).cast(), 1 << max_order),
@@ -119,8 +105,6 @@ impl AllocTree {
         }
 
         let AllocTreeFields {
-            #[cfg(debug_assertions)]
-            id,
             max_order,
             free_lists,
             list_nodes,
@@ -162,12 +146,7 @@ impl AllocTree {
             current_order = next_order;
         }
 
-        Ok(TreeAllocId {
-            #[cfg(debug_assertions)]
-            tree_id: id,
-            index,
-            order: current_order,
-        })
+        Ok(TreeAllocId { index, order: current_order })
     }
 
     pub const fn layout(count: usize) -> Result<AllocTreeLayout, LayoutError> {
@@ -208,8 +187,6 @@ impl AllocTree {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TreeAllocId {
-    #[cfg(debug_assertions)]
-    tree_id: u32,
     index: u32,
     order: u32,
 }

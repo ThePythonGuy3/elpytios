@@ -1,6 +1,7 @@
 cfg_select! {
     target_arch = "x86_64" => {
         mod x86_64;
+        use x86_64 as imp;
     }
     _ => {
         compile_error!("Unsupported architecture");
@@ -13,8 +14,10 @@ use log::info;
 mod acpi;
 use acpi::*;
 
-unsafe fn init_device_tree_impl(system_tables: impl Iterator<Item = Result<SystemTable, AcpiError>> + ExactSizeIterator) {
+unsafe fn init_device_tree_impl(system_tables: impl IntoIterator<IntoIter: ExactSizeIterator, Item = Result<SystemTable, AcpiError>>) {
+    let system_tables = system_tables.into_iter();
     info!("Initializing device tree: found {} system tables", system_tables.len());
+
     macro_rules! tables {
         ($($output:ident: $type:ty;)*) => {
             $(let mut $output = None::<$type>;)*
@@ -38,17 +41,7 @@ unsafe fn init_device_tree_impl(system_tables: impl Iterator<Item = Result<Syste
         madt: Madt;
     }
 
-    for pic in madt {
-        unsafe {
-            match pic {
-                Pic::ProcessorLocal(proc) if (*&raw const proc.apic_flags).contains(LocalApicFlags::ENABLED) => {
-                    info!("Waking up {proc:#?}");
-                }
-                Pic::ProcessLocalX2(proc) if (*&raw const proc.flags).contains(LocalApicFlags::ENABLED) => {}
-                _ => {}
-            }
-        }
-    }
+    unsafe { imp::init_device_tree(madt) }
 }
 
 /// # Safety
@@ -59,12 +52,12 @@ pub unsafe fn init_device_tree(info: &BootInfo) {
         DeviceTree::Acpi(addr) => {
             let rsdp = unsafe { Rsdp::new(addr.addr() as *const Rsdp) }.expect("Couldn't parse RSDP");
             let rsdt = rsdp.rsdt().expect("Couldn't parse RSDT");
-            unsafe { init_device_tree_impl(rsdt.into_iter()) }
+            unsafe { init_device_tree_impl(rsdt) }
         }
         DeviceTree::Acpi2(addr) => {
             let xsdp = unsafe { Xsdp::new(addr.addr() as *const Xsdp) }.expect("Couldn't parse XSDP");
             let xsdt = xsdp.xsdt().expect("Couldn't parse XSDT");
-            unsafe { init_device_tree_impl(xsdt.into_iter()) }
+            unsafe { init_device_tree_impl(xsdt) }
         }
     };
 }

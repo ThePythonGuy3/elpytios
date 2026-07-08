@@ -16,7 +16,7 @@ const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
 
 const MEM_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
 
-const MEM_STACK_LEN:      usize = 64;
+const MEM_STACK_LEN:      usize = 16; // Note: `opt-level = 0` makes the code consume way too much stack space
 const MEM_BOOT_INFO_LEN:  usize = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
@@ -99,20 +99,13 @@ fn setup_uefi_and_exit() -> UefiInfo {
     
     helpers::init().unwrap();
 
+    boot::allocate_pages(AllocateType::MaxAddress(2 << u16::BITS), MEM_KERNEL_CODE, 16).unwrap();
+
     {
         // Graphics Info Fetching
-        let graphics_output_protocol_handle = boot::get_handle_for_protocol::<GraphicsOutput>().expect("No Graphics Output Protocol");
-        let mut graphics_output_protocol;
-        unsafe {
-            graphics_output_protocol = boot::open_protocol::<GraphicsOutput>(
-                boot::OpenProtocolParams {
-                    handle: graphics_output_protocol_handle,
-                    agent: boot::image_handle(),
-                    controller: None
-                },
-                boot::OpenProtocolAttributes::GetProtocol
-            ).expect("Error opening Graphics Output Protocol");
-        }
+        let mut graphics_output_protocol = boot::open_protocol_exclusive::<GraphicsOutput>(
+            boot::get_handle_for_protocol::<GraphicsOutput>().expect("No Graphics Output Protocol")
+        ).expect("Error opening Graphics Output Protocol");
 
         let mut max_area: usize            = 0;
         let mut max_mode: Option<Mode>     = None;
