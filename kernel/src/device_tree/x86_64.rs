@@ -110,7 +110,7 @@ pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
         let trampoline_phys = scratch_pages.take().expect("Not enough scratch pages for AP trampoline entry");
         let trampoline = phys_to_virt(trampoline_phys);
         v_map
-            .map(trampoline_phys, VAddr::new(trampoline_phys.addr()), 1, VFlags::WRITABLE, new_page_table)
+            .map(trampoline_phys, VAddr::new(trampoline_phys.addr()), 1, VFlags::empty(), new_page_table)
             .expect("Couldn't identity-map trampoline code");
         v_map
             .map(trampoline_phys, trampoline, 1, VFlags::WRITABLE | VFlags::EXECUTE_DISABLE, new_page_table)
