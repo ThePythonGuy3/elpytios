@@ -55,14 +55,21 @@ impl ApicDriver {
                     Msr::Ia32X2ApicIcr,
                     ((trampoline_phys.addr() / PAGE_SIZE) & 0xff) as u64 | (6 << 8) | assert | id,
                 );
-                pit_delay(Duration::from_millis(200));
+            },
+        }
+    }
 
+    #[inline]
+    unsafe fn post_init(self, trampoline_phys: PAddr, apic_id: u32) {
+        match self {
+            Self::XApic { .. } => unimplemented!("Waking up cores via legacy xAPIC isn't implemented yet"),
+            Self::X2Apic => unsafe {
+                let id = (apic_id as u64) << 32;
+                let assert = 1 << 14;
                 wrmsr(
                     Msr::Ia32X2ApicIcr,
                     ((trampoline_phys.addr() / PAGE_SIZE) & 0xff) as u64 | (6 << 8) | assert | id,
                 );
-
-                debug!("\tStarted up AP core {apic_id}");
             },
         }
     }
@@ -113,24 +120,29 @@ pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
         let trampoline_len = (&raw const __ap_trampoline_end).offset_from_unsigned(&raw const __ap_trampoline_start);
         trampoline.copy_from_nonoverlapping(&raw const __ap_trampoline_start, trampoline_len);
 
-        debug!("\tCopied {trampoline_len} bytes into {trampoline:p} (physical address at {trampoline_phys:p}) for AP cores entry");
+        debug!("Copied {trampoline_len} bytes into {trampoline:p} (physical address at {trampoline_phys:p}) for AP cores entry");
 
         let bsp_id = driver.apic_id();
-        let init_cpu = |apic_id: u32| {
-            if apic_id == bsp_id {
-                return
-            }
-
-            driver.init(trampoline_phys, apic_id);
-        };
-
         for pic in madt {
             match pic {
-                Pic::ProcessorLocal(proc) if (*&raw const proc.flags).contains(LocalApicFlags::ENABLED) => {
-                    init_cpu(proc.apic_id as u32);
+                Pic::ProcessorLocal(proc) if (*&raw const proc.flags).contains(LocalApicFlags::ENABLED) && proc.apic_id as u32 != bsp_id => {
+                    driver.init(trampoline_phys, proc.apic_id as u32);
                 }
-                Pic::ProcessLocalX2(proc) if (*&raw const proc.flags).contains(LocalApicFlags::ENABLED) => {
-                    init_cpu(proc.x2apic_id);
+                Pic::ProcessLocalX2(proc) if (*&raw const proc.flags).contains(LocalApicFlags::ENABLED) && proc.x2apic_id != bsp_id => {
+                    driver.init(trampoline_phys, proc.x2apic_id as u32);
+                }
+                _ => {}
+            }
+        }
+
+        pit_delay(Duration::from_millis(200));
+        for pic in madt {
+            match pic {
+                Pic::ProcessorLocal(proc) if (*&raw const proc.flags).contains(LocalApicFlags::ENABLED) && proc.apic_id as u32 != bsp_id => {
+                    driver.post_init(trampoline_phys, proc.apic_id as u32);
+                }
+                Pic::ProcessLocalX2(proc) if (*&raw const proc.flags).contains(LocalApicFlags::ENABLED) && proc.x2apic_id != bsp_id => {
+                    driver.post_init(trampoline_phys, proc.x2apic_id as u32);
                 }
                 _ => {}
             }

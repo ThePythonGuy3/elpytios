@@ -44,10 +44,12 @@ ap_entry:
     mov di, [bx + JMP_BUF_LOOKUP]
     mov [bx + di + 2], si
 
+    # Enable protected mode
     mov ecx, cr0
     or ecx, 0x00000001
     mov cr0, ecx
 
+    # Raw bytes for a far jump; necessary since the address is dynamically written
 .jmp_buf:
     .byte 0x66, 0xea
     .long 0x00000000
