@@ -68,7 +68,7 @@ pub enum Msr {
     Ia32X2ApicSivr = 0x80f,
     /// - Read-write register.
     /// - Bit 0-7: Vector.
-    /// - Bit 8-10: Delivery mode (000=Fixed, 100=INIT, 101=SIPI).
+    /// - Bit 8-10: Delivery mode (100=NMI, 101=Init, 110=Startup).
     /// - Bit 14: Assert flag.
     /// - Bit 32-63: Target core destination APIC ID (as specified in [`Self::X2ApicId`]).
     Ia32X2ApicIcr = 0x830,

@@ -21,7 +21,7 @@ use elpytios_kernel::{
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
-use log::{error, info};
+use log::{debug, error, info};
 
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
@@ -250,8 +250,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
             not(debug_assertions) => log::LevelFilter::Info,
         });
 
-        //
-        info!(
+        debug!(
             "Setting up kernel at {kernel_ptr:p} -> {:p}",
             VAddr::new(kernel_ptr.addr().wrapping_add_signed(v_slide as isize))
         );
@@ -271,8 +270,6 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
     // software breakpoints and looking up symbols at the same offset
     #[cfg(debug_assertions)]
     {
-        use log::debug;
-
         #[unsafe(no_mangle)]
         #[used]
         static mut __DEBUG_HALT: u8 = 1;

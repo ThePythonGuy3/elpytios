@@ -1,28 +1,68 @@
 use core::arch::x86_64::__cpuid_count;
 
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
-use log::info;
+use log::{debug, info};
 
 use crate::{
     ScratchPages,
     arch::x86_64::{Msr, rdmsr, wrmsr},
-    device_tree::acpi::Madt,
+    device_tree::acpi::{LocalApicFlags, Madt, Pic},
     interrupt::init_interrupts,
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt},
     vaddr::VFlags,
 };
 
+#[derive(Clone, Copy)]
 enum ApicDriver {
     XApic { mmr: *mut u32 },
     X2Apic,
 }
 
-pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
-    unsafe { init_interrupts() }
-    let v_map = get_virtual_map();
+impl ApicDriver {
+    #[inline]
+    fn apic_id(self) -> u32 {
+        match self {
+            Self::XApic { mmr } => unsafe { (mmr.byte_add(0x20).read_volatile() >> 24) & 0xff },
+            Self::X2Apic => unsafe { rdmsr(Msr::Ia32X2ApicId) as u32 },
+        }
+    }
 
-    let driver = unsafe {
-        if __cpuid_count(0x01, 0x00).ecx & (1 << 21) != 0 {
+    #[inline]
+    unsafe fn init(self, trampoline_phys: PAddr, apic_id: u32) {
+        debug!("Initializing AP core {apic_id}");
+        match self {
+            Self::XApic { .. } => unimplemented!("Waking up cores via legacy xAPIC isn't implemented yet"),
+            Self::X2Apic => unsafe {
+                // - Bit 0-7: Vector
+                // - Bit 8-10: Delivery mode (4=NMI, 5=Init, 6=Startup)
+                // - Bit 14: Assert flag
+                // - Bit 32-63: Target core destination APIC ID
+                let vector = ((trampoline_phys.addr() / PAGE_SIZE) & 0xff) as u64;
+                let delivery = 5 << 8;
+                let assert = 1 << 14;
+                let id = (apic_id as u64) << 32;
+
+                wrmsr(Msr::Ia32X2ApicIcr, vector | delivery | assert | id);
+            },
+        }
+    }
+}
+
+pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
+    fn new_page_table() -> Option<PAddr> {
+        get_phys_alloc()
+            .lock()
+            .alloc(1)
+            .ok()
+            .map(|id| id.addr())
+            .inspect(|&addr| unsafe { phys_to_virt(addr).ptr_mut::<u8>().write_bytes(0, PAGE_SIZE) })
+    }
+
+    unsafe {
+        init_interrupts();
+        let v_map = get_virtual_map();
+
+        let driver = if __cpuid_count(0x01, 0x00).ecx & (1 << 21) != 0 {
             info!("x2APIC is supported on this hardware; using Model-Specific Registers for APIC");
 
             wrmsr(Msr::Ia32ApicBase, rdmsr(Msr::Ia32ApicBase) | (1 << 10) | (1 << 11));
@@ -38,17 +78,37 @@ pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
                     mmr,
                     1,
                     VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::CACHE_DISABLED | VFlags::EXECUTE_DISABLE,
-                    || {
-                        get_phys_alloc()
-                            .lock()
-                            .alloc(1)
-                            .ok()
-                            .map(|id| id.addr())
-                            .inspect(|&addr| phys_to_virt(addr).ptr_mut::<u8>().write_bytes(0, PAGE_SIZE))
-                    },
+                    new_page_table,
                 )
-                .unwrap();
+                .expect("Couldn't virtual-map xAPIC MMR");
             ApicDriver::XApic { mmr: mmr.ptr_mut::<u32>() }
+        };
+
+        let trampoline_phys = scratch_pages.take().expect("Not enough scratch pages for AP trampoline entry");
+        let trampoline = phys_to_virt(trampoline_phys);
+        v_map
+            .map(trampoline_phys, trampoline, 1, VFlags::empty(), new_page_table)
+            .expect("Couldn't virtual-map xAPIC MMR");
+
+        let bsp_id = driver.apic_id();
+        let init_cpu = |apic_id: u32| {
+            if apic_id == bsp_id {
+                return
+            }
+
+            driver.init(trampoline_phys, apic_id);
+        };
+
+        for pic in madt {
+            match pic {
+                Pic::ProcessorLocal(proc) if (*&raw const proc.flags).contains(LocalApicFlags::ENABLED) => {
+                    init_cpu(proc.apic_id as u32);
+                }
+                Pic::ProcessLocalX2(proc) if (*&raw const proc.flags).contains(LocalApicFlags::ENABLED) => {
+                    init_cpu(proc.x2apic_id);
+                }
+                _ => {}
+            }
         }
-    };
+    }
 }

@@ -135,7 +135,7 @@ pub enum Pic {
 pub struct ProcessorLocal {
     pub acpi_processor_uid: u8,
     pub apic_id: u8,
-    pub apic_flags: LocalApicFlags,
+    pub flags: LocalApicFlags,
 }
 
 #[derive(Debug, Clone, Copy)]
