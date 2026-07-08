@@ -314,6 +314,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
             }
         }
 
+        info!("Initialized physical page allocator with {} trees", phys_alloc.tree_count());
         unsafe { set_phys_alloc(phys_alloc) }
     }
 

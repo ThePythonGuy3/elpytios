@@ -1,4 +1,4 @@
-use core::arch::asm;
+use core::{arch::asm, hint::spin_loop, time::Duration};
 
 #[inline(always)]
 pub unsafe fn outb(port: u16, value: u8) {
@@ -26,6 +26,47 @@ pub unsafe fn inb(port: u16) -> u8 {
             options(nomem, nostack, preserves_flags),
         );
         value
+    }
+}
+
+pub fn pit_delay(mut duration: Duration) {
+    const TICK_PER_SECOND: u64 = 1_193_182;
+    const TICK_MAX: u64 = 1 << u16::BITS;
+    const NANO_PER_SECOND: u64 = 1_000_000_000;
+    const WAIT_MAX: Duration = Duration::from_nanos(TICK_MAX * NANO_PER_SECOND / TICK_PER_SECOND);
+
+    while duration > Duration::ZERO {
+        let wait = duration.min(WAIT_MAX);
+        duration -= wait;
+
+        let ticks = (wait.subsec_nanos() as u64 * TICK_PER_SECOND + (NANO_PER_SECOND - 1)) / NANO_PER_SECOND;
+        let ticks = match ticks {
+            0 => continue,
+            t @ 1..TICK_MAX => t as u16,
+            TICK_MAX => 0,
+            _ => unreachable!("Tick arithmetics should ensure max wait doesn't exceed 65536"),
+        };
+
+        unsafe {
+            let mut port_b = inb(0x61);
+            port_b &= 0xFC;
+            outb(0x61, port_b);
+
+            outb(0x43, 0b10110000);
+
+            outb(0x42, (ticks & 0xff) as u8);
+            outb(0x42, ((ticks >> 8) & 0xff) as u8);
+
+            outb(0x61, port_b | 0x01);
+            loop {
+                if (inb(0x61) & 0x20) != 0 {
+                    break
+                }
+                spin_loop();
+            }
+
+            outb(0x61, port_b);
+        }
     }
 }
 

@@ -12,7 +12,7 @@ pub const PAGE_SIZE: usize = 4096;
 
 pub const MAX_MEMORY_REGIONS: usize = 128;
 pub const MAX_IDENTITY_MAPS:  usize = 32;
-pub const MAX_SCRATCH:        usize = 16;
+pub const MAX_SCRATCH:        usize = 4;
 pub const MAX_RELOCATIONS:    usize = 8;
 
 #[allow(non_camel_case_types)]

@@ -212,8 +212,9 @@ fn setup_uefi_and_exit() -> UefiInfo {
         boot_info = boot::allocate_pages(AllocateType::AnyPages, MEM_BOOT_INFO, MEM_BOOT_INFO_LEN).unwrap().as_ptr().cast();
         identity_maps.push(IdentityMap::new(PAddr::new(boot_info.addr()), MEM_BOOT_INFO_LEN, IdentityMapFlags::READABLE));
 
-        let scratch_ptr = boot::allocate_pages(AllocateType::MaxAddress(2 << 16), MEM_SCRATCH, MEM_SCRATCH_LEN).unwrap().as_ptr();
+        //
         unsafe {
+            let scratch_ptr = boot::allocate_pages(AllocateType::MaxAddress(1 << 16), MEM_SCRATCH, MEM_SCRATCH_LEN).unwrap().as_ptr();
             scratch_ptr.write_bytes(0, MEM_SCRATCH_LEN * PAGE_SIZE);
             let mut scratch_pages = ArrayVec::new();
             for i in 0..MEM_SCRATCH_LEN {
