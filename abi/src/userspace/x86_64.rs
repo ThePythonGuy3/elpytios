@@ -76,7 +76,7 @@ pub unsafe fn syscall4(sys: usize, a0: usize, a1: usize, a2: usize, a3: usize) -
             in("rdi") a0,
             in("rsi") a1,
             in("rdx") a2,
-            in("rcx") a3,
+            in("r10") a3,
 
             options(nostack, preserves_flags),
         );
@@ -95,7 +95,7 @@ pub unsafe fn syscall5(sys: usize, a0: usize, a1: usize, a2: usize, a3: usize, a
             in("rdi") a0,
             in("rsi") a1,
             in("rdx") a2,
-            in("rcx") a3,
+            in("r10") a3,
             in("r8")  a4,
 
             options(nostack, preserves_flags),
@@ -115,7 +115,7 @@ pub unsafe fn syscall6(sys: usize, a0: usize, a1: usize, a2: usize, a3: usize, a
             in("rdi") a0,
             in("rsi") a1,
             in("rdx") a2,
-            in("rcx") a3,
+            in("r10") a3,
             in("r8")  a4,
             in("r9")  a5,
 
