@@ -15,6 +15,7 @@ use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
     allocator::{AllocTree, PhysicalPageAllocator},
     framebuffer::FrameBuffer,
+    interrupt::init_interrupts,
     serial::{Com, Serial, serial_init},
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
@@ -28,9 +29,10 @@ fn panic_handler(info: &PanicInfo) -> ! {
 }
 
 #[unsafe(naked)]
-#[unsafe(export_name = "_start")]
+#[unsafe(export_name = "_start")] // Tell the linker that this is our entry point
 unsafe extern "sysv64" fn jump_from_bootloader(info: &'static BootInfo) -> ! {
     naked_asm!(
+        // Clear interrupt handlers and global descriptor table, will be reinitialized by `setup_virtual_mapped()`
         "cli",
         "cld",
         "jmp {setup_identity_mapped}",
@@ -277,6 +279,11 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
         }
 
         unsafe { set_phys_alloc(phys_alloc) }
+    }
+
+    // Setup interrupt handlers
+    unsafe {
+        init_interrupts();
     }
 
     // Virtual-map the framebuffer
