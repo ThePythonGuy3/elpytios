@@ -16,7 +16,7 @@
 
 pub mod allocator;
 pub mod arch;
-pub mod device_tree;
+pub mod device;
 pub mod framebuffer;
 pub mod interrupt;
 pub mod rendering;

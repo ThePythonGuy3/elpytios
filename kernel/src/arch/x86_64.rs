@@ -80,6 +80,12 @@ pub enum Msr {
     ///   must be page-aligned).
     Ia32ApicBase = 0x001b,
     /// - Read-write register.
+    /// - Bit 0-63: Pointer to CPU-local data.
+    Ia32FsBase = 0xc0000100,
+    /// - Read-write register.
+    /// - Bit 0-63: Pointer to CPU-local data.
+    Ia32GsBase = 0xc0000101,
+    /// - Read-write register.
     /// - Bit 0: `syscall` and `sysret` enable.
     /// - Bit 8: Long-mode enable.
     Ia32Efer = 0xc000_0080,

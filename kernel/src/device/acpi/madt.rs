@@ -4,7 +4,7 @@ use core::{iter, ops::RangeInclusive};
 
 use bitflags::bitflags;
 
-use crate::device_tree::{
+use crate::device::{
     SystemTable,
     acpi::{PackedPtr, TypedSystemTable},
 };

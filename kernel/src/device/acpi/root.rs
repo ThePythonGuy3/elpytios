@@ -1,6 +1,6 @@
 use core::{any::type_name, fmt, iter::FusedIterator};
 
-use crate::device_tree::{
+use crate::device::{
     AcpiResult, SystemTable, SystemTableHeader,
     acpi::{AcpiParse, PackedPtr, TypedSystemTable, UnalignedPtrIter},
 };

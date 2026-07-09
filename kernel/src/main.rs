@@ -16,7 +16,7 @@ use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
     ScratchPages,
     allocator::{AllocTree, PhysicalPageAllocator},
-    device_tree::init_device_tree,
+    device::{CpuContext, init_device_tree},
     framebuffer::FrameBuffer,
     serial::{Com, Serial, serial_init},
     statics::{get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
@@ -362,12 +362,13 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
 /// - All [`statics`](elpytios_kernel::statics) must have been initialized prior to calling this
 ///   function.
 /// - This function must be able to be run in parallel with itself on other threads
-fn main(core_count: usize, is_bsp: bool) -> ! {
-    if is_bsp {
+fn main(core_count: u32) -> ! {
+    if CpuContext::get().is_bootstrap() {
         use elpytios_bootinfo::PixelFormat;
         use elpytios_kernel::statics::get_frame_buffer;
 
         info!("Hello, world! Kernel is now up and running on {core_count} logical processors!");
+
         let fbo = get_frame_buffer();
         match fbo.format {
             fmt @ (PixelFormat::RGB_8_BIT | PixelFormat::BGR_8_BIT) => {

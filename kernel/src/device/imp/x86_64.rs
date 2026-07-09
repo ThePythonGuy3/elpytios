@@ -2,9 +2,10 @@ use core::{
     arch::{asm, global_asm, x86_64::__cpuid_count},
     hint::spin_loop,
     mem::ManuallyDrop,
+    ptr::{self, NonNull},
     sync::atomic::{
-        AtomicBool, AtomicUsize,
-        Ordering::{Acquire, Relaxed, Release},
+        AtomicBool, AtomicU32,
+        Ordering::{AcqRel, Acquire, Relaxed, Release},
     },
     time::Duration,
 };
@@ -14,8 +15,9 @@ use log::{debug, error, info};
 
 use crate::{
     ScratchPages,
+    allocator::{SlabAllocator, SlabId},
     arch::x86_64::{Msr, pit_delay, rdmsr, wrmsr},
-    device_tree::acpi::{LocalApicFlags, Madt, Pic},
+    device::acpi::{LocalApicFlags, Madt, Pic},
     interrupt::init_interrupts,
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt},
     vaddr::{VAddr, VFlags},
@@ -29,12 +31,14 @@ unsafe extern "sysv64" {
     static __ap_stack: u8;
     static __ap_kernel_entry: u8;
     static __ap_kernel_arg0: u8;
+    static __ap_kernel_arg1: u8;
+    static __ap_kernel_arg2: u8;
     static __ap_trampoline_end: u8;
 }
 
 #[derive(Clone, Copy)]
 enum ApicDriver {
-    XApic { mmr: *mut u32 },
+    XApic { mmr: NonNull<u32> },
     X2Apic,
 }
 
@@ -87,11 +91,72 @@ impl ApicDriver {
     }
 }
 
-pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scratch_pages: &mut ScratchPages, processor_entry: F, madt: Madt) -> ! {
+#[repr(C)]
+pub struct CpuContext {
+    this: *const Self,
+    apic: ApicDriver,
+    is_bootstrap: bool,
+    apic_id: u32,
+    cpu_id: u32,
+}
+
+impl CpuContext {
+    unsafe fn new(apic: ApicDriver, is_bootstrap: bool, apic_id: u32, cpu_id: u32) {
+        static CTX_ALLOC: SlabAllocator<CpuContext> = SlabAllocator::new();
+
+        if let ApicDriver::X2Apic = apic {
+            unsafe { wrmsr(Msr::Ia32ApicBase, rdmsr(Msr::Ia32ApicBase) | (1 << 10) | (1 << 11)) }
+        }
+
+        let this = &raw mut *SlabId::leak(CTX_ALLOC.alloc(Self {
+            this: ptr::null(),
+            apic,
+            is_bootstrap,
+            apic_id,
+            cpu_id,
+        }));
+
+        unsafe {
+            (*this).this = this;
+            wrmsr(Msr::Ia32GsBase, this as u64);
+        }
+    }
+
+    #[inline]
+    pub fn get() -> &'static Self {
+        let ptr: *const Self;
+        unsafe {
+            asm!(
+                "mov {}, gs:[0]",
+
+                out(reg) ptr,
+                options(nomem, nostack, preserves_flags),
+            );
+            ptr.as_ref_unchecked()
+        }
+    }
+
+    #[inline]
+    pub fn is_bootstrap(&self) -> bool {
+        self.is_bootstrap
+    }
+
+    #[inline]
+    pub fn apic_id(&self) -> u32 {
+        self.apic_id
+    }
+
+    #[inline]
+    pub fn cpu_id(&self) -> u32 {
+        self.cpu_id
+    }
+}
+
+pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages: &mut ScratchPages, processor_entry: F, madt: Madt) -> ! {
     unsafe {
         init_interrupts();
-        let v_map = get_virtual_map();
 
+        let v_map = get_virtual_map();
         let driver = if __cpuid_count(0x01, 0x00).ecx & (1 << 21) != 0 {
             info!("x2APIC is supported on this hardware; using Model-Specific Registers for APIC");
 
@@ -110,7 +175,10 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
                     VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::CACHE_DISABLED | VFlags::EXECUTE_DISABLE,
                 )
                 .expect("Couldn't virtual-map xAPIC MMR");
-            ApicDriver::XApic { mmr: mmr.ptr_mut::<u32>() }
+
+            ApicDriver::XApic {
+                mmr: NonNull::new_unchecked(mmr.ptr_mut::<u32>()),
+            }
         };
 
         let trampoline_phys = scratch_pages.take().expect("Not enough scratch pages for AP trampoline entry");
@@ -153,11 +221,20 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
         debug!("\tCopied {trampoline_len} bytes into {trampoline:p} (physical address at {trampoline_phys:p}) for AP cores entry");
 
         static AP_INIT: AtomicBool = AtomicBool::new(false);
-        static AP_PROCEED: AtomicUsize = AtomicUsize::new(0);
+        static AP_PROCEED: AtomicU32 = AtomicU32::new(0);
 
-        unsafe extern "sysv64" fn ap_kernel_entry<F: FnOnce(usize, bool) -> ! + Clone + Send>(processor_entry: *const ()) -> ! {
-            unsafe { init_interrupts() }
-            let processor_entry = unsafe { (processor_entry as *const F).read() };
+        unsafe extern "sysv64" fn ap_kernel_entry<F: FnOnce(u32) -> ! + Clone + Send>(
+            processor_entry: *const (),
+            apic: ApicDriver,
+            ids: *const [u32; 2],
+        ) -> ! {
+            let processor_entry = unsafe {
+                let [apic_id, cpu_id] = ids.read_unaligned();
+                init_interrupts();
+                CpuContext::new(apic, false, apic_id, cpu_id);
+
+                (processor_entry as *const F).read_unaligned()
+            };
 
             AP_INIT.store(true, Release);
             let cpu_count = loop {
@@ -170,13 +247,17 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
                 }
             };
 
-            processor_entry(cpu_count, false)
+            processor_entry(cpu_count)
         }
 
         let bsp_id = driver.apic_id();
-        let mut cpu_count = 1;
-        let mut init_cpu = |id: u32| {
-            if bsp_id != id {
+        let mut cpu_id = 0;
+
+        let mut init_cpu = |apic_id: u32| {
+            if bsp_id == apic_id {
+                CpuContext::new(driver, true, apic_id, cpu_id);
+                cpu_id += 1;
+            } else {
                 const STACK_PAGES: usize = 16;
 
                 let stack = get_phys_alloc()
@@ -185,6 +266,7 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
                     .expect("Couldn't allocate stack for AP core");
                 let stack_top = phys_to_virt(stack).byte_add(STACK_PAGES * PAGE_SIZE).addr() as u64;
                 let processor_entry = ManuallyDrop::new(processor_entry.clone());
+                let ids = [apic_id, cpu_id];
 
                 trampoline
                     .add((&raw const __ap_stack).offset_from_unsigned(&raw const __ap_trampoline_start))
@@ -194,24 +276,34 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
                     .add((&raw const __ap_kernel_arg0).offset_from_unsigned(&raw const __ap_trampoline_start))
                     .cast::<u64>()
                     .write_unaligned(&raw const processor_entry as u64);
+                trampoline
+                    .add((&raw const __ap_kernel_arg1).offset_from_unsigned(&raw const __ap_trampoline_start))
+                    .cast::<ApicDriver>()
+                    .write_unaligned(driver);
+                trampoline
+                    .add((&raw const __ap_kernel_arg2).offset_from_unsigned(&raw const __ap_trampoline_start))
+                    .cast::<*const [u32; 2]>()
+                    .write_unaligned(&raw const ids);
 
-                driver.startup(true, trampoline_phys, id);
+                AP_INIT.store(false, Release);
+                driver.startup(true, trampoline_phys, apic_id);
+
                 for i in 0..2 {
                     pit_delay(Duration::from_micros(500));
-                    match AP_INIT.compare_exchange(true, false, Acquire, Relaxed) {
+                    match AP_INIT.compare_exchange(true, false, AcqRel, Relaxed) {
                         Ok(..) => {
-                            cpu_count += 1;
-                            debug!("\tAP core {id} is up and running");
+                            cpu_id += 1;
+                            debug!("\tAP core {apic_id} is up and running");
                             break
                         }
                         Err(..) => {
                             if i == 0 {
-                                driver.startup(false, trampoline_phys, id);
-                                error!("\tCouldn't start up AP core {id}, retrying one more time");
+                                driver.startup(false, trampoline_phys, apic_id);
+                                error!("\tCouldn't start up AP core {apic_id}, retrying one more time");
                             } else {
                                 // Send one last INIT IPI to ensure the AP core isn't doing anything
-                                driver.init(id);
-                                error!("\tCouldn't start up AP core {id} even after retrying, giving up");
+                                driver.init(apic_id);
+                                error!("\tCouldn't start up AP core {apic_id} even after retrying, giving up");
                             }
                         }
                     }
@@ -231,7 +323,7 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
             }
         }
 
-        AP_PROCEED.store(cpu_count, Release);
-        processor_entry(cpu_count, true)
+        AP_PROCEED.store(cpu_id, Release);
+        processor_entry(cpu_id)
     }
 }

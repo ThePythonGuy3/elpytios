@@ -6,6 +6,8 @@
 .global __ap_stack
 .global __ap_kernel_entry
 .global __ap_kernel_arg0
+.global __ap_kernel_arg1
+.global __ap_kernel_arg2
 .global __ap_trampoline_end
 
 __ap_trampoline_start:
@@ -129,10 +131,14 @@ ap_entry_64:
 
     # Call an `extern "sysv64"` function given by the kernel
     mov rdi, [rip + __ap_kernel_arg0]
+    mov rsi, [rip + __ap_kernel_arg1]
+    mov rdx, [rip + __ap_kernel_arg2]
     jmp [rip + __ap_kernel_entry]
 
     __ap_stack:         .quad 0x0000000000000000
     __ap_kernel_entry:  .quad 0x0000000000000000
     __ap_kernel_arg0:   .quad 0x0000000000000000
+    __ap_kernel_arg1:   .quad 0x0000000000000000
+    __ap_kernel_arg2:   .quad 0x0000000000000000
 
 __ap_trampoline_end:
