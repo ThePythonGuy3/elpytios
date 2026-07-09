@@ -1,8 +1,10 @@
 use core::{
     arch::{asm, global_asm, x86_64::__cpuid_count},
+    hint::spin_loop,
+    mem::ManuallyDrop,
     sync::atomic::{
-        AtomicBool,
-        Ordering::{AcqRel, Relaxed, Release},
+        AtomicBool, AtomicUsize,
+        Ordering::{Acquire, Relaxed, Release},
     },
     time::Duration,
 };
@@ -26,6 +28,7 @@ unsafe extern "sysv64" {
     static __ap_cr4: u8;
     static __ap_stack: u8;
     static __ap_kernel_entry: u8;
+    static __ap_kernel_arg0: u8;
     static __ap_trampoline_end: u8;
 }
 
@@ -45,7 +48,20 @@ impl ApicDriver {
     }
 
     #[inline]
-    unsafe fn init(self, send_init: bool, trampoline_phys: PAddr, apic_id: u32) {
+    unsafe fn init(self, apic_id: u32) {
+        match self {
+            Self::XApic { .. } => unimplemented!("Waking up cores via legacy xAPIC isn't implemented yet"),
+            Self::X2Apic => unsafe {
+                let id = (apic_id as u64) << 32;
+                let assert = 1 << 14;
+
+                wrmsr(Msr::Ia32X2ApicIcr, (5 << 8) | assert | id);
+            },
+        }
+    }
+
+    #[inline]
+    unsafe fn startup(self, send_init: bool, trampoline_phys: PAddr, apic_id: u32) {
         match self {
             Self::XApic { .. } => unimplemented!("Waking up cores via legacy xAPIC isn't implemented yet"),
             Self::X2Apic => unsafe {
@@ -58,7 +74,7 @@ impl ApicDriver {
                 let assert = 1 << 14;
 
                 if send_init {
-                    wrmsr(Msr::Ia32X2ApicIcr, (5 << 8) | assert | id);
+                    self.init(apic_id);
                     pit_delay(Duration::from_millis(10));
                 }
 
@@ -71,7 +87,7 @@ impl ApicDriver {
     }
 }
 
-pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
+pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scratch_pages: &mut ScratchPages, processor_entry: F, madt: Madt) -> ! {
     fn new_page_table() -> Option<PAddr> {
         get_phys_alloc()
             .lock()
@@ -137,45 +153,65 @@ pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
         trampoline
             .add((&raw const __ap_kernel_entry).offset_from_unsigned(&raw const __ap_trampoline_start))
             .cast::<u64>()
-            .write_unaligned(ap_kernel_entry as *const () as u64);
+            .write_unaligned(ap_kernel_entry::<F> as *const () as u64);
 
         debug!("\tCopied {trampoline_len} bytes into {trampoline:p} (physical address at {trampoline_phys:p}) for AP cores entry");
 
-        #[unsafe(no_mangle)]
         static AP_INIT: AtomicBool = AtomicBool::new(false);
+        static AP_PROCEED: AtomicUsize = AtomicUsize::new(0);
 
-        unsafe extern "sysv64" fn ap_kernel_entry() -> ! {
+        unsafe extern "sysv64" fn ap_kernel_entry<F: FnOnce(usize, bool) -> ! + Clone + Send>(processor_entry: *const ()) -> ! {
             unsafe { init_interrupts() }
+            let processor_entry = unsafe { (processor_entry as *const F).read() };
 
             AP_INIT.store(true, Release);
-            loop {}
+            let cpu_count = loop {
+                match AP_PROCEED.load(Acquire) {
+                    0 => {
+                        spin_loop();
+                        continue
+                    }
+                    n => break n,
+                }
+            };
+
+            processor_entry(cpu_count, false)
         }
 
         let bsp_id = driver.apic_id();
-        let init_cpu = |id: u32| {
+        let mut cpu_count = 1;
+        let mut init_cpu = |id: u32| {
             if bsp_id != id {
                 let stack = get_phys_alloc().lock().alloc(16).expect("Couldn't allocate stack for AP core");
                 let stack_top = phys_to_virt(stack.addr()).byte_add(stack.byte_len()).addr() as u64;
+                let processor_entry = ManuallyDrop::new(processor_entry.clone());
 
                 trampoline
                     .add((&raw const __ap_stack).offset_from_unsigned(&raw const __ap_trampoline_start))
                     .cast::<u64>()
                     .write_unaligned(stack_top);
+                trampoline
+                    .add((&raw const __ap_kernel_arg0).offset_from_unsigned(&raw const __ap_trampoline_start))
+                    .cast::<u64>()
+                    .write_unaligned(&raw const processor_entry as u64);
 
-                driver.init(true, trampoline_phys, id);
+                driver.startup(true, trampoline_phys, id);
                 for i in 0..2 {
-                    pit_delay(Duration::from_micros(200));
-                    match AP_INIT.compare_exchange(true, false, AcqRel, Relaxed) {
+                    pit_delay(Duration::from_micros(500));
+                    match AP_INIT.compare_exchange(true, false, Acquire, Relaxed) {
                         Ok(..) => {
-                            info!("\tAP core {id} is up and running");
+                            cpu_count += 1;
+                            debug!("\tAP core {id} is up and running");
                             break
                         }
                         Err(..) => {
                             if i == 0 {
-                                driver.init(false, trampoline_phys, id);
-                                error!("\tCouldn't start up AP core {id}; retrying");
+                                driver.startup(false, trampoline_phys, id);
+                                error!("\tCouldn't start up AP core {id}, retrying one more time");
                             } else {
-                                error!("\tCouldn't start up AP core {id} at all");
+                                // Send one last INIT IPI to ensure the AP core isn't doing anything
+                                driver.init(id);
+                                error!("\tCouldn't start up AP core {id} even after retrying, giving up");
                             }
                         }
                     }
@@ -194,5 +230,8 @@ pub unsafe fn init_device_tree(scratch_pages: &mut ScratchPages, madt: Madt) {
                 _ => {}
             }
         }
+
+        AP_PROCEED.store(cpu_count, Release);
+        processor_entry(cpu_count, true)
     }
 }

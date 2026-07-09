@@ -325,9 +325,6 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
         unsafe { set_phys_alloc(phys_alloc) }
     }
 
-    // Setup device tree, which includes waking up all AP and setting up interrupt handlers
-    unsafe { init_device_tree(info.device_tree, scratch_pages) }
-
     // Virtual-map the framebuffer
     {
         let v_map = get_virtual_map();
@@ -370,19 +367,21 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
         }
     }
 
-    unsafe { main() }
+    // Setup device tree, which includes waking up all AP and setting up interrupt handlers
+    // This calls the closure once for every CPU cores locally
+    unsafe { init_device_tree(info.device_tree, scratch_pages, main) }
 }
 
 /// # Safety
 /// - All [`statics`](elpytios_kernel::statics) must have been initialized prior to calling this
 ///   function.
-unsafe extern "sysv64" fn main() -> ! {
-    info!("Hello, world! Kernel is now in higher-half addressing!");
-
-    {
+/// - This function must be able to be run in parallel with itself on other threads
+fn main(core_count: usize, is_bsp: bool) -> ! {
+    if is_bsp {
         use elpytios_bootinfo::PixelFormat;
         use elpytios_kernel::statics::get_frame_buffer;
 
+        info!("Hello, world! Kernel is now up and running on {core_count} logical processors!");
         let fbo = get_frame_buffer();
         match fbo.format {
             fmt @ (PixelFormat::RGB_8_BIT | PixelFormat::BGR_8_BIT) => {

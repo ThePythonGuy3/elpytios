@@ -5,6 +5,7 @@
 .global __ap_cr4
 .global __ap_stack
 .global __ap_kernel_entry
+.global __ap_kernel_arg0
 .global __ap_trampoline_end
 
 __ap_trampoline_start:
@@ -122,11 +123,16 @@ ap_entry_32:
 
 .code64
 ap_entry_64:
+    # Setup stack pointer to the stack given by BSP
     mov rsp, [rip + __ap_stack]
     and rsp, -16
+
+    # Call an `extern "sysv64"` function given by the kernel
+    mov rdi, [rip + __ap_kernel_arg0]
     jmp [rip + __ap_kernel_entry]
 
     __ap_stack:         .quad 0x0000000000000000
     __ap_kernel_entry:  .quad 0x0000000000000000
+    __ap_kernel_arg0:   .quad 0x0000000000000000
 
 __ap_trampoline_end:

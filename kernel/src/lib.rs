@@ -7,6 +7,7 @@
     debug_closure_helpers,
     impl_trait_in_assoc_type,
     layout_for_ptr,
+    never_type,
     ptr_metadata,
     slice_ptr_get,
     sync_unsafe_cell
