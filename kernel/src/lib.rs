@@ -1,9 +1,13 @@
 #![forbid(unfulfilled_lint_expectations)]
 #![feature(
+    anonymous_lifetime_in_impl_trait,
     arbitrary_self_types_pointers,
     const_trait_impl,
     const_try,
+    debug_closure_helpers,
+    impl_trait_in_assoc_type,
     layout_for_ptr,
+    never_type,
     ptr_metadata,
     slice_ptr_get,
     sync_unsafe_cell
@@ -11,6 +15,8 @@
 #![no_std]
 
 pub mod allocator;
+pub mod arch;
+pub mod device;
 pub mod framebuffer;
 pub mod interrupt;
 pub mod rendering;
@@ -25,6 +31,25 @@ use elpytios_bootinfo::paddr::PAddr;
 use framebuffer::FrameBuffer;
 use spin_sync::SpinMutex;
 use vaddr::{VAddr, VirtualMap};
+
+#[repr(transparent)]
+pub struct ScratchPages<'a> {
+    pub pages: &'a [PAddr],
+}
+
+impl ScratchPages<'_> {
+    pub fn take(&mut self) -> Option<PAddr> {
+        loop {
+            match self.pages.split_at_checked(1) {
+                Some((&[next], pages)) => {
+                    self.pages = pages;
+                    if next.addr() == 0 { continue } else { break Some(next) }
+                }
+                _ => break None,
+            }
+        }
+    }
+}
 
 /// # Safety
 /// Every single one of these statics must be set by their corresponding `set_*` functions below in
@@ -69,7 +94,20 @@ pub mod statics {
 
     #[inline]
     pub fn phys_to_virt(p_addr: PAddr) -> VAddr {
-        VAddr::new(p_addr.addr() + unsafe { (&raw const DIRECT_MAP_OFFSET as *const usize).read() })
+        VAddr::new(
+            p_addr
+                .addr()
+                .wrapping_add(unsafe { (&raw const DIRECT_MAP_OFFSET as *const usize).read() }),
+        )
+    }
+
+    #[inline]
+    pub fn virt_to_phys(v_addr: VAddr) -> PAddr {
+        PAddr::new(
+            v_addr
+                .addr()
+                .wrapping_sub(unsafe { (&raw const DIRECT_MAP_OFFSET as *const usize).read() }),
+        )
     }
 
     #[inline]

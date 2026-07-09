@@ -333,6 +333,7 @@ def run_qemu(args):
             f"qemu-system-{platform.machine().replace("AMD64", "x86_64")}",
             "-accel", accel,
             "-cpu", "host",
+            "-smp", "cores=4,threads=2,sockets=1",
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_CODE.4m.fd"}",
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_VARS.4m.fd"}",
             "-drive", f"format=raw,file=fat:rw:{runner_esp}",
@@ -345,11 +346,11 @@ def run_qemu(args):
             "-serial", "file:platform.log",
             "-serial", "null",
             "-serial", "stdio",
-            "-d", "int", "-no-reboot", "-no-shutdown",
+            "-d", "int,cpu,guest_errors", "-no-reboot", "-no-shutdown", "-D", "qemu_except.log",
             *(["-s"] if args.debug else []),
         ],
         stdout=None,
-        stderr=open("qemu.log", "w"),
+        stderr=open("qemu_stderr.log", "w"),
         check=True
     )
 

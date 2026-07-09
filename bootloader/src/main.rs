@@ -9,15 +9,19 @@ use core::{arch::asm, mem::{self, MaybeUninit}};
 use arrayvec::ArrayVec;
 use const_panic::concat_panic;
 use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
-use elpytios_bootinfo::{BootInfo, GraphicsInfo, IdentityMap, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
-use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::{MemoryMap}, proto::console::gop::*};
+use elpytios_bootinfo::{BootInfo, DeviceTree, GraphicsInfo, IdentityMap, IdentityMapFlags, MAX_SCRATCH, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
+use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMap, proto::console::gop::*, table::cfg::ConfigTableEntry};
 
 const _: () = assert!(PAGE_SIZE == boot::PAGE_SIZE);
 
 const MEM_KERNEL_CODE:  MemoryType = MemoryType::custom(0x8000_0000);
+const MEM_STACK:        MemoryType = MemoryType::custom(0x8000_0001);
+const MEM_BOOT_INFO:    MemoryType = MemoryType::custom(0x8000_0002);
+const MEM_SCRATCH:      MemoryType = MemoryType::custom(0x8000_0003);
 
-const MEM_STACK_LEN:      usize = 64;
-const MEM_BOOT_INFO_LEN:  usize = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
+const MEM_STACK_LEN:     usize = 16; // Note: `opt-level = 0` makes the code consume way too much stack space
+const MEM_BOOT_INFO_LEN: usize = size_of::<BootInfo>().div_ceil(PAGE_SIZE);
+const MEM_SCRATCH_LEN:   usize = MAX_SCRATCH;
 
 const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../../target/x86_64-unknown-none/", cfg_select! {
     debug_assertions => "bootloader_debug",
@@ -75,7 +79,7 @@ const KERNEL_VIRTUAL_ADDRESSES: [usize; 2] = {
 
     match (usize::try_from(min), usize::try_from(max)) {
         (Ok(min), Ok(max)) => [
-            if min % PAGE_SIZE == 0 {
+            if min.is_multiple_of(PAGE_SIZE) {
                 min
             } else {
                 concat_panic!("Virtual address base (", min, ") isn't aligned to ", PAGE_SIZE)
@@ -101,18 +105,9 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
     {
         // Graphics Info Fetching
-        let graphics_output_protocol_handle = boot::get_handle_for_protocol::<GraphicsOutput>().expect("No Graphics Output Protocol");
-        let mut graphics_output_protocol;
-        unsafe {
-            graphics_output_protocol = boot::open_protocol::<GraphicsOutput>(
-                boot::OpenProtocolParams {
-                    handle: graphics_output_protocol_handle,
-                    agent: boot::image_handle(),
-                    controller: None
-                },
-                boot::OpenProtocolAttributes::GetProtocol
-            ).expect("Error opening Graphics Output Protocol");
-        }
+        let mut graphics_output_protocol = boot::open_protocol_exclusive::<GraphicsOutput>(
+            boot::get_handle_for_protocol::<GraphicsOutput>().expect("No Graphics Output Protocol")
+        ).expect("Error opening Graphics Output Protocol");
 
         let mut max_area: usize            = 0;
         let mut max_mode: Option<Mode>     = None;
@@ -160,12 +155,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         let mut identity_maps = ArrayVec::new();
 
         let kernel_base_pages = (virtual_max - virtual_base) / PAGE_SIZE;
-        let base_ptr = boot::allocate_pages(
-            AllocateType::AnyPages,
-            MEM_KERNEL_CODE,
-            kernel_base_pages + MEM_BOOT_INFO_LEN + MEM_STACK_LEN,
-        ).unwrap().as_ptr();
-        let kernel_ptr = base_ptr;
+        let kernel_ptr = boot::allocate_pages(AllocateType::AnyPages, MEM_KERNEL_CODE, kernel_base_pages).unwrap().as_ptr();
 
         for segment in KERNEL_SEGMENTS {
             let ElfSegmentType::Load(data) = segment.segment_type else { continue };
@@ -213,25 +203,50 @@ fn setup_uefi_and_exit() -> UefiInfo {
             }
         }
 
-        let stack_ptr = unsafe { base_ptr.add((kernel_base_pages + MEM_BOOT_INFO_LEN) * PAGE_SIZE) };
+        let stack_ptr = boot::allocate_pages(AllocateType::AnyPages, MEM_STACK, MEM_STACK_LEN).unwrap().as_ptr();
         identity_maps.push(IdentityMap::new(PAddr::new(stack_ptr.addr()), MEM_STACK_LEN, IdentityMapFlags::READABLE | IdentityMapFlags::WRITABLE));
 
         kernel_entry = unsafe { kernel_ptr.add(KERNEL_BINARY.program_entry() as usize - virtual_base) };
         kernel_stack_base = unsafe { stack_ptr.add(MEM_STACK_LEN * PAGE_SIZE) };
 
-        boot_info = unsafe { base_ptr.add(kernel_base_pages * PAGE_SIZE).cast() };
+        boot_info = boot::allocate_pages(AllocateType::AnyPages, MEM_BOOT_INFO, MEM_BOOT_INFO_LEN).unwrap().as_ptr().cast();
         identity_maps.push(IdentityMap::new(PAddr::new(boot_info.addr()), MEM_BOOT_INFO_LEN, IdentityMapFlags::READABLE));
 
+        //
         unsafe {
+            let scratch_ptr = boot::allocate_pages(AllocateType::MaxAddress(1 << 16), MEM_SCRATCH, MEM_SCRATCH_LEN).unwrap().as_ptr();
+            scratch_ptr.write_bytes(0, MEM_SCRATCH_LEN * PAGE_SIZE);
+            let mut scratch_pages = ArrayVec::new();
+            for i in 0..MEM_SCRATCH_LEN {
+                scratch_pages.push(PAddr::new(scratch_ptr.addr() + i * PAGE_SIZE));
+            }
+
+            let device_tree = uefi::system::with_config_table(|slice| {
+                let mut out = None;
+                for i in slice {
+                    match i.guid {
+                        ConfigTableEntry::ACPI_GUID if out.is_none() => out = Some(DeviceTree::Acpi(PAddr::new(i.address.addr()))),
+                        ConfigTableEntry::ACPI2_GUID => {
+                            out = Some(DeviceTree::Acpi2(PAddr::new(i.address.addr())));
+                            break
+                        },
+                        _ => {}
+                    }
+                }
+
+                out.expect("No ACPI or ACPI2 table found")
+            });
+
             boot_info.write(BootInfo {
                 graphics_info,
+                device_tree,
 
-                kernel_base: PAddr::new(base_ptr.addr()),
                 kernel_elf_base: PAddr::new(kernel_ptr.addr()),
                 kernel_virt_base: virtual_base,
 
                 memory_regions: ArrayVec::new(),
                 identity_maps,
+                scratch_pages,
                 relocations,
             });
         }
@@ -239,9 +254,17 @@ fn setup_uefi_and_exit() -> UefiInfo {
 
     unsafe {
         let memory_map = boot::exit_boot_services(Some(MemoryType::LOADER_DATA));
+        for entry in memory_map.entries() {
+            if matches!(entry.ty, MemoryType::ACPI_RECLAIM) {
+                (*boot_info).identity_maps.push(IdentityMap {
+                    region: MemoryRegion::at(PAddr::new(entry.phys_start as usize), entry.page_count as usize),
+                    flags: IdentityMapFlags::READABLE,
+                });
+            }
+        }
 
         let mut region = None;
-        for entry in memory_map.entries().copied() {
+        for entry in memory_map.entries() {
             if !matches!(entry.ty,
                 MemoryType::LOADER_CODE | MemoryType::LOADER_DATA |
                 MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA |

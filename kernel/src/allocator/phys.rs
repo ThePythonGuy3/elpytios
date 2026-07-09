@@ -1,12 +1,12 @@
 use core::{
-    fmt,
+    hint::cold_path,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
 use arrayvec::ArrayVec;
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
 
-use crate::allocator::{AllocTree, TreeAllocError, TreeAllocId};
+use crate::allocator::{AllocTree, TreeAllocError};
 
 #[derive(Debug)]
 pub struct PhysicalPageAllocator {
@@ -14,8 +14,10 @@ pub struct PhysicalPageAllocator {
 }
 
 impl PhysicalPageAllocator {
+    /// # Safety
+    /// [`Self::sort_tree`] must be called before allocating.
     #[inline]
-    pub fn new() -> PhysicalPageAllocator {
+    pub unsafe fn new() -> PhysicalPageAllocator {
         static CREATED: AtomicBool = AtomicBool::new(false);
 
         if CREATED.swap(true, Relaxed) {
@@ -37,24 +39,50 @@ impl PhysicalPageAllocator {
         self.trees.push(Entry { base, tree });
     }
 
-    pub fn alloc(&mut self, page_count: usize) -> Result<AllocId, TreeAllocError> {
-        let mut last_error = TreeAllocError::InsufficientSpace { requested: page_count };
-        for (tree_index, &Entry { base, tree }) in self.trees.iter().enumerate() {
+    #[inline]
+    pub fn sort_tree(&mut self) {
+        self.trees.sort_unstable_by_key(|e| e.base);
+    }
+
+    pub fn alloc(&mut self, order: u32) -> Result<PAddr, TreeAllocError> {
+        let mut last_error = TreeAllocError::InsufficientSpace { requested_order: order };
+        for &Entry { base, tree } in &self.trees {
             let tree = unsafe { tree.as_mut_unchecked() };
-            match tree.alloc(page_count) {
-                Ok(tree_id) => {
-                    return Ok(AllocId {
-                        tree_id,
-                        tree_index,
-                        addr: base.byte_add(tree_id.index() as usize * PAGE_SIZE),
-                    })
-                }
-                Err(e @ TreeAllocError::Zero) => return Err(e),
+            match tree.alloc(order) {
+                Ok(index) => return Ok(base.byte_add(index as usize * PAGE_SIZE)),
                 Err(e @ TreeAllocError::InsufficientSpace { .. }) => last_error = e,
             }
         }
 
         Err(last_error)
+    }
+
+    /// # Safety
+    /// - `addr` must have been obtained through [`Self::alloc`].
+    /// - `order` must be the same value passed through the same [`Self::alloc`] invocation.
+    pub unsafe fn dealloc(&mut self, addr: PAddr, order: u32) {
+        let tree_index = match self.trees.binary_search_by_key(&addr, |e| e.base) {
+            Ok(i) => i,
+            Err(i) => match i.checked_sub(1) {
+                Some(i) => i,
+                None => {
+                    cold_path();
+                    panic!("`PhysicalPageAllocator` has absolutely no trees");
+                }
+            },
+        };
+
+        unsafe {
+            let &Entry { base, tree } = self.trees.get_unchecked(tree_index);
+            let tree = tree.as_mut_unchecked();
+            let index = u32::try_from((addr.addr() - base.addr()) / PAGE_SIZE).unwrap_unchecked();
+
+            // `dealloc` *may* be called for pages that didn't originally come with this allocator
+            // But in the case that they do, callers must ensure the safety invariants
+            if index < tree.node_count() {
+                tree.dealloc(index, order);
+            }
+        }
     }
 }
 
@@ -64,38 +92,4 @@ unsafe impl Sync for PhysicalPageAllocator {}
 struct Entry {
     base: PAddr,
     tree: *mut AllocTree,
-}
-
-#[derive(Clone, Copy)]
-pub struct AllocId {
-    tree_id: TreeAllocId,
-    tree_index: usize,
-    addr: PAddr,
-}
-
-impl fmt::Debug for AllocId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AllocId")
-            .field("addr", &self.addr)
-            .field("page_count", &self.page_count())
-            .field("byte_len", &self.byte_len())
-            .finish_non_exhaustive()
-    }
-}
-
-impl AllocId {
-    #[inline]
-    pub const fn addr(&self) -> PAddr {
-        self.addr
-    }
-
-    #[inline]
-    pub const fn page_count(&self) -> usize {
-        1 << self.tree_id.order()
-    }
-
-    #[inline]
-    pub const fn byte_len(&self) -> usize {
-        self.page_count() * PAGE_SIZE
-    }
 }

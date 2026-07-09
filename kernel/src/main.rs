@@ -5,6 +5,7 @@
 
 use core::{
     arch::{asm, naked_asm},
+    cell::RefCell,
     fmt::Write,
     iter::once,
     panic::PanicInfo,
@@ -13,14 +14,15 @@ use core::{
 use elpytios_bootinfo::{BootInfo, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
 use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
+    ScratchPages,
     allocator::{AllocTree, PhysicalPageAllocator},
+    device::{CpuContext, init_device_tree},
     framebuffer::FrameBuffer,
-    interrupt::init_interrupts,
     serial::{Com, Serial, serial_init},
-    statics::{get_phys_alloc, get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
+    statics::{get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
-use log::{error, info};
+use log::{debug, error, info};
 
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
@@ -32,9 +34,8 @@ fn panic_handler(info: &PanicInfo) -> ! {
 #[unsafe(export_name = "_start")] // Tell the linker that this is our entry point
 unsafe extern "sysv64" fn jump_from_bootloader(info: &'static BootInfo) -> ! {
     naked_asm!(
-        // Clear interrupt handlers and global descriptor table, will be reinitialized by `setup_virtual_mapped()`
+        // Clear interrupt handlers, will be reinitialized by `setup_virtual_mapped()`
         "cli",
-        "cld",
         "jmp {setup_identity_mapped}",
 
         setup_identity_mapped = sym setup_identity_mapped,
@@ -101,111 +102,139 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
     // Notes:
     // - `log` mustn't be setup here; wait until symbols are relocated
 
-    let mut regions = MemoryRegions::new(&info.memory_regions);
+    let regions = RefCell::new(MemoryRegions::new(&info.memory_regions));
+    let mut scratch_pages = ScratchPages { pages: &info.scratch_pages };
+
+    let kernel_base = info
+        .identity_maps
+        .iter()
+        .min_by_key(|map| map.region.base)
+        .expect("Didn't find any identity maps")
+        .region
+        .base;
     let v_slide = HIGHER_HALF_ADDRESS_BASE
         .addr()
-        .checked_sub(info.kernel_base.addr())
+        .checked_sub(kernel_base.addr())
         .expect("Kernel physical address somehow higher than higher-half addressing base");
 
-    let mut v_map = unsafe {
-        VirtualMapBuilder::new(
-            || regions.take_head().inspect(|addr| (addr.addr() as *mut u8).write_bytes(0, PAGE_SIZE)),
-            |p_addr| p_addr.addr() as *mut (),
-        )
-    };
+    let page_table_phys = scratch_pages.take().expect("Not enough scratch pages for page table");
+    let setup_virtual_mapped = {
+        let mut v_map = unsafe { VirtualMapBuilder::new(page_table_phys, || regions.borrow_mut().take_head(), |p_addr| p_addr.addr() as *mut ()) };
 
-    let mut direct_map_offset = usize::MIN;
-    for map in &info.identity_maps {
-        let mut flags = VFlags::empty();
-        if map.flags.contains(IdentityMapFlags::WRITABLE) {
-            flags |= VFlags::WRITABLE;
-        } else {
-            flags |= VFlags::GLOBAL;
+        let mut direct_map_offset = usize::MIN;
+        for map in &info.identity_maps {
+            let mut flags = VFlags::GLOBAL;
+            if map.flags.contains(IdentityMapFlags::WRITABLE) {
+                flags |= VFlags::WRITABLE;
+            }
+            if !map.flags.contains(IdentityMapFlags::EXECUTABLE) {
+                flags |= VFlags::EXECUTE_DISABLE;
+            }
+
+            v_map
+                .map(map.region.base, VAddr::new(map.region.base.addr()), map.region.pages, flags)
+                .expect("Couldn't identity map kernel segment");
+
+            v_map
+                .map(map.region.base, VAddr::new(map.region.base.addr() + v_slide), map.region.pages, flags)
+                .expect("Couldn't virtual map kernel segment");
+
+            direct_map_offset = direct_map_offset.max(map.region.base.addr() + v_slide + map.region.pages * PAGE_SIZE);
         }
-        if !map.flags.contains(IdentityMapFlags::EXECUTABLE) {
-            flags |= VFlags::EXECUTE_DISABLE;
-        }
 
-        v_map
-            .map(map.region.base, VAddr::new(map.region.base.addr()), map.region.pages, flags)
-            .expect("Couldn't identity map kernel segment");
+        // Direct map *all* of RAM to the specified direct-map offset
+        let direct_map_offset = direct_map_offset.next_multiple_of(2 << 30); // Align to a gigabyte
+        unsafe { set_direct_map_offset(direct_map_offset) }
 
-        v_map
-            .map(map.region.base, VAddr::new(map.region.base.addr() + v_slide), map.region.pages, flags)
-            .expect("Couldn't virtual map kernel segment");
-
-        direct_map_offset = direct_map_offset.max(map.region.base.addr() + v_slide + map.region.pages * PAGE_SIZE);
-    }
-
-    // Direct map *all* of RAM to the specified direct-map offset
-    let direct_map_offset = direct_map_offset.next_multiple_of(2 << 30); // Align to a gigabyte
-    unsafe { set_direct_map_offset(direct_map_offset) }
-
-    for region in &info.memory_regions {
         v_map
             .map(
-                region.base,
-                VAddr::new(region.base.addr() + direct_map_offset),
-                region.pages,
-                VFlags::WRITABLE,
+                page_table_phys,
+                VAddr::new(page_table_phys.addr() + direct_map_offset),
+                1,
+                VFlags::GLOBAL | VFlags::WRITABLE | VFlags::EXECUTE_DISABLE,
             )
             .unwrap();
-    }
 
-    let (page_table_phys, virtual_map) = unsafe { v_map.finish() }.expect("Couldn't build virtual map table");
-    let setup_virtual_mapped = (setup_virtual_mapped as *const ())
-        .addr()
-        .checked_add(v_slide)
-        .expect("`setup_virtual_mapped()` virtual address overflowed");
+        for region in &info.memory_regions {
+            v_map
+                .map(
+                    region.base,
+                    VAddr::new(region.base.addr() + direct_map_offset),
+                    region.pages,
+                    VFlags::GLOBAL | VFlags::WRITABLE | VFlags::EXECUTE_DISABLE,
+                )
+                .unwrap();
+        }
+
+        let virtual_map = unsafe { v_map.finish() };
+        let setup_virtual_mapped = (setup_virtual_mapped as *const ())
+            .addr()
+            .checked_add(v_slide)
+            .expect("`setup_virtual_mapped()` virtual address overflowed");
+
+        unsafe { set_virtual_map(virtual_map) }
+        setup_virtual_mapped
+    };
 
     unsafe {
-        set_virtual_map(virtual_map);
+        let tmp = 0usize;
         asm!(
+            // Enable `GLOBAL` mapping, i.e. pages in TLB that don't get flushed
+            "mov {tmp}, cr4",
+            "or {tmp}, 1 << 7",
+            "mov cr4, {tmp}",
+
             "mov cr3, {page_table_phys}",
             "add rsp, {v_slide}",
             "and rsp, -16",
             "jmp {setup_virtual_mapped}",
 
+            tmp = in(reg) tmp,
             page_table_phys = in(reg) page_table_phys.addr(),
             v_slide = in(reg) v_slide,
             setup_virtual_mapped = in(reg) setup_virtual_mapped,
             in("rdi") (info as *const BootInfo).byte_add(v_slide).as_ref_unchecked(),
-            in("rsi") &regions,
+            in("rsi") &regions.into_inner(),
+            in("rdx") &mut scratch_pages,
+            in("rcx") kernel_base.addr(),
 
             options(noreturn),
         )
     }
 }
 
-unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions: &MemoryRegions) -> ! {
+unsafe extern "sysv64" fn setup_virtual_mapped(
+    info: &'static BootInfo,
+    regions: &MemoryRegions,
+    scratch_pages: &mut ScratchPages,
+    kernel_base: PAddr,
+) -> ! {
     // Relocate all symbols to higher-half addressing
     // Identity-mapping is still present at this point, so it is okay to cast `PAddr` into pointers
-    {
-        let kernel_ptr = info.kernel_elf_base.addr() as *mut u8;
-        let v_slide = HIGHER_HALF_ADDRESS_BASE
-            .addr()
-            .checked_sub(info.kernel_base.addr())
-            .expect("Kernel physical address somehow higher than higher-half addressing base")
-            .cast_signed() as i64;
+    let kernel_ptr = info.kernel_elf_base;
+    let v_slide = HIGHER_HALF_ADDRESS_BASE
+        .addr()
+        .checked_sub(kernel_base.addr())
+        .expect("Kernel physical address somehow higher than higher-half addressing base")
+        .cast_signed() as i64;
 
-        for &Reloc { offset, size, stride } in &info.relocations {
-            for i in 0..size / stride {
-                unsafe {
-                    let rela = kernel_ptr
-                        .cast::<ElfRela64>()
-                        .byte_add(offset - info.kernel_virt_base)
-                        .add(i)
-                        .read_unaligned();
+    for &Reloc { offset, size, stride } in &info.relocations {
+        for i in 0..size / stride {
+            unsafe {
+                let rela = (kernel_ptr.addr() as *mut u8)
+                    .cast::<ElfRela64>()
+                    .byte_add(offset - info.kernel_virt_base)
+                    .add(i)
+                    .read_unaligned();
 
-                    match rela.info.kind {
-                        ElfRela64Type::X86_64_RELATIVE => {
-                            let slide = v_slide + kernel_ptr.addr() as i64 - info.kernel_virt_base as i64;
-                            let patch_addr = kernel_ptr.add(rela.offset as usize - info.kernel_virt_base);
-                            let value = slide + rela.addend;
-                            patch_addr.cast::<i64>().write(value);
-                        }
-                        kind => panic!("Unsupported Elf64_Rela kind: {}", kind.0),
+                match rela.info.kind {
+                    ElfRela64Type::X86_64_RELATIVE => {
+                        let slide = v_slide + kernel_ptr.addr() as i64 - info.kernel_virt_base as i64;
+                        let patch_addr = (kernel_ptr.addr() as *mut u8).add(rela.offset as usize - info.kernel_virt_base);
+                        let value = slide + rela.addend;
+                        patch_addr.cast::<i64>().write(value);
                     }
+                    kind => panic!("Unsupported Elf64_Rela kind: {}", kind.0),
                 }
             }
         }
@@ -219,21 +248,27 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
             debug_assertions => log::LevelFilter::Trace,
             not(debug_assertions) => log::LevelFilter::Info,
         });
+
+        debug!(
+            "Setting up kernel at {kernel_ptr:p} -> {:p}",
+            VAddr::new(kernel_ptr.addr().wrapping_add_signed(v_slide as isize))
+        );
     }
 
     // When running through `x qemu run --debug`, wait until a corresponding GDB client executes this:
+    //
+    //     target remote [host, usuallty `localhost`]:[port, usually `1234`]
+    //     add-symbol-file [path/to]/elpytios-kernel -o [offset; see "Setting up kernel at ..." log]
     //
     //     set language c
     //     set *(unsigned char*)&__DEBUG_HALT = 0
     //     set language rust
     //     continue
     //
-    // This is to ensure the kernel has been loaded to memory at offset 0xffff_8000_0000_0000 before
-    // inserting software breakpoints and looking up symbosl at the same offset
+    // This is to ensure the kernel has been loaded to memory at higher-half address before inserting
+    // software breakpoints and looking up symbols at the same offset
     #[cfg(debug_assertions)]
     {
-        use log::debug;
-
         #[unsafe(no_mangle)]
         #[used]
         static mut __DEBUG_HALT: u8 = 1;
@@ -249,11 +284,11 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
     // Setup global physical page allocator
     {
         info!(
-            "Setting up physical page allocator: found {} usable memory regions",
+            "Initializing physical page allocator: found {} usable memory regions",
             info.memory_regions.len()
         );
 
-        let mut phys_alloc = PhysicalPageAllocator::new();
+        let mut phys_alloc = unsafe { PhysicalPageAllocator::new() };
         for MemoryRegion { mut base, mut pages } in regions.available.iter().copied().chain(once(regions.head)) {
             while pages > 1 {
                 let mut taken_pages = pages;
@@ -278,19 +313,14 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
             }
         }
 
+        phys_alloc.sort_tree();
+        info!("Initialized physical page allocator with {} trees", phys_alloc.tree_count());
         unsafe { set_phys_alloc(phys_alloc) }
-    }
-
-    // Setup interrupt handlers
-    unsafe {
-        init_interrupts();
     }
 
     // Virtual-map the framebuffer
     {
         let v_map = get_virtual_map();
-        let phys_alloc = &mut *get_phys_alloc().lock();
-
         let fb_phys = info.graphics_info.frame_buffer.addr();
         let fb_size = info.graphics_info.frame_buffer_size;
 
@@ -305,14 +335,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
                     p_addr,
                     phys_to_virt(p_addr),
                     fb_page_count,
-                    VFlags::GLOBAL | VFlags::WRITABLE | VFlags::WRITE_THROUGH,
-                    || {
-                        phys_alloc
-                            .alloc(1)
-                            .ok()
-                            .map(|id| id.addr())
-                            .inspect(|&addr| phys_to_virt(addr).ptr_mut::<u8>().write_bytes(0, PAGE_SIZE))
-                    },
+                    VFlags::GLOBAL | VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::EXECUTE_DISABLE,
                 )
                 .unwrap();
         }
@@ -328,24 +351,32 @@ unsafe extern "sysv64" fn setup_virtual_mapped(info: &'static BootInfo, regions:
         }
     }
 
-    unsafe { main() }
+    // Setup device tree, which includes waking up all AP and setting up interrupt handlers
+    // This calls the closure once for every CPU cores locally
+    unsafe { init_device_tree(info.device_tree, scratch_pages, main) }
 }
 
 /// # Safety
 /// - All [`statics`](elpytios_kernel::statics) must have been initialized prior to calling this
 ///   function.
-unsafe extern "sysv64" fn main() -> ! {
-    info!("Hello, world! Kernel is now in higher-half addressing!");
+/// - This function must be able to be run in parallel with itself on other threads
+fn main(core_count: u32) -> ! {
+    if CpuContext::get().is_bootstrap() {
+        info!("Hello, world! Kernel is now up and running on {core_count} logical processors!");
+    }
 
     {
         use elpytios_bootinfo::PixelFormat;
         use elpytios_kernel::statics::get_frame_buffer;
 
         let fbo = get_frame_buffer();
+        let fbo_div = fbo.height.div_ceil(core_count as usize);
+        let cpu_id = CpuContext::get().cpu_id() as usize;
+
         match fbo.format {
             fmt @ (PixelFormat::RGB_8_BIT | PixelFormat::BGR_8_BIT) => {
                 let invert_br = matches!(fmt, PixelFormat::BGR_8_BIT);
-                for y in 0..fbo.height {
+                for y in (cpu_id * fbo_div)..((cpu_id + 1) * fbo_div).min(fbo.height) {
                     for x in 0..fbo.width {
                         let fx = x as f32 / (fbo.width - 1) as f32;
                         let fy = y as f32 / (fbo.height - 1) as f32;

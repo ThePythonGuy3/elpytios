@@ -1,4 +1,6 @@
-use core::{arch::asm, fmt, hint::spin_loop};
+use core::{fmt, hint::spin_loop};
+
+use crate::arch::x86_64::{inb, outb};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u16)]
@@ -7,36 +9,6 @@ pub enum Com {
     Com2 = 0x2f8,
     Com3 = 0x3e8,
     Com4 = 0x2e8,
-}
-
-#[inline]
-unsafe fn outb(port: u16, value: u8) {
-    unsafe {
-        asm!(
-            "out dx, al",
-            in("dx") port,
-            in("al") value,
-
-            options(nomem, nostack, preserves_flags)
-        )
-    }
-}
-
-#[inline]
-unsafe fn inb(port: u16) -> u8 {
-    unsafe {
-        let value: u8;
-        asm!(
-            "in al, dx",
-
-            out("al") value,
-            in("dx") port,
-
-            options(nomem, nostack, preserves_flags),
-        );
-
-        value
-    }
 }
 
 pub unsafe fn serial_init(port: Com) {

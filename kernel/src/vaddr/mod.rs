@@ -54,7 +54,7 @@ impl fmt::Display for VirtualMapError {
                 p_addr,
                 v_addr,
                 p_addr_existing,
-            } => writeln!(
+            } => write!(
                 f,
                 "Couldn't map {v_addr:p} to {p_addr:p}: the virtual address is already mapped to {p_addr_existing:p}"
             ),

@@ -1,10 +1,17 @@
 use core::{
     arch::{asm, naked_asm},
+    hint::{cold_path, spin_loop},
     mem::size_of_val_raw,
+    sync::atomic::{
+        AtomicU8,
+        Ordering::{Acquire, Relaxed, Release},
+    },
 };
 
 use bitflags::bitflags;
 use bytemuck::Zeroable;
+
+use crate::allocator::{SlabAllocator, SlabId};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -27,9 +34,7 @@ impl GdtEntry {
 }
 
 pub unsafe fn init_gdt() {
-    /// # Safety
-    /// This *must* be a `static mut`, because the CPU writes the `ACCESSED` bit to it.
-    static mut GDT_ENTRIES: [GdtEntry; 3] = [GdtEntry::NULL, GdtEntry::KERNEL_CODE, GdtEntry::KERNEL_DATA];
+    static GDT_ALLOC: SlabAllocator<[GdtEntry; 3]> = SlabAllocator::new();
 
     #[repr(C, packed)]
     struct GdtPointer {
@@ -38,9 +43,10 @@ pub unsafe fn init_gdt() {
     }
 
     unsafe {
+        let entries = SlabId::leak(GDT_ALLOC.alloc([GdtEntry::NULL, GdtEntry::KERNEL_CODE, GdtEntry::KERNEL_DATA]));
         let ptr = GdtPointer {
-            limit: u16::try_from(size_of_val_raw(&raw const GDT_ENTRIES) - 1).unwrap(),
-            base: (&raw mut GDT_ENTRIES).cast(),
+            limit: u16::try_from(size_of_val(entries) - 1).unwrap(),
+            base: (&raw mut *entries).cast(),
         };
 
         asm!(
@@ -215,9 +221,31 @@ pub unsafe extern "sysv64" fn page_fault() -> ! {
 }
 
 /// # Safety
-/// Only call this once in setup phase after higher-half addressing is finished.
+/// Only call this once per CPU core in setup phase after higher-half addressing is finished.
 pub unsafe fn init_interrupts() {
     static mut IDT_ENTRIES: [IdtEntry; 256] = [bytemuck::zeroed(); 256];
+    static IDT_STATE: AtomicU8 = AtomicU8::new(UNINIT);
+
+    const UNINIT: u8 = 0;
+    const LOCKED: u8 = 1;
+    const INIT: u8 = 2;
+
+    loop {
+        match IDT_STATE.compare_exchange_weak(UNINIT, LOCKED, Acquire, Relaxed) {
+            Ok(..) => unsafe {
+                cold_path();
+                IDT_ENTRIES[IdtIndex::DoubleFault as usize] = IdtEntry::new(double_fault);
+                IDT_ENTRIES[IdtIndex::PageFault as usize] = IdtEntry::new(page_fault);
+
+                IDT_STATE.store(INIT, Release);
+            },
+            Err(INIT) => break,
+            Err(..) => {
+                cold_path();
+                spin_loop();
+            }
+        }
+    }
 
     #[repr(C, packed)]
     struct IdtPointer {
@@ -229,9 +257,6 @@ pub unsafe fn init_interrupts() {
         // Global descriptor table is x86-specific
         init_gdt();
 
-        IDT_ENTRIES[IdtIndex::DoubleFault as usize] = IdtEntry::new(double_fault);
-        IDT_ENTRIES[IdtIndex::PageFault as usize] = IdtEntry::new(page_fault);
-
         let ptr = IdtPointer {
             limit: u16::try_from(size_of_val_raw(&raw const IDT_ENTRIES) - 1).unwrap(),
             base: (&raw mut IDT_ENTRIES).cast(),
@@ -239,7 +264,6 @@ pub unsafe fn init_interrupts() {
 
         asm!(
             "lidt [{ptr}]",
-
             ptr = in(reg) &ptr,
         );
     }

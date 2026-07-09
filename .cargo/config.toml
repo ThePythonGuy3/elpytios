@@ -12,7 +12,6 @@ lto = "thin"
 
 [profile.bootloader_debug]
 inherits = "bootloader"
-opt-level = 0
 strip = "none"
 debug-assertions = true
 debug = "full"

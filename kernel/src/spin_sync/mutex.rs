@@ -6,6 +6,7 @@ use core::{
 };
 
 #[derive(Debug)]
+#[repr(C)]
 pub struct SpinMutex<T: ?Sized> {
     locked: AtomicBool,
     value: SyncUnsafeCell<T>,
@@ -39,11 +40,6 @@ impl<T: ?Sized> SpinMutex<T> {
     #[inline]
     pub fn get_mut(&mut self) -> &mut T {
         self.value.get_mut()
-    }
-
-    #[inline]
-    pub unsafe fn get_mut_unchecked(&self) -> &mut T {
-        unsafe { self.value.get().as_mut_unchecked() }
     }
 }
 
