@@ -75,38 +75,35 @@ impl fmt::Pointer for VAddr {
 }
 
 #[derive(Debug)]
-#[repr(C)]
-pub struct VirtualMapBuilder<T: FnMut() -> Option<PAddr>> {
-    map: VirtualMap<LocalMapper>,
-    new_page_table: T,
+#[repr(transparent)]
+pub struct VirtualMapBuilder<T: Fn() -> Option<PAddr>> {
+    map: VirtualMap<LocalMapper<T>>,
 }
 
-impl<T: FnMut() -> Option<PAddr>> VirtualMapBuilder<T> {
+impl<T: Fn() -> Option<PAddr>> VirtualMapBuilder<T> {
     /// # Safety
-    /// - `new_page_table` must return a [`PAGE_SIZE`](crate::PAGE_SIZE)-aligned physical address
-    ///   that is:
-    ///   - Completely zeroed out.
-    ///   - Completely free to be written to (nothing else "owns" it).
+    /// - `page_table_new` must return a [`PAGE_SIZE`]-aligned physical address that is completely
+    ///   free to be written to (nothing else "owns" it).
     /// - `page_table_phys` must be one such pointer that satisfies to be a return value of
-    ///   `new_page_table`
+    ///   `page_table_new`
     /// - `page_table_ptr` must convert physical addresses returned by `new_page_table` into a
     ///   pointer that points to a page table.
     #[inline]
-    pub const unsafe fn new(page_table_phys: PAddr, new_page_table: T, page_table_ptr: unsafe fn(PAddr) -> *mut ()) -> Self {
+    pub const unsafe fn new(page_table_phys: PAddr, page_table_new: T, page_table_ptr: unsafe fn(PAddr) -> *mut ()) -> Self {
         Self {
             map: VirtualMap {
                 mapper: LocalMapper {
                     page_table_phys,
+                    page_table_new,
                     page_table_ptr,
                 },
             },
-            new_page_table,
         }
     }
 
     #[inline]
     pub fn map(&mut self, p_addr: PAddr, v_addr: VAddr, page_count: usize, flags: VFlags) -> Result<(), VirtualMapError> {
-        unsafe { self.map.map(p_addr, v_addr, page_count, flags, &mut self.new_page_table) }
+        unsafe { self.map.map(p_addr, v_addr, page_count, flags) }
     }
 
     /// # Safety
@@ -121,12 +118,18 @@ impl<T: FnMut() -> Option<PAddr>> VirtualMapBuilder<T> {
 
 #[derive(Debug)]
 #[repr(C)]
-pub struct LocalMapper {
+pub struct LocalMapper<T: Fn() -> Option<PAddr>> {
     page_table_phys: PAddr,
+    page_table_new: T,
     page_table_ptr: unsafe fn(PAddr) -> *mut (),
 }
 
-unsafe impl sealed::VirtualMapper for LocalMapper {
+unsafe impl<T: Fn() -> Option<PAddr>> sealed::VirtualMapper for LocalMapper<T> {
+    #[inline]
+    fn new_page_table(&self) -> Option<PAddr> {
+        (self.page_table_new)().inspect(|&addr| unsafe { (self.page_table_ptr)(addr).cast::<u8>().write_bytes(0, PAGE_SIZE) })
+    }
+
     #[inline]
     unsafe fn pml4(&self) -> &mut Pml4Table {
         unsafe { (self.page_table_ptr)(self.page_table_phys).cast::<Pml4Table>().as_mut_unchecked() }
@@ -175,20 +178,9 @@ pub struct VirtualMap<T: sealed::VirtualMapper = sealed::OffsetMapper> {
 
 impl<T: sealed::VirtualMapper> VirtualMap<T> {
     /// # Safety
-    /// - `new_page_table` must return a [`PAGE_SIZE`](crate::PAGE_SIZE)-aligned physical address
-    ///   that is:
-    ///   - Completely zeroed out.
-    ///   - Completely free to be written to (nothing else "owns" it).
-    /// - There must never be concurrent (multithreaded) calls to this method that have the same
-    ///   virtual page occupied by `v_addr`.
-    pub unsafe fn map(
-        &self,
-        mut p_addr: PAddr,
-        mut v_addr: VAddr,
-        mut page_count: usize,
-        flags: VFlags,
-        mut new_page_table: impl FnMut() -> Option<PAddr>,
-    ) -> Result<(), VirtualMapError> {
+    /// There must never be concurrent (multithreaded) calls to this method that have the same
+    /// virtual page occupied by `v_addr`.
+    pub unsafe fn map(&self, mut p_addr: PAddr, mut v_addr: VAddr, mut page_count: usize, flags: VFlags) -> Result<(), VirtualMapError> {
         while page_count > 0 {
             let VAddrInfo {
                 pt_index,
@@ -200,7 +192,7 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
 
             unsafe {
                 match &mut self.mapper.pml4().pml4_to_pdpt[pml4_index] {
-                    e if !e.is_present() => *e = NodeEntry::new(Entry::WRITABLE, new_page_table().ok_or(VirtualMapError::PageTable)?),
+                    e if !e.is_present() => *e = NodeEntry::new(Entry::WRITABLE, self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?),
                     _ => {}
                 }
 
@@ -213,7 +205,10 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
                             page_count -= 512 * 512;
                             continue
                         } else {
-                            *e = PdptEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table().ok_or(VirtualMapError::PageTable)?))
+                            *e = PdptEntry::node(NodeEntry::new(
+                                Entry::WRITABLE,
+                                self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
+                            ))
                         }
                     }
                     e if let UnionEntry::Leaf(e) = e.kind() => {
@@ -235,7 +230,10 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
                             page_count -= 512;
                             continue
                         } else {
-                            *e = PdEntry::node(NodeEntry::new(Entry::WRITABLE, new_page_table().ok_or(VirtualMapError::PageTable)?))
+                            *e = PdEntry::node(NodeEntry::new(
+                                Entry::WRITABLE,
+                                self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
+                            ))
                         }
                     }
                     e if let UnionEntry::Leaf(e) = e.kind() => {
@@ -275,9 +273,12 @@ mod sealed {
     use core::hint::unreachable_unchecked;
 
     use super::*;
+    use crate::statics::get_phys_alloc;
 
     #[allow(unused_variables, reason = "Available for implementors, not defaults")]
     pub unsafe trait VirtualMapper {
+        fn new_page_table(&self) -> Option<PAddr>;
+
         unsafe fn pml4(&self) -> &mut Pml4Table;
 
         /// # Safety
@@ -309,6 +310,15 @@ mod sealed {
     }
 
     unsafe impl VirtualMapper for OffsetMapper {
+        #[inline]
+        fn new_page_table(&self) -> Option<PAddr> {
+            get_phys_alloc()
+                .lock()
+                .alloc(0)
+                .ok()
+                .inspect(|&addr| unsafe { phys_to_virt(addr).ptr_mut::<u8>().write_bytes(0, PAGE_SIZE) })
+        }
+
         #[inline]
         unsafe fn pml4(&self) -> &mut Pml4Table {
             unsafe { self.pml4.as_mut_unchecked() }

@@ -5,6 +5,7 @@
 
 use core::{
     arch::{asm, naked_asm},
+    cell::RefCell,
     fmt::Write,
     iter::once,
     panic::PanicInfo,
@@ -18,7 +19,7 @@ use elpytios_kernel::{
     device_tree::init_device_tree,
     framebuffer::FrameBuffer,
     serial::{Com, Serial, serial_init},
-    statics::{get_phys_alloc, get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
+    statics::{get_virtual_map, phys_to_virt, set_direct_map_offset, set_frame_buffer, set_phys_alloc, set_virtual_map},
     vaddr::{VAddr, VFlags, VirtualMapBuilder},
 };
 use log::{debug, error, info};
@@ -102,7 +103,7 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
     // Notes:
     // - `log` mustn't be setup here; wait until symbols are relocated
 
-    let mut regions = MemoryRegions::new(&info.memory_regions);
+    let regions = RefCell::new(MemoryRegions::new(&info.memory_regions));
     let mut scratch_pages = ScratchPages { pages: &info.scratch_pages };
 
     let kernel_base = info
@@ -119,13 +120,7 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
 
     let page_table_phys = scratch_pages.take().expect("Not enough scratch pages for page table");
     let setup_virtual_mapped = {
-        let mut v_map = unsafe {
-            VirtualMapBuilder::new(
-                page_table_phys,
-                || regions.take_head().inspect(|addr| (addr.addr() as *mut u8).write_bytes(0, PAGE_SIZE)),
-                |p_addr| p_addr.addr() as *mut (),
-            )
-        };
+        let mut v_map = unsafe { VirtualMapBuilder::new(page_table_phys, || regions.borrow_mut().take_head(), |p_addr| p_addr.addr() as *mut ()) };
 
         let mut direct_map_offset = usize::MIN;
         for map in &info.identity_maps {
@@ -202,7 +197,7 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
             v_slide = in(reg) v_slide,
             setup_virtual_mapped = in(reg) setup_virtual_mapped,
             in("rdi") (info as *const BootInfo).byte_add(v_slide).as_ref_unchecked(),
-            in("rsi") &regions,
+            in("rsi") &regions.into_inner(),
             in("rdx") &mut scratch_pages,
             in("rcx") kernel_base.addr(),
 
@@ -329,8 +324,6 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
     // Virtual-map the framebuffer
     {
         let v_map = get_virtual_map();
-        let phys_alloc = &mut *get_phys_alloc().lock();
-
         let fb_phys = info.graphics_info.frame_buffer.addr();
         let fb_size = info.graphics_info.frame_buffer_size;
 
@@ -346,12 +339,6 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
                     phys_to_virt(p_addr),
                     fb_page_count,
                     VFlags::GLOBAL | VFlags::WRITABLE | VFlags::WRITE_THROUGH,
-                    || {
-                        phys_alloc
-                            .alloc(0)
-                            .ok()
-                            .inspect(|&addr| phys_to_virt(addr).ptr_mut::<u8>().write_bytes(0, PAGE_SIZE))
-                    },
                 )
                 .unwrap();
         }

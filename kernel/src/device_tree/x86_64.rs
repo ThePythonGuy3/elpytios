@@ -88,14 +88,6 @@ impl ApicDriver {
 }
 
 pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scratch_pages: &mut ScratchPages, processor_entry: F, madt: Madt) -> ! {
-    fn new_page_table() -> Option<PAddr> {
-        get_phys_alloc()
-            .lock()
-            .alloc(0)
-            .ok()
-            .inspect(|&addr| unsafe { phys_to_virt(addr).ptr_mut::<u8>().write_bytes(0, PAGE_SIZE) })
-    }
-
     unsafe {
         init_interrupts();
         let v_map = get_virtual_map();
@@ -116,7 +108,6 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
                     mmr,
                     1,
                     VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::CACHE_DISABLED | VFlags::EXECUTE_DISABLE,
-                    new_page_table,
                 )
                 .expect("Couldn't virtual-map xAPIC MMR");
             ApicDriver::XApic { mmr: mmr.ptr_mut::<u32>() }
@@ -125,10 +116,10 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
         let trampoline_phys = scratch_pages.take().expect("Not enough scratch pages for AP trampoline entry");
         let trampoline = phys_to_virt(trampoline_phys);
         v_map
-            .map(trampoline_phys, VAddr::new(trampoline_phys.addr()), 1, VFlags::empty(), new_page_table)
+            .map(trampoline_phys, VAddr::new(trampoline_phys.addr()), 1, VFlags::empty())
             .expect("Couldn't identity-map trampoline code");
         v_map
-            .map(trampoline_phys, trampoline, 1, VFlags::WRITABLE | VFlags::EXECUTE_DISABLE, new_page_table)
+            .map(trampoline_phys, trampoline, 1, VFlags::WRITABLE | VFlags::EXECUTE_DISABLE)
             .expect("Couldn't virtual-map trampoline code");
         let trampoline = trampoline.ptr_mut::<u8>();
         let trampoline_len = (&raw const __ap_trampoline_end).offset_from_unsigned(&raw const __ap_trampoline_start);
