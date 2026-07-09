@@ -26,3 +26,6 @@ rustflags = [
     "-C",
     "linker-flavor=ld.lld",
 ]
+
+[target.x86_64-unknown-elpytios]
+rustflags = ["-Z", "codegen-backend=llvm", "-C", "link-arg=-Map=linker.map"]

@@ -1,8 +1,8 @@
 mod alloc;
 mod configure_builtins;
 mod helpers;
-mod pal;
 mod personality;
+mod startup;
 
 pub mod args;
 pub mod backtrace;
@@ -26,7 +26,7 @@ pub mod thread;
 pub mod thread_local;
 pub mod time;
 
-pub use pal::*;
+pub use startup::*;
 
 /// A trait for viewing representations from std types.
 #[cfg_attr(not(target_os = "linux"), allow(unused))]
