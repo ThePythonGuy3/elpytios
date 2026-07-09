@@ -296,7 +296,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
             info.memory_regions.len()
         );
 
-        let mut phys_alloc = PhysicalPageAllocator::new();
+        let mut phys_alloc = unsafe { PhysicalPageAllocator::new() };
         for MemoryRegion { mut base, mut pages } in regions.available.iter().copied().chain(once(regions.head)) {
             while pages > 1 {
                 let mut taken_pages = pages;
@@ -321,6 +321,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
             }
         }
 
+        phys_alloc.sort_tree();
         info!("Initialized physical page allocator with {} trees", phys_alloc.tree_count());
         unsafe { set_phys_alloc(phys_alloc) }
     }

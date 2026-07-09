@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use core::{
+    hint::cold_path,
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
+};
 
 use arrayvec::ArrayVec;
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
@@ -11,8 +14,10 @@ pub struct PhysicalPageAllocator {
 }
 
 impl PhysicalPageAllocator {
+    /// # Safety
+    /// [`Self::sort_tree`] must be called before allocating.
     #[inline]
-    pub fn new() -> PhysicalPageAllocator {
+    pub unsafe fn new() -> PhysicalPageAllocator {
         static CREATED: AtomicBool = AtomicBool::new(false);
 
         if CREATED.swap(true, Relaxed) {
@@ -34,18 +39,47 @@ impl PhysicalPageAllocator {
         self.trees.push(Entry { base, tree });
     }
 
+    #[inline]
+    pub fn sort_tree(&mut self) {
+        self.trees.sort_unstable_by_key(|e| e.base);
+    }
+
     pub fn alloc(&mut self, order: u32) -> Result<PAddr, TreeAllocError> {
         let mut last_error = TreeAllocError::InsufficientSpace { requested_order: order };
         for &Entry { base, tree } in &self.trees {
             let tree = unsafe { tree.as_mut_unchecked() };
             match tree.alloc(order) {
                 Ok(index) => return Ok(base.byte_add(index as usize * PAGE_SIZE)),
-                Err(e @ TreeAllocError::Zero) => return Err(e),
                 Err(e @ TreeAllocError::InsufficientSpace { .. }) => last_error = e,
             }
         }
 
         Err(last_error)
+    }
+
+    pub unsafe fn dealloc(&mut self, addr: PAddr, order: u32) {
+        let tree_index = match self.trees.binary_search_by_key(&addr, |e| e.base) {
+            Ok(i) => i,
+            Err(i) => match i.checked_sub(1) {
+                Some(i) => i,
+                None => {
+                    cold_path();
+                    panic!("`PhysicalPageAllocator` has absolutely no trees");
+                }
+            },
+        };
+
+        unsafe {
+            let &Entry { base, tree } = self.trees.get_unchecked(tree_index);
+            let tree = tree.as_mut_unchecked();
+            let index = u32::try_from((addr.addr() - base.addr()) / PAGE_SIZE).unwrap_unchecked();
+
+            // `dealloc` *may* be called for pages that didn't originally come with this allocator
+            // But in the case that it does, callers must ensure the safety invariants
+            if index < tree.node_count() {
+                tree.dealloc(index, order);
+            }
+        }
     }
 }
 

@@ -79,7 +79,7 @@ const KERNEL_VIRTUAL_ADDRESSES: [usize; 2] = {
 
     match (usize::try_from(min), usize::try_from(max)) {
         (Ok(min), Ok(max)) => [
-            if min % PAGE_SIZE == 0 {
+            if min.is_multiple_of(PAGE_SIZE) {
                 min
             } else {
                 concat_panic!("Virtual address base (", min, ") isn't aligned to ", PAGE_SIZE)
