@@ -34,9 +34,8 @@ fn panic_handler(info: &PanicInfo) -> ! {
 #[unsafe(export_name = "_start")] // Tell the linker that this is our entry point
 unsafe extern "sysv64" fn jump_from_bootloader(info: &'static BootInfo) -> ! {
     naked_asm!(
-        // Clear interrupt handlers and global descriptor table, will be reinitialized by `setup_virtual_mapped()`
+        // Clear interrupt handlers, will be reinitialized by `setup_virtual_mapped()`
         "cli",
-        "cld",
         "jmp {setup_identity_mapped}",
 
         setup_identity_mapped = sym setup_identity_mapped,
