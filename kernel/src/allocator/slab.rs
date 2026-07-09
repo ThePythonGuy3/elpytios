@@ -1,6 +1,6 @@
 use core::{
     marker::PhantomData,
-    mem::{ManuallyDrop, MaybeUninit},
+    mem::{self, ManuallyDrop, MaybeUninit},
     num::NonZeroU16,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
@@ -13,19 +13,31 @@ use crate::{
     statics::{get_phys_alloc, phys_to_virt},
 };
 
+#[repr(C)]
 pub struct SlabAllocator<T> {
     slots: SpinMutex<Option<[NonNull<Slab<T>>; 2]>>,
 }
 
 unsafe impl<T> Sync for SlabAllocator<T> {}
-
 impl<T> SlabAllocator<T> {
     #[inline]
     pub const fn new() -> Self {
         Self { slots: SpinMutex::new(None) }
     }
 
-    pub fn alloc(&self, mut item: T) -> SlabId<'_, T> {
+    #[inline]
+    fn as_uninit(&self) -> &SlabAllocator<MaybeUninit<T>> {
+        unsafe { mem::transmute(self) }
+    }
+
+    #[inline]
+    pub fn alloc(&self, item: T) -> SlabId<'_, T> {
+        let mut slab = self.alloc_uninit();
+        slab.write(item);
+        unsafe { SlabId::assume_init(slab) }
+    }
+
+    pub fn alloc_uninit(&self) -> SlabId<'_, MaybeUninit<T>> {
         let mut slots = self.slots.lock();
         let [free, ..] = slots.get_or_insert_with(|| {
             let slot = Slab::new();
@@ -33,19 +45,16 @@ impl<T> SlabAllocator<T> {
         });
 
         let ptr = loop {
-            match unsafe { free.as_mut() }.alloc(item) {
+            match unsafe { free.as_mut() }.alloc() {
                 Ok(ptr) => break ptr,
-                Err((next_item, next_free)) => {
-                    item = next_item;
-                    *free = next_free
-                }
+                Err(next_free) => *free = next_free,
             }
         };
 
         SlabId {
-            alloc: self,
-            slot: *free,
-            ptr,
+            alloc: self.as_uninit(),
+            slot: free.cast(),
+            ptr: ptr.cast(),
         }
     }
 
@@ -58,6 +67,14 @@ impl<T> SlabAllocator<T> {
     }
 }
 
+impl<T> SlabAllocator<MaybeUninit<T>> {
+    #[inline]
+    fn assume_init(&self) -> &SlabAllocator<T> {
+        unsafe { mem::transmute(self) }
+    }
+}
+
+#[repr(C)]
 pub struct SlabId<'a, T> {
     alloc: &'a SlabAllocator<T>,
     slot: NonNull<Slab<T>>,
@@ -79,6 +96,18 @@ impl<'a, T> SlabId<'a, T> {
     pub fn leak(this: Self) -> &'a mut T {
         let mut this = ManuallyDrop::new(this);
         unsafe { this.ptr.as_mut() }
+    }
+}
+
+impl<'a, T> SlabId<'a, MaybeUninit<T>> {
+    #[inline]
+    pub unsafe fn assume_init(this: Self) -> SlabId<'a, T> {
+        let this = ManuallyDrop::new(this);
+        SlabId {
+            alloc: this.alloc.assume_init(),
+            slot: this.slot.cast(),
+            ptr: this.ptr.cast(),
+        }
     }
 }
 
@@ -143,24 +172,20 @@ impl<T> Slab<T> {
         unsafe { (self.cast(), self.byte_add(Self::LEN * size_of::<Slot<T>>()).cast()) }
     }
 
-    fn alloc(&mut self, item: T) -> Result<NonNull<T>, (T, NonNull<Self>)> {
+    fn alloc(&mut self) -> Result<NonNull<T>, NonNull<Self>> {
         unsafe {
             let (entries, meta) = (&raw mut *self).fields();
             let meta = meta.as_mut_unchecked();
             match meta {
-                SlabMeta::Full { next_slot } => Err((item, *next_slot)),
+                SlabMeta::Full { next_slot } => Err(*next_slot),
                 SlabMeta::Available { free } => Ok({
                     let out = entries.add(*free as usize);
-                    match ptr::replace(out, Slot {
-                        taken: ManuallyDrop::new(item),
-                    })
-                    .free
-                    {
+                    match (*out).free {
                         Some(next_free) => *free = next_free.get(),
                         None => *meta = SlabMeta::Full { next_slot: Self::new() },
                     }
 
-                    NonNull::new_unchecked(out.cast())
+                    NonNull::new_unchecked(&raw mut (*out).taken as *mut T)
                 }),
             }
         }

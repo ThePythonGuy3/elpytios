@@ -6,6 +6,7 @@ use core::{
 };
 
 #[derive(Debug)]
+#[repr(C)]
 pub struct SpinMutex<T: ?Sized> {
     locked: AtomicBool,
     value: SyncUnsafeCell<T>,
