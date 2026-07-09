@@ -122,7 +122,7 @@ impl CpuContext {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn get() -> &'static Self {
         let ptr: *const Self;
         unsafe {
@@ -130,7 +130,7 @@ impl CpuContext {
                 "mov {}, gs:[0]",
 
                 out(reg) ptr,
-                options(nomem, nostack, preserves_flags),
+                options(pure, nomem, nostack, preserves_flags),
             );
             ptr.as_ref_unchecked()
         }

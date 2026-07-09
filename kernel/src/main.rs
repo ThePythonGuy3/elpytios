@@ -364,16 +364,21 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
 /// - This function must be able to be run in parallel with itself on other threads
 fn main(core_count: u32) -> ! {
     if CpuContext::get().is_bootstrap() {
+        info!("Hello, world! Kernel is now up and running on {core_count} logical processors!");
+    }
+
+    {
         use elpytios_bootinfo::PixelFormat;
         use elpytios_kernel::statics::get_frame_buffer;
 
-        info!("Hello, world! Kernel is now up and running on {core_count} logical processors!");
-
         let fbo = get_frame_buffer();
+        let fbo_div = fbo.height.div_ceil(core_count as usize);
+        let cpu_id = CpuContext::get().cpu_id() as usize;
+
         match fbo.format {
             fmt @ (PixelFormat::RGB_8_BIT | PixelFormat::BGR_8_BIT) => {
                 let invert_br = matches!(fmt, PixelFormat::BGR_8_BIT);
-                for y in 0..fbo.height {
+                for y in (cpu_id * fbo_div)..((cpu_id + 1) * fbo_div).min(fbo.height) {
                     for x in 0..fbo.width {
                         let fx = x as f32 / (fbo.width - 1) as f32;
                         let fy = y as f32 / (fbo.height - 1) as f32;
