@@ -52,6 +52,20 @@ impl VAddr {
     }
 }
 
+impl<T> From<*const T> for VAddr {
+    #[inline]
+    fn from(value: *const T) -> Self {
+        Self(value as usize)
+    }
+}
+
+impl<T> From<*mut T> for VAddr {
+    #[inline]
+    fn from(value: *mut T) -> Self {
+        Self(value as usize)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Zeroable)]
 #[repr(C)]
 pub(crate) struct VAddrInfo {

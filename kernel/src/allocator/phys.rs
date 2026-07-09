@@ -57,6 +57,9 @@ impl PhysicalPageAllocator {
         Err(last_error)
     }
 
+    /// # Safety
+    /// - `addr` must have been obtained through [`Self::alloc`].
+    /// - `order` must be the same value passed through the same [`Self::alloc`] invocation.
     pub unsafe fn dealloc(&mut self, addr: PAddr, order: u32) {
         let tree_index = match self.trees.binary_search_by_key(&addr, |e| e.base) {
             Ok(i) => i,
@@ -75,7 +78,7 @@ impl PhysicalPageAllocator {
             let index = u32::try_from((addr.addr() - base.addr()) / PAGE_SIZE).unwrap_unchecked();
 
             // `dealloc` *may* be called for pages that didn't originally come with this allocator
-            // But in the case that it does, callers must ensure the safety invariants
+            // But in the case that they do, callers must ensure the safety invariants
             if index < tree.node_count() {
                 tree.dealloc(index, order);
             }

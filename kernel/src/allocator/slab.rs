@@ -10,7 +10,8 @@ use elpytios_bootinfo::PAGE_SIZE;
 
 use crate::{
     spin_sync::SpinMutex,
-    statics::{get_phys_alloc, phys_to_virt},
+    statics::{get_phys_alloc, phys_to_virt, virt_to_phys},
+    vaddr::VAddr,
 };
 
 #[repr(C)]
@@ -74,8 +75,55 @@ impl<T> SlabAllocator<MaybeUninit<T>> {
     }
 }
 
+impl<T> Drop for SlabAllocator<T> {
+    fn drop(&mut self) {
+        let Some([.., mut slot]) = self.slots.get_mut().take() else { return };
+        loop {
+            unsafe {
+                let (entries, meta) = slot.as_ptr().fields();
+                match *meta {
+                    SlabMeta::Full { next_slot } => {
+                        for i in 0..Slab::<T>::LEN {
+                            ManuallyDrop::drop(&mut (*entries.add(i)).taken)
+                        }
+
+                        get_phys_alloc().lock().dealloc(virt_to_phys(VAddr::from(slot.as_ptr())), 0);
+                        slot = next_slot;
+                    }
+                    SlabMeta::Available { mut free } => {
+                        // Since `generic_const_exprs` is a million years away, pessimistically assume `Slot<T>` is at least
+                        // 2 bytes (which is the size of the union's `free` field)
+                        let mut mask = [1u64; (PAGE_SIZE / size_of::<u16>()).div_ceil(u64::BITS as usize)];
+                        loop {
+                            let block_index = free as usize / u64::BITS as usize;
+                            let block_bit = 1 << (free as usize & (u64::BITS - 1) as usize);
+                            mask[block_index] &= !block_bit;
+
+                            match (*entries.add(free as usize)).free {
+                                Some(next_free) => free = next_free.get(),
+                                None => break,
+                            }
+                        }
+
+                        for i in 0..Slab::<T>::LEN {
+                            let block_index = i / u64::BITS as usize;
+                            let block_bit = 1 << (i & (u64::BITS - 1) as usize);
+                            if mask[block_index] & block_bit != 0 {
+                                ManuallyDrop::drop(&mut (*entries.add(i)).taken);
+                            }
+                        }
+
+                        get_phys_alloc().lock().dealloc(virt_to_phys(VAddr::from(slot.as_ptr())), 0);
+                        break
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[repr(C)]
-pub struct SlabId<'a, T> {
+pub struct SlabId<'a, T: 'a> {
     alloc: &'a SlabAllocator<T>,
     slot: NonNull<Slab<T>>,
     ptr: NonNull<T>,

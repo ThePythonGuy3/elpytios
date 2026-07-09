@@ -94,7 +94,20 @@ pub mod statics {
 
     #[inline]
     pub fn phys_to_virt(p_addr: PAddr) -> VAddr {
-        VAddr::new(p_addr.addr() + unsafe { (&raw const DIRECT_MAP_OFFSET as *const usize).read() })
+        VAddr::new(
+            p_addr
+                .addr()
+                .wrapping_add(unsafe { (&raw const DIRECT_MAP_OFFSET as *const usize).read() }),
+        )
+    }
+
+    #[inline]
+    pub fn virt_to_phys(v_addr: VAddr) -> PAddr {
+        PAddr::new(
+            v_addr
+                .addr()
+                .wrapping_sub(unsafe { (&raw const DIRECT_MAP_OFFSET as *const usize).read() }),
+        )
     }
 
     #[inline]
