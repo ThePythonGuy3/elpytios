@@ -12,7 +12,7 @@ use crate::allocator::AllocBitset;
 #[derive(Clone, Copy)]
 pub enum TreeAllocError {
     Zero,
-    InsufficientSpace { requested: usize },
+    InsufficientSpace { requested_order: u32 },
 }
 
 impl fmt::Debug for TreeAllocError {
@@ -25,7 +25,7 @@ impl fmt::Display for TreeAllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Zero => write!(f, "Can't create a zero-sized allocation"),
-            Self::InsufficientSpace { requested } => write!(f, "Tree can no longer contain allocation of size {requested}"),
+            Self::InsufficientSpace { requested_order } => write!(f, "Tree can no longer contain allocation of size 2^{requested_order}"),
         }
     }
 }
@@ -96,14 +96,12 @@ impl AllocTree {
         }
     }
 
-    /// # Notes
-    /// - This will round allocations up to the next power of two, so it's best to use power of twos
-    ///   directly.
-    pub fn alloc(&mut self, size: usize) -> Result<TreeAllocId, TreeAllocError> {
-        if size == 0 {
-            return Err(TreeAllocError::Zero)
-        }
+    #[inline]
+    pub fn node_count(&self) -> u32 {
+        1 << self.max_order
+    }
 
+    pub fn alloc(&mut self, order: u32) -> Result<u32, TreeAllocError> {
         let AllocTreeFields {
             max_order,
             free_lists,
@@ -111,9 +109,8 @@ impl AllocTree {
             split_bitset,
         } = self.fields();
 
-        let order = usize::BITS - (size - 1).leading_zeros();
         if order > max_order {
-            return Err(TreeAllocError::InsufficientSpace { requested: size })
+            return Err(TreeAllocError::InsufficientSpace { requested_order: order })
         }
 
         let mut current = None;
@@ -129,7 +126,9 @@ impl AllocTree {
             }
         }
 
-        let Some((index, mut current_order)) = current else { return Err(TreeAllocError::InsufficientSpace { requested: size }) };
+        let Some((index, mut current_order)) = current else {
+            return Err(TreeAllocError::InsufficientSpace { requested_order: order })
+        };
         while current_order > order {
             let next_order = current_order - 1;
 
@@ -146,7 +145,7 @@ impl AllocTree {
             current_order = next_order;
         }
 
-        Ok(TreeAllocId { index, order: current_order })
+        Ok(index)
     }
 
     pub const fn layout(count: usize) -> Result<AllocTreeLayout, LayoutError> {
@@ -179,24 +178,6 @@ impl AllocTree {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct TreeAllocId {
-    index: u32,
-    order: u32,
-}
-
-impl TreeAllocId {
-    #[inline]
-    pub const fn index(&self) -> u32 {
-        self.index
-    }
-
-    #[inline]
-    pub const fn order(&self) -> u32 {
-        self.order
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
 pub struct AllocTreeLayout {
     layout: Layout,
     // ..while the offsets here are absolute.
@@ -223,7 +204,7 @@ impl AllocTreeLayout {
     }
 }
 
-// Safety notes: The repr and align must be the same as `FreeListHead`.
+// Safety notes: The repr and align must be the same as `ListHead`.
 #[repr(C, align(4))]
 struct AllocTreeData([MaybeUninit<u8>]);
 

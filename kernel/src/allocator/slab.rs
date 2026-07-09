@@ -9,7 +9,6 @@ use core::{
 use elpytios_bootinfo::PAGE_SIZE;
 
 use crate::{
-    allocator::AllocId,
     spin_sync::SpinMutex,
     statics::{get_phys_alloc, phys_to_virt},
 };
@@ -123,14 +122,11 @@ impl<T> Slab<T> {
     };
 
     fn new() -> NonNull<Self> {
-        let id = get_phys_alloc().lock().alloc(1).expect("Couldn't allocate a page for slot allocator");
+        let addr = get_phys_alloc().lock().alloc(0).expect("Couldn't allocate a page for slot allocator");
         unsafe {
-            let ptr = phys_to_virt(id.addr()).ptr_mut::<Self>();
+            let ptr = phys_to_virt(addr).ptr_mut::<Self>();
             let (entries, meta) = ptr.fields();
-            meta.write(SlabMeta {
-                id,
-                len: SlabLen::Available { free: 0 },
-            });
+            meta.write(SlabMeta::Available { free: 0 });
 
             for i in 0..Self::LEN {
                 entries.add(i).write(Slot {
@@ -150,9 +146,10 @@ impl<T> Slab<T> {
     fn alloc(&mut self, item: T) -> Result<NonNull<T>, (T, NonNull<Self>)> {
         unsafe {
             let (entries, meta) = (&raw mut *self).fields();
-            match &mut (*meta).len {
-                SlabLen::Full { next_slot } => Err((item, *next_slot)),
-                SlabLen::Available { free } => Ok({
+            let meta = meta.as_mut_unchecked();
+            match meta {
+                SlabMeta::Full { next_slot } => Err((item, *next_slot)),
+                SlabMeta::Available { free } => Ok({
                     let out = entries.add(*free as usize);
                     match ptr::replace(out, Slot {
                         taken: ManuallyDrop::new(item),
@@ -160,7 +157,7 @@ impl<T> Slab<T> {
                     .free
                     {
                         Some(next_free) => *free = next_free.get(),
-                        None => (*meta).len = SlabLen::Full { next_slot: Self::new() },
+                        None => *meta = SlabMeta::Full { next_slot: Self::new() },
                     }
 
                     NonNull::new_unchecked(out.cast())
@@ -172,15 +169,16 @@ impl<T> Slab<T> {
     unsafe fn dealloc(&mut self, ptr: NonNull<T>) {
         unsafe {
             let (entries, meta) = (&raw mut *self).fields();
+            let meta = meta.as_mut_unchecked();
             let ptr = ptr.as_ptr().cast::<Slot<T>>();
 
             let index = ptr.offset_from_unsigned(entries) as u16;
-            match &mut (*meta).len {
-                SlabLen::Full { .. } => {
+            match meta {
+                SlabMeta::Full { .. } => {
                     ptr.write(Slot { free: None });
-                    (*meta).len = SlabLen::Available { free: index };
+                    *meta = SlabMeta::Available { free: index };
                 }
-                SlabLen::Available { free } => {
+                SlabMeta::Available { free } => {
                     // `free` must be the lowest index
                     let free_ptr = entries.add(*free as usize);
                     if *free < index {
@@ -204,12 +202,7 @@ impl<T> Slab<T> {
 }
 
 #[repr(C)]
-struct SlabMeta<T> {
-    id: AllocId,
-    len: SlabLen<T>,
-}
-
-enum SlabLen<T> {
+enum SlabMeta<T> {
     Full { next_slot: NonNull<Slab<T>> },
     Available { free: u16 },
 }

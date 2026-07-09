@@ -91,9 +91,8 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
     fn new_page_table() -> Option<PAddr> {
         get_phys_alloc()
             .lock()
-            .alloc(1)
+            .alloc(0)
             .ok()
-            .map(|id| id.addr())
             .inspect(|&addr| unsafe { phys_to_virt(addr).ptr_mut::<u8>().write_bytes(0, PAGE_SIZE) })
     }
 
@@ -133,6 +132,11 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
             .expect("Couldn't virtual-map trampoline code");
         let trampoline = trampoline.ptr_mut::<u8>();
         let trampoline_len = (&raw const __ap_trampoline_end).offset_from_unsigned(&raw const __ap_trampoline_start);
+        assert!(
+            trampoline_len <= PAGE_SIZE,
+            "AP entry trampoline size {trampoline_len} is bigger than {PAGE_SIZE}"
+        );
+
         trampoline.copy_from_nonoverlapping(&raw const __ap_trampoline_start, trampoline_len);
         trampoline
             .add((&raw const __ap_cr3).offset_from_unsigned(&raw const __ap_trampoline_start))
@@ -182,8 +186,13 @@ pub unsafe fn init_device_tree<F: FnOnce(usize, bool) -> ! + Clone + Send>(scrat
         let mut cpu_count = 1;
         let mut init_cpu = |id: u32| {
             if bsp_id != id {
-                let stack = get_phys_alloc().lock().alloc(16).expect("Couldn't allocate stack for AP core");
-                let stack_top = phys_to_virt(stack.addr()).byte_add(stack.byte_len()).addr() as u64;
+                const STACK_PAGES: usize = 16;
+
+                let stack = get_phys_alloc()
+                    .lock()
+                    .alloc(STACK_PAGES.ilog2())
+                    .expect("Couldn't allocate stack for AP core");
+                let stack_top = phys_to_virt(stack).byte_add(STACK_PAGES * PAGE_SIZE).addr() as u64;
                 let processor_entry = ManuallyDrop::new(processor_entry.clone());
 
                 trampoline

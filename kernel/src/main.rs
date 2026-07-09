@@ -347,9 +347,8 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
                     VFlags::GLOBAL | VFlags::WRITABLE | VFlags::WRITE_THROUGH,
                     || {
                         phys_alloc
-                            .alloc(1)
+                            .alloc(0)
                             .ok()
-                            .map(|id| id.addr())
                             .inspect(|&addr| phys_to_virt(addr).ptr_mut::<u8>().write_bytes(0, PAGE_SIZE))
                     },
                 )
