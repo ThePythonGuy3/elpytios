@@ -123,11 +123,9 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
 
         let mut direct_map_offset = usize::MIN;
         for map in &info.identity_maps {
-            let mut flags = VFlags::empty();
+            let mut flags = VFlags::GLOBAL;
             if map.flags.contains(IdentityMapFlags::WRITABLE) {
                 flags |= VFlags::WRITABLE;
-            } else {
-                flags |= VFlags::GLOBAL;
             }
             if !map.flags.contains(IdentityMapFlags::EXECUTABLE) {
                 flags |= VFlags::EXECUTE_DISABLE;
@@ -153,7 +151,7 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
                 page_table_phys,
                 VAddr::new(page_table_phys.addr() + direct_map_offset),
                 1,
-                VFlags::WRITABLE,
+                VFlags::GLOBAL | VFlags::WRITABLE | VFlags::EXECUTE_DISABLE,
             )
             .unwrap();
 
@@ -163,7 +161,7 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
                     region.base,
                     VAddr::new(region.base.addr() + direct_map_offset),
                     region.pages,
-                    VFlags::WRITABLE,
+                    VFlags::GLOBAL | VFlags::WRITABLE | VFlags::EXECUTE_DISABLE,
                 )
                 .unwrap();
         }
@@ -337,7 +335,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
                     p_addr,
                     phys_to_virt(p_addr),
                     fb_page_count,
-                    VFlags::GLOBAL | VFlags::WRITABLE | VFlags::WRITE_THROUGH,
+                    VFlags::GLOBAL | VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::EXECUTE_DISABLE,
                 )
                 .unwrap();
         }

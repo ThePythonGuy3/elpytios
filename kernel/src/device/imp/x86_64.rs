@@ -172,7 +172,7 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
                     mmr_phys,
                     mmr,
                     1,
-                    VFlags::WRITABLE | VFlags::WRITE_THROUGH | VFlags::CACHE_DISABLED | VFlags::EXECUTE_DISABLE,
+                    VFlags::GLOBAL | VFlags::WRITABLE | VFlags::CACHE_DISABLED | VFlags::EXECUTE_DISABLE,
                 )
                 .expect("Couldn't virtual-map xAPIC MMR");
 
