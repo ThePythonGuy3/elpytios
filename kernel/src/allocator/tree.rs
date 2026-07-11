@@ -71,7 +71,7 @@ impl AllocTree {
             (&raw mut (*this).data.0)
                 .as_mut_ptr()
                 .add(layout.split_bitset_offset_abs - layout.free_nodes_offset_abs)
-                .cast::<u32>()
+                .cast::<u64>()
                 .write_bytes(0, AllocBitset::size_for((1 << layout.max_order) - 1));
         }
 
@@ -238,7 +238,7 @@ impl AllocTree {
         // `nodes`split_bitset_offset
         let (layout, nodes_offset_abs) = layout.extend(Layout::array::<ListNode>(taken)?)?;
         // `split_bitset`
-        let (layout, split_bitset_offset_abs) = layout.extend(Layout::array::<u32>(AllocBitset::size_for(taken - 1))?)?;
+        let (layout, split_bitset_offset_abs) = layout.extend(Layout::array::<u64>(AllocBitset::size_for(taken - 1))?)?;
         let layout = layout.pad_to_align();
 
         Ok(AllocTreeLayout {
@@ -301,17 +301,17 @@ struct ListNode {
 }
 
 #[repr(transparent)]
-struct AllocBitset([u32]);
+struct AllocBitset([u64]);
 impl AllocBitset {
     #[inline]
     const fn size_for(bits: usize) -> usize {
-        bits.div_ceil(u32::BITS as usize)
+        bits.div_ceil(u64::BITS as usize)
     }
 
     #[inline]
     unsafe fn get_and_toggle(&mut self, bit: u32) -> bool {
-        let block_index = bit / u32::BITS;
-        let block_bit = 1 << (bit & (u32::BITS - 1));
+        let block_index = bit / u64::BITS;
+        let block_bit = 1 << (bit & (u64::BITS - 1));
 
         let block = unsafe { self.0.get_unchecked_mut(block_index as usize) };
         let old_block = *block;
