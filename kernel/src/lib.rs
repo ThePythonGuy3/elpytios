@@ -14,6 +14,8 @@
 )]
 #![no_std]
 
+extern crate alloc;
+
 pub mod allocator;
 pub mod arch;
 pub mod device;
@@ -26,7 +28,7 @@ pub mod vaddr;
 
 use core::mem::MaybeUninit;
 
-use allocator::PhysicalPageAllocator;
+use allocator::{HeapAllocator, PhysicalPageAllocator};
 use elpytios_bootinfo::paddr::PAddr;
 use framebuffer::FrameBuffer;
 use spin_sync::SpinMutex;
@@ -63,6 +65,9 @@ pub mod statics {
     static mut VIRTUAL_MAP: MaybeUninit<VirtualMap> = MaybeUninit::uninit();
     static mut PHYS_ALLOC: MaybeUninit<SpinMutex<PhysicalPageAllocator>> = MaybeUninit::uninit();
     static mut FRAME_BUFFER: MaybeUninit<FrameBuffer> = MaybeUninit::uninit();
+
+    #[global_allocator]
+    static ALLOC: HeapAllocator = HeapAllocator::new();
 
     #[inline]
     pub unsafe fn set_direct_map_offset(offset: usize) {
