@@ -1,13 +1,18 @@
 #![forbid(unfulfilled_lint_expectations)]
+#![allow(internal_features, reason = "`pattern_type!()` is just too useful")]
 #![feature(
     anonymous_lifetime_in_impl_trait,
     arbitrary_self_types_pointers,
+    atomic_ptr_null,
+    const_cmp,
     const_trait_impl,
     const_try,
     debug_closure_helpers,
     impl_trait_in_assoc_type,
     layout_for_ptr,
     never_type,
+    pointer_is_aligned_to,
+    ptr_alignment_type,
     ptr_metadata,
     slice_ptr_get,
     sync_unsafe_cell

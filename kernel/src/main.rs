@@ -1,8 +1,10 @@
 #![forbid(unfulfilled_lint_expectations)]
-#![feature(core_float_math)]
+#![feature(core_float_math, ptr_alignment_type)]
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+use alloc::string::String;
 use core::{
     arch::{asm, naked_asm},
     cell::RefCell,
@@ -15,7 +17,7 @@ use elpytios_bootinfo::{BootInfo, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Rel
 use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
     ScratchPages,
-    allocator::{AllocTree, PhysicalPageAllocator},
+    allocator::{AllocTree, PHYS_ALLOC_ALIGNMENT, PhysicalPageAllocator},
     device::{CpuContext, init_device_tree},
     framebuffer::FrameBuffer,
     serial::{Com, Serial, serial_init},
@@ -289,33 +291,77 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
         );
 
         let mut phys_alloc = unsafe { PhysicalPageAllocator::new() };
-        for MemoryRegion { mut base, mut pages } in regions.available.iter().copied().chain(once(regions.head)) {
-            while pages > 1 {
-                let mut taken_pages = pages;
-                loop {
-                    let layout = AllocTree::layout(taken_pages).expect("`AllocTree` layout error");
-                    let meta_pages = layout.size().div_ceil(PAGE_SIZE);
-                    let try_take = meta_pages + layout.node_count();
+        for MemoryRegion { base, pages } in regions.available.iter().copied().chain(once(regions.head)) {
+            debug!(
+                "\tAvailable memory region found at [{base:p}..{:p}], {pages} pages",
+                base.byte_add(pages * PAGE_SIZE)
+            );
 
-                    if try_take > pages {
-                        taken_pages /= 2;
-                    } else {
-                        unsafe {
-                            let tree = AllocTree::new(phys_to_virt(base).ptr_mut(), layout);
-                            phys_alloc.push_tree(base.byte_add(meta_pages * PAGE_SIZE), tree);
+            let usable_start = base.addr();
+            let mut usable_end = usable_start + pages * PAGE_SIZE;
+
+            // Trees need to be aligned to `PHYS_ALLOC_ALIGNMENT`, so round down and manually fill "ghost" pages
+            let mut tree_start = usable_start & !(PHYS_ALLOC_ALIGNMENT.as_usize() - 1);
+            let mut tree_end = usable_end & !(PHYS_ALLOC_ALIGNMENT.as_usize() - 1);
+
+            while tree_start < tree_end {
+                let layout = AllocTree::layout((tree_end - tree_start) / PAGE_SIZE).expect("`AllocTree` layout error");
+                let meta_pages = layout.size().div_ceil(PAGE_SIZE);
+
+                if (usable_end - tree_end) / PAGE_SIZE >= meta_pages {
+                    debug!(
+                        "\t\tBuilding tree at [{tree_start:#018x}..{:#018x}], {} pages",
+                        tree_start + layout.node_count() * PAGE_SIZE,
+                        layout.node_count(),
+                    );
+
+                    usable_end -= meta_pages * PAGE_SIZE;
+                    unsafe {
+                        let tree = AllocTree::new(phys_to_virt(PAddr::new(usable_end)).ptr_mut(), layout);
+                        if let Some(mut ghost_size) = usable_start.checked_sub(tree_start)
+                            && ghost_size != 0
+                        {
+                            ghost_size /= PAGE_SIZE;
+                            debug!("\t\t\tReserving {ghost_size} ghost pages");
+
+                            #[cfg(debug_assertions)]
+                            let [mut prev, mut prev_len] = [0, 0];
+
+                            while ghost_size != 0 {
+                                let order = ghost_size.ilog2();
+                                ghost_size -= 1 << order;
+
+                                #[cfg_attr(not(debug_assertions), expect(unused))]
+                                let index = (*tree).alloc(order).expect("Couldn't reserve ghost pages");
+
+                                #[cfg(debug_assertions)]
+                                if index == prev + prev_len {
+                                    prev = index;
+                                    prev_len = 1 << order;
+                                } else {
+                                    panic!("Ghost page reservation wasn't contiguous");
+                                }
+                            }
                         }
 
-                        base = base.byte_add(try_take * PAGE_SIZE);
-                        pages -= try_take;
-                        break
+                        phys_alloc.push_tree(PAddr::new(tree_start), tree);
                     }
+                    tree_start += layout.node_count() * PAGE_SIZE;
+                    tree_end = usable_end & !(PHYS_ALLOC_ALIGNMENT.as_usize() - 1);
+                } else {
+                    tree_end -= (tree_end - tree_start) / 2;
                 }
             }
         }
 
         phys_alloc.sort_tree();
-        info!("Initialized physical page allocator with {} trees", phys_alloc.tree_count());
-        unsafe { set_phys_alloc(phys_alloc) }
+        match phys_alloc.tree_count() {
+            0 => panic!("Couldn't initialize physical page allocator, found no usable memory regions"),
+            n => {
+                info!("Initialized physical page allocator with {n} trees");
+                unsafe { set_phys_alloc(phys_alloc) }
+            }
+        }
     }
 
     // Virtual-map the framebuffer

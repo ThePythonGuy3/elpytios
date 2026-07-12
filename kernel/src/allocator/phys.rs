@@ -34,6 +34,9 @@ impl PhysicalPageAllocator {
         self.trees.len()
     }
 
+    /// # Safety
+    /// The resulting tree's allocations must be aligned to
+    /// [`PHYS_ALLOC_ALIGNMENT`](super::PHYS_ALLOC_ALIGNMENT).
     #[inline]
     pub unsafe fn push_tree(&mut self, base: PAddr, tree: *mut AllocTree) {
         self.trees.push(Entry { base, tree });
