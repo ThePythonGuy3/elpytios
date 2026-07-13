@@ -308,14 +308,14 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
                 let layout = AllocTree::layout((tree_end - tree_start) / PAGE_SIZE).expect("`AllocTree` layout error");
                 let meta_pages = layout.size().div_ceil(PAGE_SIZE);
 
-                if (usable_end - tree_end) / PAGE_SIZE >= meta_pages {
+                if (usable_end - (tree_start + layout.node_count() * PAGE_SIZE)) / PAGE_SIZE >= meta_pages {
+                    usable_end -= meta_pages * PAGE_SIZE;
                     debug!(
                         "\t\tBuilding tree at [{tree_start:#018x}..{:#018x}], {} pages",
                         tree_start + layout.node_count() * PAGE_SIZE,
                         layout.node_count(),
                     );
 
-                    usable_end -= meta_pages * PAGE_SIZE;
                     unsafe {
                         let tree = AllocTree::new(phys_to_virt(PAddr::new(usable_end)).ptr_mut(), layout);
                         if let Some(mut ghost_size) = usable_start.checked_sub(tree_start)

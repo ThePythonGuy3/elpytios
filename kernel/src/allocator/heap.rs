@@ -1,16 +1,17 @@
 use core::{
     self,
     alloc::{GlobalAlloc, Layout},
+    cell::UnsafeCell,
     hint::{cold_path, spin_loop, unreachable_unchecked},
     mem::Alignment,
-    ptr,
     sync::atomic::{
-        AtomicPtr, AtomicU16,
+        AtomicPtr, AtomicUsize,
         Ordering::{Acquire, Relaxed, Release},
     },
 };
 
 use elpytios_bootinfo::PAGE_SIZE;
+use log::debug;
 
 use crate::{
     allocator::PHYS_ALLOC_ALIGNMENT,
@@ -31,15 +32,15 @@ pub struct HeapAllocator {
 
 #[repr(C, align(4096))]
 struct Segment<const N: usize> {
-    data: [u8; N],
+    data: UnsafeCell<[u8; N]>,
     meta: SegmentMeta,
 }
 
 impl<const N: usize> Segment<N> {
-    const LOCK: u16 = 1 << (u16::BITS - 1);
-    const MASK: u16 = !Self::LOCK;
+    const LOCK: usize = 1 << (usize::BITS - 1);
+    const MASK: usize = !Self::LOCK;
 
-    #[cold]
+    #[inline]
     fn new(size_class: usize) -> *mut Self {
         // Ensure that segment allocations are always aligned
         _ = const {
@@ -58,73 +59,83 @@ impl<const N: usize> Segment<N> {
         );
 
         unsafe {
-            let offset = (this as usize % size_class) as u16;
-            let available = ((N - offset as usize) / size_class) as u16;
+            let offset = UnsafeCell::raw_get(&raw const (*this).data) as usize % size_class;
+            let available = ((N - offset) / size_class).min(1 << u16::BITS);
+
+            let data = UnsafeCell::raw_get(&raw const (*this).data).cast::<u8>().byte_add(offset as usize);
             for i in 0..available {
-                (&raw mut (*this).data)
-                    .cast::<u8>()
-                    .byte_add(offset as usize + i as usize * size_class)
-                    .cast::<u16>()
-                    .write((i + 1) % available);
+                data.byte_add(i as usize * size_class).cast::<u16>().write(((i + 1) % available) as u16);
             }
 
             (&raw mut (*this).meta).write(SegmentMeta {
-                next: ptr::null_mut(),
-                head_and_lock: AtomicU16::new(0),
-                available,
+                next: AtomicPtr::null(),
+                head_and_lock: AtomicUsize::new(0),
+                available: UnsafeCell::new(available),
                 offset,
-                size_class: size_class as u16,
             });
+
+            debug!("New segment for size class {size_class}: Available={available}, Offset={offset}");
         }
 
         this
     }
 
-    unsafe fn alloc(self: *mut Self, new_head: impl FnOnce(*mut Self)) -> *mut u8 {
-        #[cold]
+    unsafe fn alloc(self: *mut Self, size_class: usize, new_head: impl FnOnce(*mut Self)) -> *mut u8 {
+        #[inline(always)]
         fn new_head_never<T>(_: *mut T) {
-            unreachable!("Newly allocated page was immediately full, somehow")
+            cfg_select! {
+                debug_assertions => {
+                    unreachable!("Newly allocated page was immediately full, somehow")
+                }
+                not(debug_assertions) => {
+                    unsafe { core::hint::assert_unchecked() }
+                }
+            }
         }
 
         unsafe {
-            let mut curr_head = (*self).meta.head_and_lock.load(Relaxed) & Self::MASK;
+            let meta = &(*self).meta;
+            let mut curr_head = meta.head_and_lock.load(Relaxed) & Self::MASK;
+
             loop {
-                // Short circuit without obtaining a lock if the segment is already full
-                // Pointer is only ever non-null if this segment is full
-                if !(*self).meta.next.is_null() {
-                    return (*self).meta.next.cast::<Self>().alloc(new_head)
+                if let next = meta.next.load(Relaxed)
+                    && !next.is_null()
+                {
+                    return next.cast::<Self>().alloc(size_class, new_head)
                 }
 
-                match (*self)
-                    .meta
+                match meta
                     .head_and_lock
                     .compare_exchange_weak(curr_head, curr_head | Self::LOCK, Acquire, Relaxed)
                 {
                     Ok(..) => {
-                        if let Some(new_available) = (*self).meta.available.checked_sub(1) {
-                            let data = (&raw mut (*self).data)
+                        if let Some(new_available) = meta.available.get().read().checked_sub(1) {
+                            let data = UnsafeCell::raw_get(&raw const (*self).data)
                                 .cast::<u8>()
-                                .byte_add((*self).meta.offset as usize + curr_head as usize * (*self).meta.size_class as usize);
+                                .byte_add(meta.offset + curr_head * size_class);
 
-                            let next_head = data.cast::<u16>().read();
-                            (&raw mut (*self).meta.available).write(new_available);
-                            (*self).meta.head_and_lock.store(next_head, Release);
+                            meta.available.get().write(new_available);
+                            if new_available == 0 {
+                                cold_path();
+                                meta.head_and_lock.store(0, Release);
+                            } else {
+                                let next_head = data.cast::<u16>().read();
+                                meta.head_and_lock.store(next_head as usize, Release);
+                            }
 
                             return data
-                        } else {
+                        } else if let next = meta.next.load(Relaxed)
+                            && next.is_null()
+                        {
                             cold_path();
-                            if (*self).meta.next.is_null() {
-                                let new_segment = Self::new((*self).meta.size_class as usize);
-                                let result = new_segment.alloc(new_head_never::<Self>);
-                                new_head(new_segment);
 
-                                (&raw mut (*self).meta.next).write(new_segment.cast());
-                                (*self).meta.head_and_lock.store(curr_head, Release);
-                                return result
-                            } else {
-                                (*self).meta.head_and_lock.store(curr_head, Release);
-                                return (*self).meta.next.cast::<Self>().alloc(new_head)
-                            }
+                            let new_segment = Self::new(size_class);
+                            let result = new_segment.alloc(size_class, new_head_never::<Self>);
+                            new_head(new_segment);
+
+                            meta.next.store(new_segment.cast(), Relaxed);
+                            meta.head_and_lock.store(curr_head, Release);
+                            return result
                         }
                     }
                     Err(updated_head) => {
@@ -135,15 +146,52 @@ impl<const N: usize> Segment<N> {
             }
         }
     }
+
+    unsafe fn dealloc(self: *mut Self, size_class: usize, at: *mut u8) {
+        unsafe {
+            let meta = &(*self).meta;
+            let mut curr_head = meta.head_and_lock.load(Relaxed) & Self::MASK;
+
+            let base = UnsafeCell::raw_get(&raw const (*self).data).cast::<u8>().byte_add(meta.offset);
+            let at_index = at.byte_offset_from_unsigned(base) / size_class;
+
+            loop {
+                match meta
+                    .head_and_lock
+                    .compare_exchange_weak(curr_head, curr_head | Self::LOCK, Acquire, Relaxed)
+                {
+                    Ok(..) => match meta.available.get().read() {
+                        // Set head directly to the freed node
+                        0 => {
+                            meta.available.get().write(1);
+                            meta.head_and_lock.store(at_index, Release);
+                            break
+                        }
+                        // Connect head from the freed node to the last freed noed
+                        available => {
+                            at.cast::<u16>().write(curr_head as u16);
+                            meta.available.get().write(available + 1);
+                            meta.head_and_lock.store(at_index, Release);
+                            break
+                        }
+                    },
+                    Err(updated_head) => {
+                        curr_head = updated_head & Self::MASK;
+                        spin_loop();
+                    }
+                }
+            }
+        }
+    }
 }
 
-#[repr(C)]
+// `align(64)` fits the meta to a cache line
+#[repr(C, align(64))]
 struct SegmentMeta {
-    next: *mut (),
-    head_and_lock: AtomicU16,
-    available: u16,
-    offset: u16,
-    size_class: u16,
+    next: AtomicPtr<()>,
+    head_and_lock: AtomicUsize,
+    available: UnsafeCell<usize>,
+    offset: usize,
 }
 
 type MicroSegment = Segment<{ PAGE_SIZE - size_of::<SegmentMeta>() }>;
@@ -216,7 +264,7 @@ impl HeapAllocator {
             cold_path();
             loop {
                 // 0th bit is used as allocation lock
-                match ptr.compare_exchange_weak(segment_ptr, segment_ptr.wrapping_byte_add(1), Acquire, Relaxed) {
+                match ptr.compare_exchange(segment_ptr, segment_ptr.wrapping_byte_add(1), Acquire, Relaxed) {
                     Ok(..) => {
                         let new = Segment::new(size_class);
                         ptr.store(new, Release);
@@ -244,7 +292,7 @@ impl HeapAllocator {
             }
         }
 
-        unsafe { segment_ptr.alloc(|new_head| ptr.store(new_head, Release)) }
+        unsafe { segment_ptr.alloc(size_class, |new_head| ptr.store(new_head, Release)) }
     }
 
     #[inline]
@@ -272,12 +320,37 @@ unsafe impl GlobalAlloc for HeapAllocator {
             }
             SizeClassify::Huge => {
                 cold_path();
-                todo!()
+                todo!("huge object alloc")
             }
         }
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        todo!("deallocation not yet implemented")
+    unsafe fn dealloc(&self, at: *mut u8, layout: Layout) {
+        let layout = Self::unionize(layout);
+
+        #[inline]
+        unsafe fn dealloc<const N: usize>(head: &AtomicPtr<Segment<N>>, size_class: usize, at: *mut u8) {
+            let segment = (at as usize & !(size_of::<Segment<N>>() - 1)) as *mut Segment<N>;
+            unsafe { segment.dealloc(size_class, at) }
+        }
+
+        unsafe {
+            match SizeClassify::new(self, layout.size()) {
+                SizeClassify::Micro(ptr, size_class) => dealloc(ptr, size_class, at),
+                SizeClassify::Small(ptr, size_class) => dealloc(ptr, size_class, at),
+                SizeClassify::Medium(ptr, size_class) => {
+                    cold_path();
+                    dealloc(ptr, size_class, at)
+                }
+                SizeClassify::Large(ptr, size_class) => {
+                    cold_path();
+                    dealloc(ptr, size_class, at)
+                }
+                SizeClassify::Huge => {
+                    cold_path();
+                    todo!("huge object dealloc")
+                }
+            }
+        }
     }
 }
