@@ -90,14 +90,16 @@ pub enum Msr {
     /// - Bit 8: Long-mode enable.
     Ia32Efer = 0xc000_0080,
     /// - Read-write register.
-    /// - Bit 0-31:
-    /// - Bit 32-63:
+    /// - Bit 32-47: `KERNEL_CODE` GDT selector.
+    /// - Bit 48-63: USER_BASE GDT selector (+8 must be `USER_DATA`, +16 must be `USER_CODE`).
     Ia32Star = 0xc000_0081,
     /// - Read-write register.
     /// - Bit 0-63: `syscall` entry stub naked function pointer.
     Ia32Lstar = 0xc000_0082,
     /// - Read-write register.
-    /// -
+    /// - Bit 9: Interrupt flag (`cli`).
+    /// - Bit 10: Direction flag (`cld`).
+    /// - Bit 18: Alignment check.
     Ia32Fmask = 0xc000_0084,
     /// - Read-only register.
     /// - Bit 0-31: Unique 32-bit physical hardware ID.

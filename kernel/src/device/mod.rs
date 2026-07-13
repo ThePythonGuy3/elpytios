@@ -9,6 +9,27 @@ mod imp {
         }
     }
 }
+
+// Thanks, Rust, for not allowing me to export macros inside `cfg_select! {}`
+#[cfg(target_arch = "x86_64")]
+#[macro_export]
+macro_rules! swap_ctx {
+    (user => kernel) => {
+        r#"
+        swapgs
+        mov gs:[{user_stack_offset}], rsp
+        mov rsp, gs:[{kernel_stack_offset}]
+        "#
+    };
+    (kernel => user) => {
+        r#"
+        mov gs:[{kernel_stack_offset}], rsp
+        mov rsp, gs:[{user_stack_offset}]
+        swapgs
+        "#
+    };
+}
+
 use elpytios_bootinfo::DeviceTree;
 pub use imp::CpuContext;
 use log::info;

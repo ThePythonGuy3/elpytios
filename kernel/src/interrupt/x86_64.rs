@@ -1,16 +1,19 @@
 use alloc::boxed::Box;
 use core::{
     arch::{asm, naked_asm},
-    hint::{cold_path, spin_loop},
-    mem::size_of_val_raw,
-    sync::atomic::{
-        AtomicU8,
-        Ordering::{Acquire, Relaxed, Release},
-    },
+    mem::{self, size_of_val_raw},
 };
 
 use bitflags::bitflags;
 use bytemuck::Zeroable;
+use elpytios_abi::{Syscall, SyscallReadFn, SyscallWriteFn};
+
+use crate::{
+    arch::x86_64::{Msr, rdmsr, wrmsr},
+    device::CpuContext,
+    spin_sync::SpinOnce,
+    swap_ctx,
+};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -21,6 +24,12 @@ bitflags! {
         const WRITABLE        = 1 << 41;
         const EXECUTABLE      = 1 << 43;
         const DESCRIPTOR_TYPE = 1 << 44;
+
+        const DPL_0           = 0 << 45;
+        const DPL_1           = 1 << 45;
+        const DPL_2           = 2 << 45;
+        const DPL_3           = 3 << 45;
+
         const PRESENT         = 1 << 47;
         const LONG_MODE       = 1 << 53;
     }
@@ -28,8 +37,12 @@ bitflags! {
 
 impl GdtEntry {
     pub const NULL: Self = Self(0);
-    pub const KERNEL_CODE: Self = Self(Self::PRESENT.0 | Self::DESCRIPTOR_TYPE.0 | Self::EXECUTABLE.0 | Self::LONG_MODE.0);
-    pub const KERNEL_DATA: Self = Self(Self::PRESENT.0 | Self::DESCRIPTOR_TYPE.0 | Self::WRITABLE.0);
+
+    pub const KERNEL_CODE: Self = Self(Self::PRESENT.0 | Self::DESCRIPTOR_TYPE.0 | Self::EXECUTABLE.0 | Self::LONG_MODE.0 | Self::DPL_0.0);
+    pub const KERNEL_DATA: Self = Self(Self::PRESENT.0 | Self::DESCRIPTOR_TYPE.0 | Self::WRITABLE.0 | Self::DPL_0.0);
+
+    pub const USER_CODE: Self = Self(Self::PRESENT.0 | Self::DESCRIPTOR_TYPE.0 | Self::EXECUTABLE.0 | Self::LONG_MODE.0 | Self::DPL_3.0);
+    pub const USER_DATA: Self = Self(Self::PRESENT.0 | Self::DESCRIPTOR_TYPE.0 | Self::WRITABLE.0 | Self::DPL_3.0);
 }
 
 pub unsafe fn init_gdt() {
@@ -40,7 +53,14 @@ pub unsafe fn init_gdt() {
     }
 
     unsafe {
-        let entries = Box::leak(Box::new([GdtEntry::NULL, GdtEntry::KERNEL_CODE, GdtEntry::KERNEL_DATA]));
+        let entries = Box::leak(Box::new([
+            GdtEntry::NULL,        // 0x00
+            GdtEntry::KERNEL_CODE, // 0x08
+            GdtEntry::KERNEL_DATA, // 0x10
+            GdtEntry::USER_DATA,   // 0x18
+            GdtEntry::USER_CODE,   // 0x20
+        ]));
+
         let ptr = GdtPointer {
             limit: u16::try_from(size_of_val(entries) - 1).unwrap(),
             base: (&raw mut *entries).cast(),
@@ -116,8 +136,8 @@ pub enum IdtIndex {
     PageFault = 14,
 }
 
-const CLOBBERED: usize = 9 * size_of::<usize>();
-macro_rules! clobbered {
+const INTERRUPT_CLOBBERED: usize = 9 * size_of::<usize>();
+macro_rules! interrupt_clobbered {
     (push) => {
         r#"
         push rax
@@ -153,16 +173,16 @@ pub unsafe extern "sysv64" fn double_fault() -> ! {
     }
 
     naked_asm!(
-        clobbered!(push),
+        interrupt_clobbered!(push),
 
         "mov rdi, [rsp + {clobbered}]",
         "call {handle}",
 
-        clobbered!(pop),
+        interrupt_clobbered!(pop),
         "add rsp, 8",
         "iretq",
 
-        clobbered = const CLOBBERED,
+        clobbered = const INTERRUPT_CLOBBERED,
         handle = sym handle,
     )
 }
@@ -203,46 +223,116 @@ pub unsafe extern "sysv64" fn page_fault() -> ! {
     }
 
     naked_asm!(
-        clobbered!(push),
+        interrupt_clobbered!(push),
 
         "mov rdi, [rsp + {clobbered}]",
         "call {handle}",
 
-        clobbered!(pop),
+        interrupt_clobbered!(pop),
         "add rsp, 8",
         "iretq",
 
-        clobbered = const CLOBBERED,
+        clobbered = const INTERRUPT_CLOBBERED,
         handle = sym handle,
     )
+}
+
+pub unsafe extern "sysv64" fn syscall_write(file: usize, buffer: usize, len: usize) -> usize {
+    Syscall::INVALID
+}
+
+pub unsafe extern "sysv64" fn syscall_read(file: usize, buffer: usize, len: usize) -> usize {
+    Syscall::INVALID
+}
+
+pub unsafe fn init_syscalls() {
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    union SyscallEntry {
+        missing: pattern_type!(usize is 0..=0),
+        syscall_write: SyscallWriteFn,
+        syscall_read: SyscallReadFn,
+    }
+
+    static mut SYSCALL_ENTRIES: [SyscallEntry; Syscall::MAX_ENTRIES] = [SyscallEntry {
+        missing: unsafe { mem::transmute::<usize, _>(0) },
+    }; Syscall::MAX_ENTRIES];
+    static SYSCALL_INIT: SpinOnce = SpinOnce::new();
+
+    SYSCALL_INIT.call_once(|| unsafe {
+        SYSCALL_ENTRIES[Syscall::Write as usize] = SyscallEntry { syscall_write };
+        SYSCALL_ENTRIES[Syscall::Read as usize] = SyscallEntry { syscall_read };
+    });
+
+    unsafe {
+        // Enable `syscall` and `sysret`
+        wrmsr(Msr::Ia32Efer, rdmsr(Msr::Ia32Efer) | (1 << 0));
+        // 0x08: KERNEL_CODE
+        // 0x10 + 8  = 0x18: USER_DATA
+        // 0x10 + 16 = 0x20: USER_CODE
+        wrmsr(Msr::Ia32Star, (0x08 << 32) | (0x10 << 48));
+        wrmsr(Msr::Ia32Lstar, syscall as *const () as u64);
+        // - Bit 9: Interrupt flag (`cli`)
+        // - Bit 10: Direction flag (`cld`)
+        // - Bit 18: Alignment check
+        wrmsr(Msr::Ia32Fmask, (1 << 9) | (1 << 10) | (1 << 18));
+
+        #[unsafe(naked)]
+        pub unsafe extern "sysv64" fn syscall() -> ! {
+            naked_asm!(
+                // `rax` is the `syscall` entry, immediately bail if invalid
+                "cmp rax, {max_entries}",
+                "jae 2f",
+
+                // `rax` is now address of the handler, bail if not set (null)
+                "lea r12, [rip + {entries}]",
+                "mov rax, [r12 + rax * {entry_size}]",
+                "test rax, rax",
+                "jz 2f",
+
+                swap_ctx!(user => kernel),
+                "sti",
+                "push r11",
+                "push rcx",
+
+                // User uses `r10` instead of `rcx`, but Sys V expects `rcx` to be 4th arg
+                "mov rcx, r10",
+                // After this, `rax` is now the return value of the handler
+                "call rax",
+
+                "pop rcx",
+                "pop r11",
+                "cli",
+                swap_ctx!(kernel => user),
+
+                "sysretq",
+
+                "2:",
+                "mov rax, {invalid}",
+                "sysretq",
+
+                max_entries = const Syscall::MAX_ENTRIES,
+                entries = sym SYSCALL_ENTRIES,
+                entry_size = const size_of::<SyscallEntry>(),
+                invalid = const Syscall::INVALID,
+
+                kernel_stack_offset = const CpuContext::KERNEL_STACK,
+                user_stack_offset = const CpuContext::USER_STACK,
+            )
+        }
+    }
 }
 
 /// # Safety
 /// Only call this once per CPU core in setup phase after higher-half addressing is finished.
 pub unsafe fn init_interrupts() {
     static mut IDT_ENTRIES: [IdtEntry; 256] = [bytemuck::zeroed(); 256];
-    static IDT_STATE: AtomicU8 = AtomicU8::new(UNINIT);
+    static IDT_INIT: SpinOnce = SpinOnce::new();
 
-    const UNINIT: u8 = 0;
-    const LOCKED: u8 = 1;
-    const INIT: u8 = 2;
-
-    loop {
-        match IDT_STATE.compare_exchange_weak(UNINIT, LOCKED, Acquire, Relaxed) {
-            Ok(..) => unsafe {
-                cold_path();
-                IDT_ENTRIES[IdtIndex::DoubleFault as usize] = IdtEntry::new(double_fault);
-                IDT_ENTRIES[IdtIndex::PageFault as usize] = IdtEntry::new(page_fault);
-
-                IDT_STATE.store(INIT, Release);
-            },
-            Err(INIT) => break,
-            Err(..) => {
-                cold_path();
-                spin_loop();
-            }
-        }
-    }
+    IDT_INIT.call_once(|| unsafe {
+        IDT_ENTRIES[IdtIndex::DoubleFault as usize] = IdtEntry::new(double_fault);
+        IDT_ENTRIES[IdtIndex::PageFault as usize] = IdtEntry::new(page_fault);
+    });
 
     #[repr(C, packed)]
     struct IdtPointer {
@@ -263,5 +353,7 @@ pub unsafe fn init_interrupts() {
             "lidt [{ptr}]",
             ptr = in(reg) &ptr,
         );
+
+        init_syscalls();
     }
 }

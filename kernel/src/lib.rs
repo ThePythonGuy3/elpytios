@@ -11,6 +11,8 @@
     impl_trait_in_assoc_type,
     layout_for_ptr,
     never_type,
+    pattern_types,
+    pattern_type_macro,
     pointer_is_aligned_to,
     ptr_alignment_type,
     ptr_metadata,

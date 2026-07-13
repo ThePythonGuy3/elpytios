@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use core::{
     arch::{asm, global_asm, x86_64::__cpuid_count},
     hint::spin_loop,
-    mem::ManuallyDrop,
+    mem::{ManuallyDrop, offset_of},
     ptr::{self, NonNull},
     sync::atomic::{
         AtomicBool, AtomicU32,
@@ -98,9 +98,14 @@ pub struct CpuContext {
     is_bootstrap: bool,
     apic_id: u32,
     cpu_id: u32,
+    kernel_stack: usize,
+    user_stack: usize,
 }
 
 impl CpuContext {
+    pub const KERNEL_STACK: usize = offset_of!(Self, kernel_stack);
+    pub const USER_STACK: usize = offset_of!(Self, user_stack);
+
     unsafe fn new(apic: ApicDriver, is_bootstrap: bool, apic_id: u32, cpu_id: u32) {
         if let ApicDriver::X2Apic = apic {
             unsafe { wrmsr(Msr::Ia32ApicBase, rdmsr(Msr::Ia32ApicBase) | (1 << 10) | (1 << 11)) }
@@ -112,6 +117,8 @@ impl CpuContext {
             is_bootstrap,
             apic_id,
             cpu_id,
+            kernel_stack: 0,
+            user_stack: 0,
         }));
 
         unsafe {
