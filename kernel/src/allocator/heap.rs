@@ -4,6 +4,7 @@ use core::{
     cell::UnsafeCell,
     hint::{cold_path, spin_loop, unreachable_unchecked},
     mem::Alignment,
+    ptr,
     sync::atomic::{
         AtomicPtr, AtomicUsize,
         Ordering::{Acquire, Relaxed, Release},
@@ -34,6 +35,13 @@ pub struct HeapAllocator {
 struct Segment<const N: usize> {
     data: UnsafeCell<[u8; N]>,
     meta: SegmentMeta,
+}
+
+enum Alloc {
+    /// Allocation was successful.
+    Success { at: *mut u8 },
+    /// Segment is already full.
+    Full,
 }
 
 impl<const N: usize> Segment<N> {
@@ -68,8 +76,8 @@ impl<const N: usize> Segment<N> {
             }
 
             (&raw mut (*this).meta).write(SegmentMeta {
-                next: AtomicPtr::null(),
                 head_and_lock: AtomicUsize::new(0),
+                next: UnsafeCell::new(ptr::null_mut()),
                 available: UnsafeCell::new(available),
                 offset,
             });
@@ -80,62 +88,39 @@ impl<const N: usize> Segment<N> {
         this
     }
 
-    unsafe fn alloc(self: *mut Self, size_class: usize, new_head: impl FnOnce(*mut Self)) -> *mut u8 {
-        #[inline(always)]
-        fn new_head_never<T>(_: *mut T) {
-            cfg_select! {
-                debug_assertions => {
-                    unreachable!("Newly allocated page was immediately full, somehow")
-                }
-                not(debug_assertions) => {
-                    unsafe { core::hint::assert_unchecked() }
-                }
-            }
-        }
-
+    // `detach()` is called while this segment is still locked
+    unsafe fn alloc(self: *mut Self, size_class: usize, detach: impl FnOnce(*mut *mut Self)) -> Alloc {
         unsafe {
             let meta = &(*self).meta;
             let mut curr_head = meta.head_and_lock.load(Relaxed) & Self::MASK;
 
             loop {
-                if let next = meta.next.load(Relaxed)
-                    && !next.is_null()
-                {
-                    return next.cast::<Self>().alloc(size_class, new_head)
-                }
-
                 match meta
                     .head_and_lock
                     .compare_exchange_weak(curr_head, curr_head | Self::LOCK, Acquire, Relaxed)
                 {
                     Ok(..) => {
-                        if let Some(new_available) = meta.available.get().read().checked_sub(1) {
+                        break if let Some(new_available) = meta.available.get().read().checked_sub(1) {
                             let data = UnsafeCell::raw_get(&raw const (*self).data)
                                 .cast::<u8>()
                                 .byte_add(meta.offset + curr_head * size_class);
 
                             meta.available.get().write(new_available);
-                            if new_available == 0 {
-                                cold_path();
-                                meta.head_and_lock.store(0, Release);
-                            } else {
-                                let next_head = data.cast::<u16>().read();
-                                meta.head_and_lock.store(next_head as usize, Release);
+                            match new_available {
+                                0 => {
+                                    detach(meta.next.get().cast());
+                                    meta.head_and_lock.store(0, Release);
+                                    Alloc::Success { at: data }
+                                }
+                                _ => {
+                                    let next_head = data.cast::<u16>().read();
+                                    meta.head_and_lock.store(next_head as usize, Release);
+                                    Alloc::Success { at: data }
+                                }
                             }
-
-                            return data
-                        } else if let next = meta.next.load(Relaxed)
-                            && next.is_null()
-                        {
-                            cold_path();
-
-                            let new_segment = Self::new(size_class);
-                            let result = new_segment.alloc(size_class, new_head_never::<Self>);
-                            new_head(new_segment);
-
-                            meta.next.store(new_segment.cast(), Relaxed);
+                        } else {
                             meta.head_and_lock.store(curr_head, Release);
-                            return result
+                            Alloc::Full
                         }
                     }
                     Err(updated_head) => {
@@ -147,7 +132,8 @@ impl<const N: usize> Segment<N> {
         }
     }
 
-    unsafe fn dealloc(self: *mut Self, size_class: usize, at: *mut u8) {
+    // `resurrect()` is called while this segment is still locked
+    unsafe fn dealloc(self: *mut Self, size_class: usize, at: *mut u8, resurrect: impl FnOnce()) {
         unsafe {
             let meta = &(*self).meta;
             let mut curr_head = meta.head_and_lock.load(Relaxed) & Self::MASK;
@@ -160,21 +146,20 @@ impl<const N: usize> Segment<N> {
                     .head_and_lock
                     .compare_exchange_weak(curr_head, curr_head | Self::LOCK, Acquire, Relaxed)
                 {
-                    Ok(..) => match meta.available.get().read() {
-                        // Set head directly to the freed node
-                        0 => {
-                            meta.available.get().write(1);
-                            meta.head_and_lock.store(at_index, Release);
-                            break
+                    Ok(..) => {
+                        break match meta.available.get().read() {
+                            0 => {
+                                meta.available.get().write(1);
+                                resurrect();
+                                meta.head_and_lock.store(at_index, Release);
+                            }
+                            available => {
+                                at.cast::<u16>().write(curr_head as u16);
+                                meta.available.get().write(available + 1);
+                                meta.head_and_lock.store(at_index, Release);
+                            }
                         }
-                        // Connect head from the freed node to the last freed noed
-                        available => {
-                            at.cast::<u16>().write(curr_head as u16);
-                            meta.available.get().write(available + 1);
-                            meta.head_and_lock.store(at_index, Release);
-                            break
-                        }
-                    },
+                    }
                     Err(updated_head) => {
                         curr_head = updated_head & Self::MASK;
                         spin_loop();
@@ -188,8 +173,10 @@ impl<const N: usize> Segment<N> {
 // `align(64)` fits the meta to a cache line
 #[repr(C, align(64))]
 struct SegmentMeta {
-    next: AtomicPtr<()>,
     head_and_lock: AtomicUsize,
+    /// Synchronizes-with `head_and_lock`.
+    next: UnsafeCell<*mut ()>,
+    /// Synchronizes with top-level `head_ptr`.
     available: UnsafeCell<usize>,
     offset: usize,
 }
@@ -258,41 +245,115 @@ impl HeapAllocator {
         }
     }
 
-    fn alloc<const N: usize>(ptr: &AtomicPtr<Segment<N>>, size_class: usize) -> *mut u8 {
-        let mut segment_ptr = ptr.load(Acquire);
-        if segment_ptr.is_null() {
-            cold_path();
-            loop {
-                // 0th bit is used as allocation lock
-                match ptr.compare_exchange(segment_ptr, segment_ptr.wrapping_byte_add(1), Acquire, Relaxed) {
+    fn alloc<const N: usize>(head: &AtomicPtr<Segment<N>>, size_class: usize) -> *mut u8 {
+        let mut head_ptr = head.load(Relaxed);
+        loop {
+            // HEAD is locked (least-significant bit is set)
+            if !head_ptr.is_aligned() {
+                spin_loop();
+
+                head_ptr = head.load(Relaxed);
+                continue
+            }
+
+            // HEAD is null, lock and allocate a new one
+            // This races with `dealloc()`'s resurrection logic when HEAD is null
+            if head_ptr.is_null() {
+                match head.compare_exchange(head_ptr, head_ptr.wrapping_byte_add(1), Acquire, Relaxed) {
                     Ok(..) => {
                         let new = Segment::new(size_class);
-                        ptr.store(new, Release);
+                        head.store(new, Release);
 
-                        segment_ptr = new;
-                        break
+                        head_ptr = new;
                     }
-                    Err(curr_ptr) => {
-                        segment_ptr = curr_ptr;
-                        break
+                    Err(curr_segment_ptr) => {
+                        head_ptr = curr_segment_ptr;
+                        spin_loop();
+
+                        continue
+                    }
+                }
+            }
+
+            unsafe {
+                break match head_ptr.alloc(size_class, |next| {
+                    loop {
+                        // Invariant:
+                        // - HEAD is always `head_ptr`, either locked or unlocked
+                        // - This is ensured because if `head_ptr` is not null, only `alloc()` ever changes HEAD directly
+                        match head.compare_exchange_weak(head_ptr, head_ptr.wrapping_byte_add(1), Acquire, Relaxed) {
+                            // Scenario A: Absolutely no detached segments is available:
+                            //             - `next` is null, and `alloc()` will lock and allocate a new segment
+                            // Scenario B: A detached segment tries to resurrects, but `alloc()` wins the race:
+                            //             - `next` is null
+                            //             - If `alloc()`'s new segment wins the race, `dealloc()` will set `next` of new HEAD
+                            //             - If `dealloc()` wins the race, `next` will not be null
+                            Ok(..) => {
+                                head.store(ptr::replace(next, ptr::null_mut()), Release);
+                                break
+                            }
+                            // Don't bother updating `head_ptr`, it won't change to a new segment
+                            // It may be locked by `dealloc()`, however, so do a spin-loop
+                            Err(..) => spin_loop(),
+                        }
+                    }
+                }) {
+                    Alloc::Success { at } => at,
+                    Alloc::Full => {
+                        spin_loop();
+                        head_ptr = head.load(Relaxed);
+                        continue
                     }
                 }
             }
         }
+    }
 
-        // If 0th bit is set, means the segment is still being allocated
-        if !segment_ptr.is_aligned() {
-            cold_path();
-            loop {
-                spin_loop();
-                segment_ptr = ptr.load(Acquire);
-                if segment_ptr.is_aligned() {
-                    break
+    fn dealloc<const N: usize>(head: &AtomicPtr<Segment<N>>, size_class: usize, at: *mut u8) {
+        let segment_ptr = (at as usize & !(size_of::<Segment<N>>() - 1)) as *mut Segment<N>;
+        unsafe {
+            segment_ptr.dealloc(size_class, at, || {
+                let mut head_ptr = head.load(Relaxed);
+                loop {
+                    if !head_ptr.is_aligned() {
+                        spin_loop();
+
+                        head_ptr = head.load(Relaxed);
+                        continue
+                    }
+
+                    // If HEAD is null and `dealloc()` wins the race, set HEAD directly
+                    if head_ptr.is_null() {
+                        match head.compare_exchange(head_ptr, head_ptr.wrapping_byte_add(1), Acquire, Relaxed) {
+                            Ok(..) => {
+                                head.store(segment_ptr, Release);
+                                break
+                            }
+                            Err(curr_head_ptr) => {
+                                head_ptr = curr_head_ptr;
+                                spin_loop();
+                                continue
+                            }
+                        }
+                    }
+
+                    // Otherwise, set HEAD's `next` instead
+                    match head.compare_exchange_weak(head_ptr, head_ptr.wrapping_byte_add(1), Acquire, Relaxed) {
+                        Ok(..) => {
+                            let prev_next = ptr::replace((*head_ptr).meta.next.get(), segment_ptr.cast());
+                            (*segment_ptr).meta.next.get().write(prev_next);
+
+                            head.store(head_ptr, Release);
+                            break
+                        }
+                        Err(curr_head_ptr) => {
+                            head_ptr = curr_head_ptr;
+                            spin_loop();
+                        }
+                    }
                 }
-            }
+            });
         }
-
-        unsafe { segment_ptr.alloc(size_class, |new_head| ptr.store(new_head, Release)) }
     }
 
     #[inline]
@@ -328,23 +389,17 @@ unsafe impl GlobalAlloc for HeapAllocator {
     unsafe fn dealloc(&self, at: *mut u8, layout: Layout) {
         let layout = Self::unionize(layout);
 
-        #[inline]
-        unsafe fn dealloc<const N: usize>(head: &AtomicPtr<Segment<N>>, size_class: usize, at: *mut u8) {
-            let segment = (at as usize & !(size_of::<Segment<N>>() - 1)) as *mut Segment<N>;
-            unsafe { segment.dealloc(size_class, at) }
-        }
-
         unsafe {
             match SizeClassify::new(self, layout.size()) {
-                SizeClassify::Micro(ptr, size_class) => dealloc(ptr, size_class, at),
-                SizeClassify::Small(ptr, size_class) => dealloc(ptr, size_class, at),
+                SizeClassify::Micro(ptr, size_class) => Self::dealloc(ptr, size_class, at),
+                SizeClassify::Small(ptr, size_class) => Self::dealloc(ptr, size_class, at),
                 SizeClassify::Medium(ptr, size_class) => {
                     cold_path();
-                    dealloc(ptr, size_class, at)
+                    Self::dealloc(ptr, size_class, at)
                 }
                 SizeClassify::Large(ptr, size_class) => {
                     cold_path();
-                    dealloc(ptr, size_class, at)
+                    Self::dealloc(ptr, size_class, at)
                 }
                 SizeClassify::Huge => {
                     cold_path();
