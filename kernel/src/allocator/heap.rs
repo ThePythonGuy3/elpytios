@@ -16,7 +16,7 @@ use log::debug;
 
 use crate::{
     allocator::PHYS_ALLOC_ALIGNMENT,
-    statics::{get_phys_alloc, phys_to_virt},
+    statics::{get_phys_alloc, phys_to_virt, virt_to_phys},
 };
 
 const MICRO_SIZES: [usize; 8] = [8, 16, 24, 32, 48, 64, 96, 128];
@@ -356,6 +356,29 @@ impl HeapAllocator {
         }
     }
 
+    #[cold]
+    fn alloc_huge(size: usize) -> *mut u8 {
+        if size <= PHYS_ALLOC_ALIGNMENT.as_usize() {
+            get_phys_alloc()
+                .lock()
+                .alloc(usize::BITS - (size - 1).leading_zeros())
+                .map(|addr| phys_to_virt(addr).ptr_mut())
+                .unwrap_or(ptr::null_mut())
+        } else {
+            cold_path();
+            ptr::null_mut()
+        }
+    }
+
+    #[cold]
+    unsafe fn dealloc_huge(size: usize, at: *mut u8) {
+        unsafe {
+            get_phys_alloc()
+                .lock()
+                .dealloc(virt_to_phys(at.into()), usize::BITS - (size - 1).leading_zeros())
+        }
+    }
+
     #[inline]
     const fn unionize(layout: Layout) -> Layout {
         let new_size = layout.size().next_multiple_of(size_of::<u16>());
@@ -379,16 +402,12 @@ unsafe impl GlobalAlloc for HeapAllocator {
                 cold_path();
                 Self::alloc(ptr, size_class)
             }
-            SizeClassify::Huge => {
-                cold_path();
-                todo!("huge object alloc")
-            }
+            SizeClassify::Huge => Self::alloc_huge(layout.size()),
         }
     }
 
     unsafe fn dealloc(&self, at: *mut u8, layout: Layout) {
         let layout = Self::unionize(layout);
-
         unsafe {
             match SizeClassify::new(self, layout.size()) {
                 SizeClassify::Micro(ptr, size_class) => Self::dealloc(ptr, size_class, at),
@@ -401,10 +420,7 @@ unsafe impl GlobalAlloc for HeapAllocator {
                     cold_path();
                     Self::dealloc(ptr, size_class, at)
                 }
-                SizeClassify::Huge => {
-                    cold_path();
-                    todo!("huge object dealloc")
-                }
+                SizeClassify::Huge => Self::dealloc_huge(layout.size(), at),
             }
         }
     }
