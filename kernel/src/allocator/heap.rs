@@ -37,13 +37,6 @@ struct Segment<const N: usize> {
     meta: SegmentMeta,
 }
 
-enum Alloc {
-    /// Allocation was successful.
-    Success { at: *mut u8 },
-    /// Segment is already full.
-    Full,
-}
-
 impl<const N: usize> Segment<N> {
     const LOCK: usize = 1 << (usize::BITS - 1);
     const MASK: usize = !Self::LOCK;
@@ -89,7 +82,7 @@ impl<const N: usize> Segment<N> {
     }
 
     // `detach()` is called while this segment is still locked
-    unsafe fn alloc(self: *mut Self, size_class: usize, detach: impl FnOnce(*mut *mut Self)) -> Alloc {
+    unsafe fn alloc(self: *mut Self, size_class: usize, detach: impl FnOnce(*mut *mut Self)) -> *mut u8 {
         unsafe {
             let meta = &(*self).meta;
             let mut curr_head = meta.head_and_lock.load(Relaxed) & Self::MASK;
@@ -110,17 +103,17 @@ impl<const N: usize> Segment<N> {
                                 0 => {
                                     detach(meta.next.get().cast());
                                     meta.head_and_lock.store(0, Release);
-                                    Alloc::Success { at: data }
+                                    data
                                 }
                                 _ => {
                                     let next_head = data.cast::<u16>().read();
                                     meta.head_and_lock.store(next_head as usize, Release);
-                                    Alloc::Success { at: data }
+                                    data
                                 }
                             }
                         } else {
                             meta.head_and_lock.store(curr_head, Release);
-                            Alloc::Full
+                            ptr::null_mut()
                         }
                     }
                     Err(updated_head) => {
@@ -298,8 +291,8 @@ impl HeapAllocator {
                         }
                     }
                 }) {
-                    Alloc::Success { at } => at,
-                    Alloc::Full => {
+                    at if !at.is_null() => at,
+                    _ => {
                         spin_loop();
                         head_ptr = head.load(Relaxed);
                         continue

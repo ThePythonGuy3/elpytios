@@ -306,50 +306,64 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
             while tree_start < tree_end {
                 let layout = AllocTree::layout((tree_end - tree_start) / PAGE_SIZE).expect("`AllocTree` layout error");
                 let meta_pages = layout.size().div_ceil(PAGE_SIZE);
+                let tree_end_actual = tree_start + layout.node_count() * PAGE_SIZE;
 
-                if (usable_end - (tree_start + layout.node_count() * PAGE_SIZE)) / PAGE_SIZE >= meta_pages {
+                let (tree, ghost_pages) = if (usable_end - tree_end_actual) / PAGE_SIZE >= meta_pages {
+                    // Store tree metadata to the right, outside the tree
                     usable_end -= meta_pages * PAGE_SIZE;
-                    debug!(
-                        "\t\tBuilding tree at [{tree_start:#018x}..{:#018x}], {} pages",
-                        tree_start + layout.node_count() * PAGE_SIZE,
-                        layout.node_count(),
-                    );
-
                     unsafe {
-                        let tree = AllocTree::new(phys_to_virt(PAddr::new(usable_end)).ptr_mut(), layout);
-                        if let Some(mut ghost_size) = usable_start.checked_sub(tree_start)
-                            && ghost_size != 0
-                        {
-                            ghost_size /= PAGE_SIZE;
-                            debug!("\t\t\tReserving {ghost_size} ghost pages");
-
-                            #[cfg(debug_assertions)]
-                            let [mut prev, mut prev_len] = [0, 0];
-
-                            while ghost_size != 0 {
-                                let order = ghost_size.ilog2();
-                                ghost_size -= 1 << order;
-
-                                #[cfg_attr(not(debug_assertions), expect(unused))]
-                                let index = (*tree).alloc(order).expect("Couldn't reserve ghost pages");
-
-                                #[cfg(debug_assertions)]
-                                if index == prev + prev_len {
-                                    prev = index;
-                                    prev_len = 1 << order;
-                                } else {
-                                    panic!("Ghost page reservation wasn't contiguous");
-                                }
-                            }
-                        }
-
-                        phys_alloc.push_tree(PAddr::new(tree_start), tree);
+                        (
+                            AllocTree::new(phys_to_virt(PAddr::new(usable_end)).ptr_mut(), layout),
+                            usable_start
+                                .checked_sub(tree_start)
+                                .and_then(|ghost_size| (ghost_size != 0).then_some(ghost_size / PAGE_SIZE)),
+                        )
                     }
-                    tree_start += layout.node_count() * PAGE_SIZE;
-                    tree_end = usable_end & !(PHYS_ALLOC_ALIGNMENT.as_usize() - 1);
+                } else if (tree_end_actual - usable_start) / PAGE_SIZE >= meta_pages {
+                    // Store tree metadata to the left, adding along ghost pages
+                    unsafe {
+                        (
+                            AllocTree::new(phys_to_virt(PAddr::new(usable_start)).ptr_mut(), layout),
+                            Some((usable_start + meta_pages * PAGE_SIZE - tree_start) / PAGE_SIZE),
+                        )
+                    }
                 } else {
                     tree_end -= (tree_end - tree_start) / 2;
+                    continue
+                };
+
+                debug!(
+                    "\t\tBuilding tree at [{tree_start:#018x}..{:#018x}], {} pages",
+                    tree_start + layout.node_count() * PAGE_SIZE,
+                    layout.node_count(),
+                );
+
+                if let Some(mut ghost_pages) = ghost_pages {
+                    debug!("\t\t\tReserving {ghost_pages} ghost pages");
+
+                    #[cfg(debug_assertions)]
+                    let [mut prev, mut prev_len] = [0, 0];
+
+                    while ghost_pages != 0 {
+                        let order = ghost_pages.ilog2();
+                        ghost_pages -= 1 << order;
+
+                        #[cfg_attr(not(debug_assertions), expect(unused))]
+                        let index = unsafe { (*tree).alloc(order).expect("Couldn't reserve ghost pages") };
+
+                        #[cfg(debug_assertions)]
+                        if index == prev + prev_len {
+                            prev = index;
+                            prev_len = 1 << order;
+                        } else {
+                            panic!("Ghost page reservation wasn't contiguous");
+                        }
+                    }
                 }
+
+                unsafe { phys_alloc.push_tree(PAddr::new(tree_start), tree) }
+                tree_start += layout.node_count() * PAGE_SIZE;
+                tree_end = usable_end & !(PHYS_ALLOC_ALIGNMENT.as_usize() - 1);
             }
         }
 
