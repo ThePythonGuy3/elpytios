@@ -4,7 +4,6 @@
 #![no_main]
 
 extern crate alloc;
-use alloc::string::String;
 use core::{
     arch::{asm, naked_asm},
     cell::RefCell,

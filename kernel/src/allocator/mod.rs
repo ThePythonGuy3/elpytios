@@ -4,11 +4,9 @@ use elpytios_bootinfo::PAGE_SIZE;
 
 mod heap;
 mod phys;
-mod slab;
 mod tree;
 pub use heap::*;
 pub use phys::*;
-pub use slab::*;
 pub use tree::*;
 
 /// Physical allocators are aligned to 32 pages (128 KiB).

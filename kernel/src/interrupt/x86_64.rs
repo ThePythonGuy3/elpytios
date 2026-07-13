@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use core::{
     arch::{asm, naked_asm},
     hint::{cold_path, spin_loop},
@@ -10,8 +11,6 @@ use core::{
 
 use bitflags::bitflags;
 use bytemuck::Zeroable;
-
-use crate::allocator::{SlabAllocator, SlabId};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -34,8 +33,6 @@ impl GdtEntry {
 }
 
 pub unsafe fn init_gdt() {
-    static GDT_ALLOC: SlabAllocator<[GdtEntry; 3]> = SlabAllocator::new();
-
     #[repr(C, packed)]
     struct GdtPointer {
         limit: u16,
@@ -43,7 +40,7 @@ pub unsafe fn init_gdt() {
     }
 
     unsafe {
-        let entries = SlabId::leak(GDT_ALLOC.alloc([GdtEntry::NULL, GdtEntry::KERNEL_CODE, GdtEntry::KERNEL_DATA]));
+        let entries = Box::leak(Box::new([GdtEntry::NULL, GdtEntry::KERNEL_CODE, GdtEntry::KERNEL_DATA]));
         let ptr = GdtPointer {
             limit: u16::try_from(size_of_val(entries) - 1).unwrap(),
             base: (&raw mut *entries).cast(),

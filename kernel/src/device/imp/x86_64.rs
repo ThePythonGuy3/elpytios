@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use core::{
     arch::{asm, global_asm, x86_64::__cpuid_count},
     hint::spin_loop,
@@ -15,7 +16,6 @@ use log::{debug, error, info};
 
 use crate::{
     ScratchPages,
-    allocator::{SlabAllocator, SlabId},
     arch::x86_64::{Msr, pit_delay, rdmsr, wrmsr},
     device::acpi::{LocalApicFlags, Madt, Pic},
     interrupt::init_interrupts,
@@ -102,13 +102,11 @@ pub struct CpuContext {
 
 impl CpuContext {
     unsafe fn new(apic: ApicDriver, is_bootstrap: bool, apic_id: u32, cpu_id: u32) {
-        static CTX_ALLOC: SlabAllocator<CpuContext> = SlabAllocator::new();
-
         if let ApicDriver::X2Apic = apic {
             unsafe { wrmsr(Msr::Ia32ApicBase, rdmsr(Msr::Ia32ApicBase) | (1 << 10) | (1 << 11)) }
         }
 
-        let this = &raw mut *SlabId::leak(CTX_ALLOC.alloc(Self {
+        let this = Box::into_raw(Box::new(Self {
             this: ptr::null(),
             apic,
             is_bootstrap,
