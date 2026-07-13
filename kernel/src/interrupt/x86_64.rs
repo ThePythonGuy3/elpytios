@@ -121,6 +121,8 @@ bitflags! {
         const PRESENT        = 1 << 15;
 
         const DPL_RING_0     = 0 << 12;
+        const DPL_RING_1     = 1 << 12;
+        const DPL_RING_2     = 2 << 12;
         const DPL_RING_3     = 3 << 12;
 
         const TYPE_INTERRUPT = 0xe << 8;
@@ -136,33 +138,113 @@ pub enum IdtIndex {
     PageFault = 14,
 }
 
-const INTERRUPT_CLOBBERED: usize = 9 * size_of::<usize>();
-macro_rules! interrupt_clobbered {
-    (push) => {
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct InterruptFrame {
+    pub r11: usize,
+    pub r10: usize,
+    pub r9: usize,
+    pub r8: usize,
+    pub rdi: usize,
+    pub rsi: usize,
+    pub rdx: usize,
+    pub rcx: usize,
+    pub rax: usize,
+}
+
+macro_rules! interrupt_entry {
+    (#[$($has_error:tt)*] $handle:ident) => {
+        naked_asm!(
+            r#"
+            push rax
+            push rcx
+            push rdx
+            push rsi
+            push rdi
+            push r8
+            push r9
+            push r10
+            push r11
+            "#,
+
+            interrupt_entry!(push => #[$($has_error)*] $handle),
+            "call {handle}",
+            interrupt_entry!(pop => #[$($has_error)*]),
+
+            r#"
+            pop r11
+            pop r10
+            pop r9
+            pop r8
+            pop rdi
+            pop rsi
+            pop rdx
+            pop rcx
+            pop rax
+            "#,
+
+            interrupt_entry!(return => #[$($has_error)*]),
+
+            clobbered = const size_of::<InterruptFrame>(),
+            handle = sym handle,
+            kernel_stack_offset = const CpuContext::KERNEL_STACK,
+            user_stack_offset = const CpuContext::USER_STACK,
+        )
+    };
+    (push => #[error] $handle:ident) => {
+        concat!(
+            r#"
+            test qword ptr [rsp + {clobbered} + 16], 3
+            jz 1f
+            "#,
+            swap_ctx!(user => kernel),
+            r#"
+            1:
+            mov rdi, [rsp + {clobbered}]
+            lea rsi, [rsp]
+            sub rsp, 8
+            "#,
+        )
+    };
+    (push => #[not(error)] $handle:ident) => {
+        concat!(
+            r#"
+            test qword ptr [rsp + {clobbered} + 8], 3
+            jz 2f
+            "#,
+            swap_ctx!(user => kernel),
+            "2: lea rdi, [rsp]",
+        )
+    };
+    (pop => #[error]) => {
+        concat!(
+            r#"
+            add rsp, 8
+            test qword ptr [rsp + {clobbered} + 16], 3
+            jz 3f
+            "#,
+            swap_ctx!(kernel => user),
+            "3:",
+        )
+    };
+    (pop => #[not(error)]) => {
+        concat!(
+            r#"
+            test qword ptr [rsp + {clobbered} + 8], 3
+            jz 4f
+            "#,
+            swap_ctx!(kernel => user),
+            "4:",
+        )
+    };
+    (return => #[error]) => {
         r#"
-        push rax
-        push rcx
-        push rdx
-        push rsi
-        push rdi
-        push r8
-        push r9
-        push r10
-        push r11
+        add rsp, 8
+        iretq
         "#
     };
-    (pop) => {
-        r#"
-        pop r11
-        pop r10
-        pop r9
-        pop r8
-        pop rdi
-        pop rsi
-        pop rdx
-        pop rcx
-        pop rax
-        "#
+    (return => #[not(error)]) => {
+        "iretq"
     };
 }
 
@@ -172,18 +254,9 @@ pub unsafe extern "sysv64" fn double_fault() -> ! {
         panic!("Double-fault caught (Hardware error code: {code})")
     }
 
-    naked_asm!(
-        interrupt_clobbered!(push),
-
-        "mov rdi, [rsp + {clobbered}]",
-        "call {handle}",
-
-        interrupt_clobbered!(pop),
-        "add rsp, 8",
-        "iretq",
-
-        clobbered = const INTERRUPT_CLOBBERED,
-        handle = sym handle,
+    interrupt_entry!(
+        #[error]
+        handle
     )
 }
 
@@ -222,18 +295,9 @@ pub unsafe extern "sysv64" fn page_fault() -> ! {
         }
     }
 
-    naked_asm!(
-        interrupt_clobbered!(push),
-
-        "mov rdi, [rsp + {clobbered}]",
-        "call {handle}",
-
-        interrupt_clobbered!(pop),
-        "add rsp, 8",
-        "iretq",
-
-        clobbered = const INTERRUPT_CLOBBERED,
-        handle = sym handle,
+    interrupt_entry!(
+        #[error]
+        handle
     )
 }
 

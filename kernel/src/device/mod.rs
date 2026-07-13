@@ -19,6 +19,7 @@ macro_rules! swap_ctx {
         swapgs
         mov gs:[{user_stack_offset}], rsp
         mov rsp, gs:[{kernel_stack_offset}]
+        and rsp, -16
         "#
     };
     (kernel => user) => {
