@@ -16,7 +16,7 @@ pub fn derive_syscall_table(input: proc_macro::TokenStream) -> proc_macro::Token
 
 fn execute(input: TokenStream) -> syn::Result<TokenStream> {
     let data = syn::parse2::<ItemEnum>(input)?;
-    let mut kernel_types = vec![];
+    let mut entries = vec![];
     let mut userspace_functions = vec![];
 
     let mut max_entries = None;
@@ -65,11 +65,10 @@ fn execute(input: TokenStream) -> syn::Result<TokenStream> {
 
         let variant_name = &variant.ident;
         let driver_name = Ident::new(&variant.ident.to_string().to_snake_case(), Span::call_site());
-        let fn_type_name = Ident::new(&format!("Syscall{}Fn", variant.ident.to_string()), Span::call_site());
 
         let args = args.into_iter().collect::<Vec<_>>();
-        kernel_types.push(quote! {
-            pub type #fn_type_name = crate::kernel::#fn_type;
+        entries.push(quote! {
+            pub #driver_name: crate::kernel::#fn_type
         });
         userspace_functions.push(quote! {
             #[inline(always)]
@@ -80,18 +79,28 @@ fn execute(input: TokenStream) -> syn::Result<TokenStream> {
     }
 
     let data_name = data.ident.clone();
+    let entry_name = Ident::new(&format!("{data_name}Entry"), Span::call_site());
+
     Ok(quote! {
         const _: () = {
             #(#test_discriminants)*
         };
-
-        #(#kernel_types)*
 
         impl #data_name {
             pub const MAX_ENTRIES: usize = #max_entries;
             pub const INVALID: usize = usize::MAX;
 
             #(#userspace_functions)*
+        }
+
+        #[derive(Copy, Clone)]
+        pub union #entry_name {
+            missing: usize,
+            #(#entries),*
+        }
+
+        impl #entry_name {
+            pub const MISSING: Self = Self { missing: 0 };
         }
     })
 }

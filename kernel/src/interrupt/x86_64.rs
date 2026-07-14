@@ -7,7 +7,7 @@ use core::{
 
 use bitflags::bitflags;
 use bytemuck::Zeroable;
-use elpytios_abi::{Syscall, SyscallReadFn, SyscallWriteFn};
+use elpytios_abi::{Syscall, SyscallEntry};
 
 use crate::{
     arch::x86_64::{Msr, rdmsr, wrmsr},
@@ -402,22 +402,12 @@ pub unsafe extern "sysv64" fn syscall_read(file: usize, buffer: usize, len: usiz
 }
 
 pub unsafe fn init_syscalls() {
-    #[derive(Clone, Copy)]
-    #[repr(C)]
-    union SyscallEntry {
-        missing: pattern_type!(usize is 0..=0),
-        syscall_write: SyscallWriteFn,
-        syscall_read: SyscallReadFn,
-    }
-
-    static mut SYSCALL_ENTRIES: [SyscallEntry; Syscall::MAX_ENTRIES] = [SyscallEntry {
-        missing: unsafe { mem::transmute::<usize, _>(0) },
-    }; Syscall::MAX_ENTRIES];
+    static mut SYSCALL_ENTRIES: [SyscallEntry; Syscall::MAX_ENTRIES] = [SyscallEntry::MISSING; Syscall::MAX_ENTRIES];
     static SYSCALL_INIT: SpinOnce = SpinOnce::new();
 
     SYSCALL_INIT.call_once(|| unsafe {
-        SYSCALL_ENTRIES[Syscall::Write as usize] = SyscallEntry { syscall_write };
-        SYSCALL_ENTRIES[Syscall::Read as usize] = SyscallEntry { syscall_read };
+        SYSCALL_ENTRIES[Syscall::Write as usize] = SyscallEntry { write: syscall_write };
+        SYSCALL_ENTRIES[Syscall::Read as usize] = SyscallEntry { read: syscall_read };
     });
 
     unsafe {
