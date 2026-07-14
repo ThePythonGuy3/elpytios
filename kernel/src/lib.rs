@@ -1,5 +1,4 @@
 #![forbid(unfulfilled_lint_expectations)]
-#![allow(internal_features, reason = "`pattern_type!()` is just too useful")]
 #![feature(
     anonymous_lifetime_in_impl_trait,
     arbitrary_self_types_pointers,
@@ -11,8 +10,6 @@
     impl_trait_in_assoc_type,
     layout_for_ptr,
     never_type,
-    pattern_types,
-    pattern_type_macro,
     pointer_is_aligned_to,
     ptr_alignment_type,
     ptr_metadata,
