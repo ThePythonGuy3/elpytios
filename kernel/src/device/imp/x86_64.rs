@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use core::{
     arch::{asm, global_asm, x86_64::__cpuid_count},
     hint::spin_loop,
-    mem::{ManuallyDrop, offset_of},
+    mem::ManuallyDrop,
     ptr::{self, NonNull},
     sync::atomic::{
         AtomicBool, AtomicU32,
@@ -18,7 +18,7 @@ use crate::{
     ScratchPages,
     arch::x86_64::{Msr, pit_delay, rdmsr, wrmsr},
     device::acpi::{LocalApicFlags, Madt, Pic},
-    interrupt::init_interrupts,
+    interrupt::{Tss, init_interrupts},
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt},
     vaddr::{VAddr, VFlags},
 };
@@ -93,20 +93,19 @@ impl ApicDriver {
 
 #[repr(C)]
 pub struct CpuContext {
+    // Common fields across all architectures
     this: *const Self,
     apic: ApicDriver,
-    is_bootstrap: bool,
-    apic_id: u32,
-    cpu_id: u32,
-    kernel_stack: usize,
-    user_stack: usize,
+    pub is_bootstrap: bool,
+    pub apic_id: u32,
+    pub cpu_id: u32,
+    // x86_64-specific fields
+    /// Task state segment
+    pub tss: Tss,
 }
 
 impl CpuContext {
-    pub const KERNEL_STACK: usize = offset_of!(Self, kernel_stack);
-    pub const USER_STACK: usize = offset_of!(Self, user_stack);
-
-    unsafe fn new(apic: ApicDriver, is_bootstrap: bool, apic_id: u32, cpu_id: u32) {
+    unsafe fn install(apic: ApicDriver, is_bootstrap: bool, apic_id: u32, cpu_id: u32) {
         if let ApicDriver::X2Apic = apic {
             unsafe { wrmsr(Msr::Ia32ApicBase, rdmsr(Msr::Ia32ApicBase) | (1 << 10) | (1 << 11)) }
         }
@@ -117,8 +116,7 @@ impl CpuContext {
             is_bootstrap,
             apic_id,
             cpu_id,
-            kernel_stack: 0,
-            user_stack: 0,
+            tss: Tss::new(),
         }));
 
         unsafe {
@@ -135,32 +133,15 @@ impl CpuContext {
                 "mov {}, gs:[0]",
 
                 out(reg) ptr,
-                options(pure, nomem, nostack, preserves_flags),
+                options(pure, readonly, nostack, preserves_flags),
             );
             ptr.as_ref_unchecked()
         }
-    }
-
-    #[inline]
-    pub fn is_bootstrap(&self) -> bool {
-        self.is_bootstrap
-    }
-
-    #[inline]
-    pub fn apic_id(&self) -> u32 {
-        self.apic_id
-    }
-
-    #[inline]
-    pub fn cpu_id(&self) -> u32 {
-        self.cpu_id
     }
 }
 
 pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages: &mut ScratchPages, processor_entry: F, madt: Madt) -> ! {
     unsafe {
-        init_interrupts();
-
         let v_map = get_virtual_map();
         let driver = if __cpuid_count(0x01, 0x00).ecx & (1 << 21) != 0 {
             info!("x2APIC is supported on this hardware; using Model-Specific Registers for APIC");
@@ -235,8 +216,9 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
         ) -> ! {
             let processor_entry = unsafe {
                 let [apic_id, cpu_id] = ids.read_unaligned();
-                init_interrupts();
-                CpuContext::new(apic, false, apic_id, cpu_id);
+
+                CpuContext::install(apic, false, apic_id, cpu_id);
+                init_interrupts(CpuContext::get());
 
                 (processor_entry as *const F).read_unaligned()
             };
@@ -260,7 +242,9 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
 
         let mut init_cpu = |apic_id: u32| {
             if bsp_id == apic_id {
-                CpuContext::new(driver, true, apic_id, cpu_id);
+                CpuContext::install(driver, true, apic_id, cpu_id);
+                init_interrupts(CpuContext::get());
+
                 cpu_id += 1;
             } else {
                 const STACK_PAGES: usize = 16;
