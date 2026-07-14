@@ -204,7 +204,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
         }
 
         let stack_ptr = boot::allocate_pages(AllocateType::AnyPages, MEM_STACK, MEM_STACK_LEN).unwrap().as_ptr();
-        identity_maps.push(IdentityMap::new(PAddr::new(stack_ptr.addr()), MEM_STACK_LEN, IdentityMapFlags::READABLE | IdentityMapFlags::WRITABLE));
+        identity_maps.push(IdentityMap::new(PAddr::new(stack_ptr.addr() + PAGE_SIZE), MEM_STACK_LEN - 1, IdentityMapFlags::READABLE | IdentityMapFlags::WRITABLE));
 
         kernel_entry = unsafe { kernel_ptr.add(KERNEL_BINARY.program_entry() as usize - virtual_base) };
         kernel_stack_base = unsafe { stack_ptr.add(MEM_STACK_LEN * PAGE_SIZE) };
@@ -212,7 +212,6 @@ fn setup_uefi_and_exit() -> UefiInfo {
         boot_info = boot::allocate_pages(AllocateType::AnyPages, MEM_BOOT_INFO, MEM_BOOT_INFO_LEN).unwrap().as_ptr().cast();
         identity_maps.push(IdentityMap::new(PAddr::new(boot_info.addr()), MEM_BOOT_INFO_LEN, IdentityMapFlags::READABLE));
 
-        //
         unsafe {
             let scratch_ptr = boot::allocate_pages(AllocateType::MaxAddress(1 << 16), MEM_SCRATCH, MEM_SCRATCH_LEN).unwrap().as_ptr();
             scratch_ptr.write_bytes(0, MEM_SCRATCH_LEN * PAGE_SIZE);
