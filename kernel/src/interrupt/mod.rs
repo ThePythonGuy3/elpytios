@@ -1,7 +1,7 @@
 cfg_select! {
     target_arch = "x86_64" => {
-        mod x86_64;
-        pub use x86_64::{init_interrupts, Tss};
+        pub mod x86_64;
+        pub use x86_64::init_interrupts;
     }
     _ => {
         compile_error!("Unsupported architecture");

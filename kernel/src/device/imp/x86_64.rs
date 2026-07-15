@@ -16,9 +16,9 @@ use log::{debug, error, info};
 
 use crate::{
     ScratchPages,
-    arch::x86_64::{Msr, pit_delay, rdmsr, wrmsr},
+    arch::x86_64::{ExtendedRegisters, Msr, pit_delay, rdmsr, wrmsr},
     device::acpi::{LocalApicFlags, Madt, Pic},
-    interrupt::{Tss, init_interrupts},
+    interrupt::{init_interrupts, x86_64::Tss},
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt},
     vaddr::{VAddr, VFlags},
 };
@@ -100,6 +100,7 @@ pub struct CpuContext {
     pub apic_id: u32,
     pub cpu_id: u32,
     // x86_64-specific fields
+    pub registers: ExtendedRegisters,
     /// Task state segment
     pub tss: Tss,
 }
@@ -116,12 +117,15 @@ impl CpuContext {
             is_bootstrap,
             apic_id,
             cpu_id,
+            registers: unsafe { ExtendedRegisters::new() },
             tss: Tss::new(),
         }));
 
         unsafe {
             (*this).this = this;
             wrmsr(Msr::Ia32GsBase, this as u64);
+
+            init_interrupts(Self::get())
         }
     }
 
@@ -139,6 +143,8 @@ impl CpuContext {
         }
     }
 }
+
+unsafe fn init_cpu() {}
 
 pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages: &mut ScratchPages, processor_entry: F, madt: Madt) -> ! {
     unsafe {
@@ -216,9 +222,7 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
         ) -> ! {
             let processor_entry = unsafe {
                 let [apic_id, cpu_id] = ids.read_unaligned();
-
                 CpuContext::install(apic, false, apic_id, cpu_id);
-                init_interrupts(CpuContext::get());
 
                 (processor_entry as *const F).read_unaligned()
             };
@@ -243,8 +247,6 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
         let mut init_cpu = |apic_id: u32| {
             if bsp_id == apic_id {
                 CpuContext::install(driver, true, apic_id, cpu_id);
-                init_interrupts(CpuContext::get());
-
                 cpu_id += 1;
             } else {
                 const STACK_PAGES: usize = 16;

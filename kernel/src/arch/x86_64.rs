@@ -1,4 +1,18 @@
-use core::{arch::asm, hint::spin_loop, time::Duration};
+use alloc::{
+    alloc::{alloc_zeroed, handle_alloc_error},
+    boxed::Box,
+};
+use core::{
+    alloc::Layout,
+    arch::{
+        asm,
+        x86_64::{__cpuid_count, _xrstor64, _xsave64, _xsavec64, _xsetbv},
+    },
+    hint::spin_loop,
+    mem::Alignment,
+    ptr,
+    time::Duration,
+};
 
 #[inline(always)]
 pub unsafe fn outb(port: u16, value: u8) {
@@ -44,7 +58,7 @@ pub fn pit_delay(mut duration: Duration) {
             0 => continue,
             t @ 1..TICK_MAX => t as u16,
             TICK_MAX => 0,
-            _ => unreachable!("Tick arithmetics should ensure max wait doesn't exceed 65536"),
+            _ => unreachable!("Tick arithmetics should ensure max wait doesn't exceed {TICK_MAX}"),
         };
 
         unsafe {
@@ -158,5 +172,73 @@ pub unsafe fn wrmsr(address: Msr, value: u64) {
 
             options(nomem, nostack, preserves_flags)
         );
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExtendedRegisters {
+    layout: Layout,
+    save: unsafe fn(to: *mut u8, save_mask: u64),
+}
+
+impl !Send for ExtendedRegisters {}
+impl !Sync for ExtendedRegisters {}
+
+#[repr(C, align(64))]
+pub struct ExtendedRegisterBuffer([u8]);
+
+impl ExtendedRegisters {
+    pub const ALIGNMENT: Alignment = unsafe { Alignment::new_unchecked(1 << 6) };
+
+    /// # Safety
+    /// Must only be called once per CPU core.
+    #[inline]
+    pub unsafe fn new() -> Self {
+        // Enable `xsave` and `xstor`
+        // x86_64 guarantees support for these instructions, so no need to check
+        unsafe {
+            let tmp: usize;
+            asm!(
+                "mov {tmp}, cr4",
+                "or {tmp}, 1 << 18",
+                "mov cr4, {tmp}",
+
+                tmp = out(reg) tmp,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+
+        let cpuid = __cpuid_count(0xd, 0);
+
+        // Query how many bytes the extended registers would take
+        let layout = Layout::from_size_alignment((cpuid.ebx as usize).max(1), Self::ALIGNMENT).expect("Extended register buffer size too large");
+        // Enable all supported features to xcr0
+        let full_mask = (cpuid.edx as u64) << 32 | (cpuid.eax as u64);
+        _xsetbv(0, full_mask);
+
+        let cpuid = __cpuid_count(0xd, 1);
+        if cpuid.eax & (1 << 1) != 0 { Self { layout, save: _xsavec64 } } else { Self { layout, save: _xsave64 } }
+    }
+
+    #[inline]
+    pub fn new_buffer(&self) -> Box<ExtendedRegisterBuffer> {
+        unsafe {
+            let ptr = alloc_zeroed(self.layout);
+            if ptr.is_null() {
+                handle_alloc_error(self.layout)
+            }
+
+            Box::from_raw(ptr::from_raw_parts_mut(ptr, self.layout.size()))
+        }
+    }
+
+    #[inline]
+    pub unsafe fn save(&self, to: &mut ExtendedRegisterBuffer) {
+        unsafe { (self.save)(to.0.as_mut_ptr(), 0xffffffff) }
+    }
+
+    #[inline]
+    pub unsafe fn load(&self, from: &ExtendedRegisterBuffer) {
+        unsafe { _xrstor64(from.0.as_ptr(), 0xffffffff) }
     }
 }

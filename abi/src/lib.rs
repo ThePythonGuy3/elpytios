@@ -11,6 +11,7 @@ pub enum Syscall {
     Read = 1,
 }
 
+#[expect(unused, reason = "Not all parameters are used yet")]
 mod kernel {
     cfg_select! {
         target_arch = "x86_64" => {
@@ -23,6 +24,7 @@ mod kernel {
     }
 }
 
+#[expect(unused, reason = "Not all parameters are used yet")]
 mod userspace {
     cfg_select! {
         target_arch = "x86_64" => {

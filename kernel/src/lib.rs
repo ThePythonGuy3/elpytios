@@ -9,6 +9,7 @@
     debug_closure_helpers,
     impl_trait_in_assoc_type,
     layout_for_ptr,
+    negative_impls,
     never_type,
     pointer_is_aligned_to,
     ptr_alignment_type,
@@ -28,6 +29,7 @@ pub mod interrupt;
 pub mod rendering;
 pub mod serial;
 pub mod spin_sync;
+pub mod task;
 pub mod vaddr;
 
 use core::mem::MaybeUninit;
