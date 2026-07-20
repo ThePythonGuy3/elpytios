@@ -79,6 +79,14 @@ impl Dir {
     pub fn metadata(&self) -> io::Result<FileAttr> {
         self.path.metadata().map(|m| m.into_inner())
     }
+
+    pub fn remove_file(&self, path: &Path) -> io::Result<()> {
+        crate::fs::remove_file(self.path.join(path))
+    }
+
+    pub fn rename(&self, from: &Path, to_dir: &Self, to: &Path) -> io::Result<()> {
+        crate::fs::rename(self.path.join(from), to_dir.path.join(to))
+    }
 }
 
 impl fmt::Debug for Dir {

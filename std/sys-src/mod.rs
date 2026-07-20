@@ -1,9 +1,9 @@
-mod alloc;
 mod configure_builtins;
 mod helpers;
 mod personality;
 mod startup;
 
+pub mod alloc;
 pub mod args;
 pub mod backtrace;
 pub mod cmath;

@@ -55,7 +55,10 @@ impl<'root> IntoIterator for Madt<'root> {
                         GIC_MSI_FRAME => Pic::GicMsiFrame(payload.read()),
                         GIC_REDISTRIBUTOR => Pic::GicRedistributor(payload.read()),
                         GIC_INTERRUPT_TRANSLATION_SERVICE => Pic::GicInterruptTranslationService(payload.read()),
-                        RESERVED_FOR_OSPM_START..=RESERVED_FOR_OSPM_END | RESERVED_FOR_OEM_START..=RESERVED_FOR_OEM_END => continue,
+                        RESERVED_FOR_OSPM_START..=RESERVED_FOR_OSPM_END | RESERVED_FOR_OEM_START..=RESERVED_FOR_OEM_END => {
+                            _ = payload.slice(len as usize - 2);
+                            continue
+                        },
                     })
                 }
             }
