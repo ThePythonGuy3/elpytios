@@ -393,10 +393,12 @@ pub unsafe extern "sysv64" fn page_fault() -> ! {
     )
 }
 
+#[allow(unused, reason = "Unimplemented")]
 pub unsafe extern "sysv64" fn syscall_write(file: usize, buffer: usize, len: usize) -> usize {
     Syscall::INVALID
 }
 
+#[allow(unused, reason = "Unimplemented")]
 pub unsafe extern "sysv64" fn syscall_read(file: usize, buffer: usize, len: usize) -> usize {
     Syscall::INVALID
 }

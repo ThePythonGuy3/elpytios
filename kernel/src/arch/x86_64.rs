@@ -196,13 +196,12 @@ impl ExtendedRegisters {
         // Enable `xsave` and `xstor`
         // x86_64 guarantees support for these instructions, so no need to check
         unsafe {
-            let tmp: usize;
             asm!(
                 "movq %cr4, {tmp}",
                 "orq $(1 << 18), {tmp}",
                 "movq {tmp}, %cr4",
 
-                tmp = out(reg) tmp,
+                tmp = out(reg) _,
                 options(att_syntax, nomem, nostack, preserves_flags),
             );
         }
