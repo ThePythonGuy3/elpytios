@@ -100,7 +100,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
     let kernel_entry:      *mut u8;
     let kernel_stack_base: *mut u8;
     let boot_info:         *mut BootInfo;
-    
+
     helpers::init().unwrap();
 
     {
@@ -271,7 +271,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
             ) {
                 continue
             }
- 
+
             let start = entry.phys_start as usize;
             let count = entry.page_count as usize;
 
@@ -308,14 +308,14 @@ fn entry() -> Status {
     let UefiInfo { kernel_entry, kernel_stack_base, boot_info } = setup_uefi_and_exit();
     unsafe {
         asm!(
-            "mov rsp, {kernel_stack_base}",
-            "jmp {kernel_entry}",
+            "movq {kernel_stack_base}, %rsp",
+            "jmpq *{kernel_entry}",
 
             in("rdi") boot_info,
             kernel_stack_base = in(reg) kernel_stack_base,
             kernel_entry = in(reg) kernel_entry,
 
-            options(noreturn)
+            options(att_syntax, noreturn)
         )
     }
 }

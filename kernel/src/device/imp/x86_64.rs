@@ -134,17 +134,15 @@ impl CpuContext {
         let ptr: *const Self;
         unsafe {
             asm!(
-                "mov {}, gs:[0]",
+                "movq %gs:[0], {}",
 
                 out(reg) ptr,
-                options(pure, readonly, nostack, preserves_flags),
+                options(att_syntax, pure, readonly, nostack, preserves_flags),
             );
             ptr.as_ref_unchecked()
         }
     }
 }
-
-unsafe fn init_cpu() {}
 
 pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages: &mut ScratchPages, processor_entry: F, madt: Madt) -> ! {
     unsafe {
@@ -194,7 +192,7 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
             .cast::<u32>()
             .write_unaligned({
                 let cr3: usize;
-                asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+                asm!("movq %cr3, {}", out(reg) cr3, options(att_syntax, nomem, nostack, preserves_flags));
                 u32::try_from(cr3).expect("Page table physical address must be within 32-bit address")
             });
         trampoline
@@ -202,7 +200,7 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
             .cast::<u32>()
             .write_unaligned({
                 let cr4: usize;
-                asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+                asm!("movq %cr4, {}", out(reg) cr4, options(att_syntax, nomem, nostack, preserves_flags));
                 u32::try_from(cr4).expect("Page table physical address must be within 32-bit address")
             });
         trampoline

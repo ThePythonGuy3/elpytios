@@ -18,11 +18,11 @@ use core::{
 pub unsafe fn outb(port: u16, value: u8) {
     unsafe {
         asm!(
-            "out dx, al",
-            in("dx") port,
+            "outb %al, %dx",
             in("al") value,
+            in("dx") port,
 
-            options(nomem, nostack, preserves_flags)
+            options(att_syntax, nomem, nostack, preserves_flags)
         )
     }
 }
@@ -32,12 +32,11 @@ pub unsafe fn inb(port: u16) -> u8 {
     unsafe {
         let value: u8;
         asm!(
-            "in al, dx",
-
-            out("al") value,
+            "inb %dx, %al",
             in("dx") port,
+            out("al") value,
 
-            options(nomem, nostack, preserves_flags),
+            options(att_syntax, nomem, nostack, preserves_flags),
         );
         value
     }
@@ -153,7 +152,7 @@ pub unsafe fn rdmsr(address: Msr) -> u64 {
             out("eax") low,
             out("edx") high,
 
-            options(nomem, nostack, preserves_flags)
+            options(att_syntax, nomem, nostack, preserves_flags)
         );
     }
 
@@ -170,7 +169,7 @@ pub unsafe fn wrmsr(address: Msr, value: u64) {
             in("eax") value as u32,
             in("edx") (value >> 32) as u32,
 
-            options(nomem, nostack, preserves_flags)
+            options(att_syntax, nomem, nostack, preserves_flags)
         );
     }
 }
@@ -199,12 +198,12 @@ impl ExtendedRegisters {
         unsafe {
             let tmp: usize;
             asm!(
-                "mov {tmp}, cr4",
-                "or {tmp}, 1 << 18",
-                "mov cr4, {tmp}",
+                "movq %cr4, {tmp}",
+                "orq $(1 << 18), {tmp}",
+                "movq {tmp}, %cr4",
 
                 tmp = out(reg) tmp,
-                options(nomem, nostack, preserves_flags),
+                options(att_syntax, nomem, nostack, preserves_flags),
             );
         }
 
@@ -214,7 +213,7 @@ impl ExtendedRegisters {
         let layout = Layout::from_size_alignment((cpuid.ebx as usize).max(1), Self::ALIGNMENT).expect("Extended register buffer size too large");
         // Enable all supported features to xcr0
         let full_mask = (cpuid.edx as u64) << 32 | (cpuid.eax as u64);
-        _xsetbv(0, full_mask);
+        unsafe { _xsetbv(0, full_mask) }
 
         let cpuid = __cpuid_count(0xd, 1);
         if cpuid.eax & (1 << 1) != 0 { Self { layout, save: _xsavec64 } } else { Self { layout, save: _xsave64 } }

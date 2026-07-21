@@ -40,6 +40,8 @@ unsafe extern "sysv64" fn jump_from_bootloader(info: &'static BootInfo) -> ! {
         "jmp {setup_identity_mapped}",
 
         setup_identity_mapped = sym setup_identity_mapped,
+
+        options(att_syntax),
     )
 }
 
@@ -181,25 +183,25 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
         let tmp = 0usize;
         asm!(
             // Enable `GLOBAL` mapping, i.e. pages in TLB that don't get flushed
-            "mov {tmp}, cr4",
-            "or {tmp}, 1 << 7",
-            "mov cr4, {tmp}",
+            "movq %cr4, {tmp}",
+            "orq $(1 << 7), {tmp}",
+            "movq {tmp}, %cr4",
 
-            "mov cr3, {page_table_phys}",
-            "add rsp, {v_slide}",
-            "and rsp, -16",
-            "jmp {setup_virtual_mapped}",
+            "movq {page_table_phys}, %cr3",
+            "addq {v_slide}, %rsp",
+            "andq $-16, %rsp",
+            "jmpq *{setup_virtual_mapped}",
 
             tmp = in(reg) tmp,
             page_table_phys = in(reg) page_table_phys.addr(),
             v_slide = in(reg) v_slide,
             setup_virtual_mapped = in(reg) setup_virtual_mapped,
-            in("rdi") (info as *const BootInfo).byte_add(v_slide).as_ref_unchecked(),
+            in("rdi") (info as *const BootInfo).byte_add(v_slide),
             in("rsi") &regions.into_inner(),
             in("rdx") &mut scratch_pages,
             in("rcx") kernel_base.addr(),
 
-            options(noreturn),
+            options(att_syntax, noreturn),
         )
     }
 }
