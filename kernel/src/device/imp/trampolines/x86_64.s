@@ -15,33 +15,29 @@ __ap_trampoline_start:
 ap_entry_16:
     # Clear interrupts and zero out segments
     cli
-    xor ax, ax
-    mov ds, ax
-    mov es, ax
-    mov ss, ax
+    xorl %eax, %eax
+    mov %ax, %ds
+    mov %ax, %es
+    mov %ax, %ss
 
     # Get the allocated address of `__ap_trampoline_start` from `cs`
-    xor bx, bx
-    mov bx, cs
-    shl bx, 4
+    xorl %ebx, %ebx
+    movw %cs, %bx
+    shll $4, %ebx
 
     # Set `.gdt_desc + 2` to `.gdt_start` relative to `bx`
-    mov si, bx
-    add si, [bx + GDT_START_LOOKUP]
-    mov di, [bx + GDT_DESC_LOOKUP]
-    mov [bx + di + 2], si
-    lgdt [bx + di]
+    leaw (.gdt_start - __ap_trampoline_start)(%bx), %ax
+    movw %ax, (.gdt_desc - __ap_trampoline_start + 2)(%bx)
+    lgdt (.gdt_desc - __ap_trampoline_start)(%bx)
 
     # Set `.jmp_32 + 2` to `ap_entry_32` relative to `bx`
-    mov si, bx
-    add si, [bx + AP_ENTRY_32_LOOKUP]
-    mov di, [bx + JMP_32_LOOKUP]
-    mov [bx + di + 2], si
+    leaw (ap_entry_32 - __ap_trampoline_start)(%bx), %ax
+    movw %ax, (.jmp_32 - __ap_trampoline_start + 2)(%bx)
 
     # Enable protected mode
-    mov ecx, cr0
-    or ecx, 0x00000001
-    mov cr0, ecx
+    movl %cr0, %eax
+    orl $0x00000001, %eax
+    movl %eax, %cr0
 
     # Raw bytes for a far jump; necessary since the address is dynamically written
 .jmp_32:
@@ -59,54 +55,42 @@ ap_entry_16:
     .word .gdt_end - .gdt_start - 1
     .long 0x00000000
 
-    .gdt_start_lookup:          .word .gdt_start - __ap_trampoline_start
-    .gdt_desc_lookup:           .word .gdt_desc - __ap_trampoline_start
-    .jmp_32_lookup:             .word .jmp_32 - __ap_trampoline_start
-    .ap_entry_32_lookup:        .word ap_entry_32 - __ap_trampoline_start
-    .equ GDT_START_LOOKUP,      .gdt_start_lookup - __ap_trampoline_start
-    .equ GDT_DESC_LOOKUP,       .gdt_desc_lookup - __ap_trampoline_start
-    .equ JMP_32_LOOKUP,         .jmp_32_lookup - __ap_trampoline_start
-    .equ AP_ENTRY_32_LOOKUP,    .ap_entry_32_lookup - __ap_trampoline_start
-
 .code32
 ap_entry_32:
     # Reinitialize segments and zero-extend base address
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
-    mov ss, ax
-    movzx ebx, bx
+    movw $0x10, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %ss
 
     # Zero out unused segments
-    xor ax, ax
-    mov fs, ax
-    mov gs, ax
+    xorw %ax, %ax
+    movw %ax, %fs
+    movw %ax, %gs
 
     # Set physical page table
-    mov eax, [ebx + AP_CR3]
-    mov cr3, eax
-
+    movl (__ap_cr3 - __ap_trampoline_start)(%ebx), %eax
+    movl %eax, %cr3
     # Copy CR4 (which importantly includes Page Address Extension)
-    mov eax, [ebx + AP_CR4]
-    mov cr4, eax
+    movl (__ap_cr4 - __ap_trampoline_start)(%ebx), %eax
+    movl %eax, %cr4
 
     # Enable 64-bit long mode
-    mov ecx, 0xc0000080 # `IA32_EFER`
+    movl $0xc0000080, %ecx # `IA32_EFER`
     rdmsr
-    or eax, 1 << 8
-    or eax, 1 << 11
+    orl $(1 << 8), %eax
+    orl $(1 << 11), %eax
     wrmsr
 
-    # Set `.jmp_64 + 2` to `ap_entry_64` relative to `ebx`
-    mov esi, ebx
-    add esi, [ebx + AP_ENTRY_64_LOOKUP]
-    mov edi, [ebx + JMP_64_LOOKUP]
-    mov [ebx + edi + 1], esi
+    # Set `.jmp_64 + 1` to `ap_entry_64` relative to `ebx`
+    movl $(ap_entry_64 - __ap_trampoline_start), %eax
+    addl %ebx, %eax
+    movl %eax, (.jmp_64 - __ap_trampoline_start + 1)(%ebx)
 
     # Enable virtual paging
-    mov eax, cr0
-    or eax, 1 << 31
-    mov cr0, eax
+    movl %cr0, %eax
+    orl $(1 << 31), %eax
+    movl %eax, %cr0
 
     # Raw bytes for a far jump; necessary since the address is dynamically written
 .jmp_64:
@@ -114,26 +98,20 @@ ap_entry_32:
     .long 0x00000000
     .word 0x0018
 
-    __ap_cr3:                   .long 0x00000000
-    __ap_cr4:                   .long 0x00000000
-    .jmp_64_lookup:             .long .jmp_64 - __ap_trampoline_start
-    .ap_entry_64_lookup:        .long ap_entry_64 - __ap_trampoline_start
-    .equ AP_CR3,                __ap_cr3 - __ap_trampoline_start
-    .equ AP_CR4,                __ap_cr4 - __ap_trampoline_start
-    .equ JMP_64_LOOKUP,         .jmp_64_lookup - __ap_trampoline_start
-    .equ AP_ENTRY_64_LOOKUP,    .ap_entry_64_lookup - __ap_trampoline_start
+    __ap_cr3:   .long 0x00000000
+    __ap_cr4:   .long 0x00000000
 
 .code64
 ap_entry_64:
     # Setup stack pointer to the stack given by BSP
-    mov rsp, [rip + __ap_stack]
-    and rsp, -16
+    movq __ap_stack(%rip), %rsp
+    andq $-16, %rsp
 
     # Call an `extern "sysv64"` function given by the kernel
-    mov rdi, [rip + __ap_kernel_arg0]
-    mov rsi, [rip + __ap_kernel_arg1]
-    mov rdx, [rip + __ap_kernel_arg2]
-    jmp [rip + __ap_kernel_entry]
+    movq __ap_kernel_arg0(%rip), %rdi
+    movq __ap_kernel_arg1(%rip), %rsi
+    movq __ap_kernel_arg2(%rip), %rdx
+    jmpq *__ap_kernel_entry(%rip)
 
     __ap_stack:         .quad 0x0000000000000000
     __ap_kernel_entry:  .quad 0x0000000000000000

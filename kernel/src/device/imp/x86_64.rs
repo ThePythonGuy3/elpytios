@@ -23,7 +23,7 @@ use crate::{
     vaddr::{VAddr, VFlags},
 };
 
-global_asm!(include_str!("trampolines/x86_64.s"));
+global_asm!(include_str!("trampolines/x86_64.s"), options(att_syntax));
 unsafe extern "sysv64" {
     static __ap_trampoline_start: u8;
     static __ap_cr3: u8;
