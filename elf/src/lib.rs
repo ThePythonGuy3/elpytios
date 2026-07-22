@@ -95,7 +95,7 @@ impl<'a> Elf<'a> {
 
         match prologue.arch {
             1 => panic!("32-bit ELF isn't supported yet"),
-            2 => Ok(Self::N64(Elf64::from_bytes(file_reader, header_reader)?)),
+            2 => Ok(Self::N64(Elf64::from_bytes(prologue, file_reader, header_reader)?)),
             arch => Err(ElfError::InvalidArch(arch)),
         }
     }
@@ -103,6 +103,7 @@ impl<'a> Elf<'a> {
 
 #[derive(Debug)]
 pub struct Elf64<'a> {
+    prologue: ElfHeaderPrologue,
     header: ElfHeader64,
     file_reader: Reader<'a>,
     program_table_reader: Reader<'a>,
@@ -111,7 +112,7 @@ pub struct Elf64<'a> {
 }
 
 impl<'a> Elf64<'a> {
-    const fn from_bytes(file_reader: Reader<'a>, mut header_reader: Reader<'a>) -> Result<Self, ElfError> {
+    const fn from_bytes(prologue: ElfHeaderPrologue, file_reader: Reader<'a>, mut header_reader: Reader<'a>) -> Result<Self, ElfError> {
         let header = header_reader.read::<ElfHeader64>().ok_or(ElfError::Eof)?;
         let program_table_reader = file_reader.fork(int_fit(header.program_header_table_offset)?).ok_or(ElfError::Eof)?;
         let section_table_reader = file_reader.fork(int_fit(header.section_header_table_offset)?).ok_or(ElfError::Eof)?;
@@ -136,12 +137,18 @@ impl<'a> Elf64<'a> {
         }
 
         Ok(Self {
+            prologue,
             header,
             file_reader,
             program_table_reader,
             section_table_reader,
             string_table,
         })
+    }
+
+    #[inline]
+    pub const fn prologue(&self) -> ElfHeaderPrologue {
+        self.prologue
     }
 
     #[inline]
@@ -179,6 +186,7 @@ const impl Clone for Elf64<'_> {
     #[inline]
     fn clone(&self) -> Self {
         Self {
+            prologue: self.prologue,
             header: self.header,
             file_reader: self.file_reader.clone(),
             program_table_reader: self.program_table_reader.clone(),

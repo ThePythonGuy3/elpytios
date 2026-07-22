@@ -8,7 +8,7 @@ use core::{arch::asm, mem::{self, MaybeUninit}};
 
 use arrayvec::ArrayVec;
 use const_panic::concat_panic;
-use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type}};
+use elpytios_elf::{Elf, Elf64, ElfSegment64, ElfSegmentType, sys::{ElfProgramFlags, ElfRela64, ElfRela64Type, ElfType}};
 use elpytios_bootinfo::{BootInfo, DeviceTree, GraphicsInfo, IdentityMap, IdentityMapFlags, MAX_SCRATCH, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
 use uefi::{Status, boot::{self, AllocateType, MemoryType}, entry, helpers, mem::memory_map::MemoryMap, proto::console::gop::*, table::cfg::ConfigTableEntry};
 
@@ -33,6 +33,11 @@ const KERNEL_BINARY: Elf64 = match Elf::from_bytes(include_bytes!(concat!("../..
 };
 
 const KERNEL_SEGMENTS: [ElfSegment64; KERNEL_BINARY.program_header_count()] = {
+    // Force `-fPIE` in the kernel
+    if !matches!(KERNEL_BINARY.prologue().elf_type, ElfType::DYNAMIC) {
+        panic!("Invalid kernel ELF type, must be ElfType::DYNAMIC (3)")
+    }
+
     let mut out: MaybeUninit<[ElfSegment64; _]> = MaybeUninit::uninit();
     let mut ptr = out.as_mut_ptr() as *mut ElfSegment64;
 
