@@ -1,14 +1,7 @@
-.section .ap_trampoline, "a"
+.section .ap_trampoline, "aw"
 
 .global __ap_trampoline_start
-.global __ap_cr3
-.global __ap_cr4
-.global __ap_stack
-.global __ap_kernel_entry
-.global __ap_kernel_arg0
-.global __ap_kernel_arg1
-.global __ap_kernel_arg2
-.global __ap_trampoline_end
+.global __ap_trampoline_size
 
 __ap_trampoline_start:
 .code16
@@ -98,9 +91,6 @@ ap_entry_32:
     .long 0x00000000
     .word 0x0018
 
-    __ap_cr3:   .long 0x00000000
-    __ap_cr4:   .long 0x00000000
-
 .code64
 ap_entry_64:
     # Setup stack pointer to the stack given by BSP
@@ -113,10 +103,22 @@ ap_entry_64:
     movq __ap_kernel_arg2(%rip), %rdx
     jmpq *__ap_kernel_entry(%rip)
 
-    __ap_stack:         .quad 0x0000000000000000
-    __ap_kernel_entry:  .quad 0x0000000000000000
-    __ap_kernel_arg0:   .quad 0x0000000000000000
-    __ap_kernel_arg1:   .quad 0x0000000000000000
-    __ap_kernel_arg2:   .quad 0x0000000000000000
+.global __ap_cr3
+.global __ap_cr4
+.global __ap_stack
+.global __ap_kernel_entry
+.global __ap_kernel_arg0
+.global __ap_kernel_arg1
+.global __ap_kernel_arg2
+
+.align 8
+__ap_cr3:           .long 0x00000000
+__ap_cr4:           .long 0x00000000
+__ap_stack:         .quad 0x0000000000000000
+__ap_kernel_entry:  .quad 0x0000000000000000
+__ap_kernel_arg0:   .quad 0x0000000000000000
+__ap_kernel_arg1:   .quad 0x0000000000000000
+__ap_kernel_arg2:   .quad 0x0000000000000000
 
 __ap_trampoline_end:
+__ap_trampoline_size:   .quad __ap_trampoline_end - __ap_trampoline_start

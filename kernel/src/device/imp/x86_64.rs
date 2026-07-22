@@ -26,14 +26,15 @@ use crate::{
 global_asm!(include_str!("trampolines/x86_64.s"), options(att_syntax));
 unsafe extern "sysv64" {
     static __ap_trampoline_start: u8;
-    static __ap_cr3: u8;
-    static __ap_cr4: u8;
-    static __ap_stack: u8;
-    static __ap_kernel_entry: u8;
-    static __ap_kernel_arg0: u8;
-    static __ap_kernel_arg1: u8;
-    static __ap_kernel_arg2: u8;
-    static __ap_trampoline_end: u8;
+    static __ap_trampoline_size: usize;
+
+    static mut __ap_cr3: u32;
+    static mut __ap_cr4: u32;
+    static mut __ap_stack: *mut u8;
+    static mut __ap_kernel_entry: unsafe extern "sysv64" fn(*const (), ApicDriver, *const [u32; 2]) -> !;
+    static mut __ap_kernel_arg0: *const ();
+    static mut __ap_kernel_arg1: ApicDriver;
+    static mut __ap_kernel_arg2: *const [u32; 2];
 }
 
 #[derive(Clone, Copy)]
@@ -180,35 +181,7 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
             .map(trampoline_phys, trampoline, 1, VFlags::WRITABLE | VFlags::EXECUTE_DISABLE)
             .expect("Couldn't virtual-map trampoline code");
         let trampoline = trampoline.ptr_mut::<u8>();
-        let trampoline_len = (&raw const __ap_trampoline_end).offset_from_unsigned(&raw const __ap_trampoline_start);
-        assert!(
-            trampoline_len <= PAGE_SIZE,
-            "AP entry trampoline size {trampoline_len} is bigger than {PAGE_SIZE}"
-        );
-
-        trampoline.copy_from_nonoverlapping(&raw const __ap_trampoline_start, trampoline_len);
-        trampoline
-            .add((&raw const __ap_cr3).offset_from_unsigned(&raw const __ap_trampoline_start))
-            .cast::<u32>()
-            .write_unaligned({
-                let cr3: usize;
-                asm!("movq %cr3, {}", out(reg) cr3, options(att_syntax, nomem, nostack, preserves_flags));
-                u32::try_from(cr3).expect("Page table physical address must be within 32-bit address")
-            });
-        trampoline
-            .add((&raw const __ap_cr4).offset_from_unsigned(&raw const __ap_trampoline_start))
-            .cast::<u32>()
-            .write_unaligned({
-                let cr4: usize;
-                asm!("movq %cr4, {}", out(reg) cr4, options(att_syntax, nomem, nostack, preserves_flags));
-                u32::try_from(cr4).expect("Page table physical address must be within 32-bit address")
-            });
-        trampoline
-            .add((&raw const __ap_kernel_entry).offset_from_unsigned(&raw const __ap_trampoline_start))
-            .cast::<u64>()
-            .write_unaligned(ap_kernel_entry::<F> as *const () as u64);
-
-        debug!("\tCopied {trampoline_len} bytes into {trampoline:p} (physical address at {trampoline_phys:p}) for AP cores entry");
+        debug!("\tCopying {__ap_trampoline_size} bytes into {trampoline:p} (physical address at {trampoline_phys:p}) for AP cores entry");
 
         static AP_INIT: AtomicBool = AtomicBool::new(false);
         static AP_PROCEED: AtomicU32 = AtomicU32::new(0);
@@ -253,26 +226,24 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
                     .lock()
                     .alloc(STACK_PAGES.ilog2())
                     .expect("Couldn't allocate stack for AP core");
-                let stack_top = phys_to_virt(stack).byte_add(STACK_PAGES * PAGE_SIZE).addr() as u64;
+                let stack_top = phys_to_virt(stack).byte_add(STACK_PAGES * PAGE_SIZE).ptr_mut();
                 let processor_entry = ManuallyDrop::new(processor_entry.clone());
                 let ids = [apic_id, cpu_id];
 
-                trampoline
-                    .add((&raw const __ap_stack).offset_from_unsigned(&raw const __ap_trampoline_start))
-                    .cast::<u64>()
-                    .write_unaligned(stack_top);
-                trampoline
-                    .add((&raw const __ap_kernel_arg0).offset_from_unsigned(&raw const __ap_trampoline_start))
-                    .cast::<u64>()
-                    .write_unaligned(&raw const processor_entry as u64);
-                trampoline
-                    .add((&raw const __ap_kernel_arg1).offset_from_unsigned(&raw const __ap_trampoline_start))
-                    .cast::<ApicDriver>()
-                    .write_unaligned(driver);
-                trampoline
-                    .add((&raw const __ap_kernel_arg2).offset_from_unsigned(&raw const __ap_trampoline_start))
-                    .cast::<*const [u32; 2]>()
-                    .write_unaligned(&raw const ids);
+                let cr3: usize;
+                asm!("movq %cr3, {}", out(reg) cr3, options(att_syntax, nomem, nostack, preserves_flags));
+                let cr4: usize;
+                asm!("movq %cr4, {}", out(reg) cr4, options(att_syntax, nomem, nostack, preserves_flags));
+
+                __ap_cr3 = u32::try_from(cr3).expect("Page table physical address must be within 32-bit address");
+                __ap_cr4 = u32::try_from(cr4).expect("Page table physical address must be within 32-bit address");
+                __ap_kernel_entry = ap_kernel_entry::<F>;
+                __ap_stack = stack_top;
+                __ap_kernel_arg0 = (&raw const processor_entry).cast();
+                __ap_kernel_arg1 = driver;
+                __ap_kernel_arg2 = &raw const ids;
+
+                trampoline.copy_from_nonoverlapping(&raw const __ap_trampoline_start, __ap_trampoline_size);
 
                 AP_INIT.store(false, Release);
                 driver.startup(true, trampoline_phys, apic_id);
@@ -293,6 +264,9 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
                                 // Send one last INIT IPI to ensure the AP core isn't doing anything
                                 driver.init(apic_id);
                                 error!("\tCouldn't start up AP core {apic_id} even after retrying, giving up");
+
+                                // Wait 10 milliseconds just to absolutely ensure the AP core isn't running
+                                pit_delay(Duration::from_millis(10));
                             }
                         }
                     }
