@@ -32,13 +32,16 @@ pub mod spin_sync;
 pub mod task;
 pub mod vaddr;
 
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, ops::Range};
 
 use allocator::{HeapAllocator, PhysicalPageAllocator};
 use elpytios_bootinfo::paddr::PAddr;
 use framebuffer::FrameBuffer;
 use spin_sync::SpinMutex;
 use vaddr::{VAddr, VirtualMap};
+
+pub const LOWER_HALF_ADDRESSES: Range<VAddr> = VAddr::new(0x0000_0000_0000_1000)..VAddr::new(0xffff_8000_0000_0000);
+pub const HIGHER_HALF_ADDRESSES: Range<VAddr> = VAddr::new(0xffff_8000_0000_0000)..VAddr::new(0xffff_ffff_ffff_ffff);
 
 #[repr(transparent)]
 pub struct ScratchPages<'a> {

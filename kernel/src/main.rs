@@ -15,7 +15,7 @@ use core::{
 use elpytios_bootinfo::{BootInfo, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
 use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
-    ScratchPages,
+    HIGHER_HALF_ADDRESSES, ScratchPages,
     allocator::{AllocTree, PHYS_ALLOC_ALIGNMENT, PhysicalPageAllocator},
     device::{CpuContext, init_device_tree},
     framebuffer::FrameBuffer,
@@ -44,8 +44,6 @@ unsafe extern "sysv64" fn jump_from_bootloader(info: &'static BootInfo) -> ! {
         options(att_syntax),
     )
 }
-
-const HIGHER_HALF_ADDRESS_BASE: VAddr = VAddr::new(0xffff_8000_0000_0000);
 
 struct SerialLogger(Com);
 impl log::Log for SerialLogger {
@@ -115,7 +113,8 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
         .expect("Didn't find any identity maps")
         .region
         .base;
-    let v_slide = HIGHER_HALF_ADDRESS_BASE
+    let v_slide = HIGHER_HALF_ADDRESSES
+        .start
         .addr()
         .checked_sub(kernel_base.addr())
         .expect("Kernel physical address somehow higher than higher-half addressing base");
@@ -215,7 +214,8 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
     // Relocate all symbols to higher-half addressing
     // Identity-mapping is still present at this point, so it is okay to cast `PAddr` into pointers
     let kernel_ptr = info.kernel_elf_base;
-    let v_slide = HIGHER_HALF_ADDRESS_BASE
+    let v_slide = HIGHER_HALF_ADDRESSES
+        .start
         .addr()
         .checked_sub(kernel_base.addr())
         .expect("Kernel physical address somehow higher than higher-half addressing base")

@@ -183,6 +183,16 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
         let trampoline = trampoline.ptr_mut::<u8>();
         debug!("\tCopying {__ap_trampoline_size} bytes into {trampoline:p} (physical address at {trampoline_phys:p}) for AP cores entry");
 
+        // Setup properties common to all AP cores
+        let cr3: usize;
+        asm!("movq %cr3, {}", out(reg) cr3, options(att_syntax, nomem, nostack, preserves_flags));
+        let cr4: usize;
+        asm!("movq %cr4, {}", out(reg) cr4, options(att_syntax, nomem, nostack, preserves_flags));
+
+        __ap_cr3 = u32::try_from(cr3).expect("Page table physical address must be within 32-bit address");
+        __ap_cr4 = u32::try_from(cr4).expect("Page table physical address must be within 32-bit address");
+        __ap_kernel_entry = ap_kernel_entry::<F>;
+
         static AP_INIT: AtomicBool = AtomicBool::new(false);
         static AP_PROCEED: AtomicU32 = AtomicU32::new(0);
 
@@ -230,14 +240,7 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
                 let processor_entry = ManuallyDrop::new(processor_entry.clone());
                 let ids = [apic_id, cpu_id];
 
-                let cr3: usize;
-                asm!("movq %cr3, {}", out(reg) cr3, options(att_syntax, nomem, nostack, preserves_flags));
-                let cr4: usize;
-                asm!("movq %cr4, {}", out(reg) cr4, options(att_syntax, nomem, nostack, preserves_flags));
-
-                __ap_cr3 = u32::try_from(cr3).expect("Page table physical address must be within 32-bit address");
-                __ap_cr4 = u32::try_from(cr4).expect("Page table physical address must be within 32-bit address");
-                __ap_kernel_entry = ap_kernel_entry::<F>;
+                // Setup properties for specific AP cores
                 __ap_stack = stack_top;
                 __ap_kernel_arg0 = (&raw const processor_entry).cast();
                 __ap_kernel_arg1 = driver;

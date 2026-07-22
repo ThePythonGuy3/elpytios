@@ -7,3 +7,6 @@ cfg_select! {
         compile_error!("Unsupported architecture");
     }
 }
+
+mod queue;
+pub use queue::*;

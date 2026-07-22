@@ -19,6 +19,9 @@ use acpi::*;
 
 use crate::ScratchPages;
 
+impl !Send for CpuContext {}
+impl !Sync for CpuContext {}
+
 unsafe fn init_device_tree_impl(
     scratch_pages: &mut ScratchPages,
     processor_entry: impl FnOnce(u32) -> ! + Clone + Send,

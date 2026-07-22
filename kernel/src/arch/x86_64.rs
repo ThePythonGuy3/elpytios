@@ -1,7 +1,3 @@
-use alloc::{
-    alloc::{alloc_zeroed, handle_alloc_error},
-    boxed::Box,
-};
 use core::{
     alloc::Layout,
     arch::{
@@ -10,7 +6,6 @@ use core::{
     },
     hint::spin_loop,
     mem::Alignment,
-    ptr,
     time::Duration,
 };
 
@@ -178,7 +173,12 @@ pub unsafe fn wrmsr(address: Msr, value: u64) {
 pub struct ExtendedRegisters {
     layout: Layout,
     save: unsafe fn(to: *mut u8, save_mask: u64),
+    mask: ExtendedRegisterMask,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct ExtendedRegisterMask(u64);
 
 impl !Send for ExtendedRegisters {}
 impl !Sync for ExtendedRegisters {}
@@ -211,32 +211,42 @@ impl ExtendedRegisters {
         // Query how many bytes the extended registers would take
         let layout = Layout::from_size_alignment((cpuid.ebx as usize).max(1), Self::ALIGNMENT).expect("Extended register buffer size too large");
         // Enable all supported features to xcr0
-        let full_mask = (cpuid.edx as u64) << 32 | (cpuid.eax as u64);
-        unsafe { _xsetbv(0, full_mask) }
+        let mask = ExtendedRegisterMask((cpuid.edx as u64) << 32 | (cpuid.eax as u64));
+        unsafe { _xsetbv(0, mask.0) }
 
         let cpuid = __cpuid_count(0xd, 1);
-        if cpuid.eax & (1 << 1) != 0 { Self { layout, save: _xsavec64 } } else { Self { layout, save: _xsave64 } }
-    }
-
-    #[inline]
-    pub fn new_buffer(&self) -> Box<ExtendedRegisterBuffer> {
-        unsafe {
-            let ptr = alloc_zeroed(self.layout);
-            if ptr.is_null() {
-                handle_alloc_error(self.layout)
+        if cpuid.eax & (1 << 1) != 0 {
+            Self {
+                layout,
+                save: _xsavec64,
+                mask,
             }
-
-            Box::from_raw(ptr::from_raw_parts_mut(ptr, self.layout.size()))
+        } else {
+            Self {
+                layout,
+                save: _xsave64,
+                mask,
+            }
         }
     }
 
     #[inline]
-    pub unsafe fn save(&self, to: &mut ExtendedRegisterBuffer) {
-        unsafe { (self.save)(to.0.as_mut_ptr(), 0xffffffff) }
+    pub fn layout(&self) -> Layout {
+        self.layout
     }
 
     #[inline]
-    pub unsafe fn load(&self, from: &ExtendedRegisterBuffer) {
-        unsafe { _xrstor64(from.0.as_ptr(), 0xffffffff) }
+    pub fn mask(&self) -> ExtendedRegisterMask {
+        self.mask
+    }
+
+    #[inline]
+    pub unsafe fn save(&self, mask: ExtendedRegisterMask, to: &mut ExtendedRegisterBuffer) {
+        unsafe { (self.save)(to.0.as_mut_ptr(), mask.0) }
+    }
+
+    #[inline]
+    pub unsafe fn load(&self, mask: ExtendedRegisterMask, from: &ExtendedRegisterBuffer) {
+        unsafe { _xrstor64(from.0.as_ptr(), mask.0) }
     }
 }
