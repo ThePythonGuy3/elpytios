@@ -145,23 +145,23 @@ unsafe impl<T: Fn() -> Option<PAddr>> sealed::VirtualMapper for LocalMapper<T> {
     }
 
     #[inline]
-    unsafe fn pml4(&self) -> &mut Pml4Table {
-        unsafe { (self.page_table_ptr)(self.page_table_phys).cast::<Pml4Table>().as_mut_unchecked() }
+    fn pml4(&self) -> *mut Pml4Table {
+        unsafe { (self.page_table_ptr)(self.page_table_phys).cast() }
     }
 
     #[inline]
-    unsafe fn pdpt(&self, pml4_index: usize) -> &mut PdptTable {
+    unsafe fn pdpt(&self, pml4_index: usize) -> *mut PdptTable {
         unsafe {
-            (self.page_table_ptr)(self.pml4().pml4_to_pdpt[pml4_index].child_addr())
+            (self.page_table_ptr)((*self.pml4()).pml4_to_pdpt[pml4_index].child_addr())
                 .cast::<PdptTable>()
                 .as_mut_unchecked()
         }
     }
 
     #[inline]
-    unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
+    unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> *mut PdTable {
         unsafe {
-            (self.page_table_ptr)(match self.pdpt(pml4_index).pdpt_to_pd[pdpt_index].kind() {
+            (self.page_table_ptr)(match (*self.pdpt(pml4_index)).pdpt_to_pd[pdpt_index].kind() {
                 UnionEntry::Node(e) => e.child_addr(),
                 UnionEntry::Leaf(..) => unreachable!("PDPT entry is a huge page entry"),
             })
@@ -171,9 +171,9 @@ unsafe impl<T: Fn() -> Option<PAddr>> sealed::VirtualMapper for LocalMapper<T> {
     }
 
     #[inline]
-    unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
+    unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> *mut PtTable {
         unsafe {
-            (self.page_table_ptr)(match self.pd(pml4_index, pdpt_index).pd_to_pt[pd_index].kind() {
+            (self.page_table_ptr)(match (*self.pd(pml4_index, pdpt_index)).pd_to_pt[pd_index].kind() {
                 UnionEntry::Node(e) => e.child_addr(),
                 UnionEntry::Leaf(..) => unreachable!("PD entry is a huge page entry"),
             })
@@ -205,27 +205,30 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
             } = v_addr.info();
 
             unsafe {
-                match &mut self.mapper.pml4().pml4_to_pdpt[pml4_index] {
-                    e if !e.is_present() => *e = NodeEntry::new(Entry::WRITABLE, self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?),
+                match &raw mut (*self.mapper.pml4()).pml4_to_pdpt[pml4_index] {
+                    e if !(*e).is_present() => e.write(NodeEntry::new(
+                        Entry::WRITABLE,
+                        self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
+                    )),
                     _ => {}
                 }
 
-                match &mut self.mapper.pdpt(pml4_index).pdpt_to_pd[pdpt_index] {
-                    e if !e.is_present() => {
+                match &raw mut (*self.mapper.pdpt(pml4_index)).pdpt_to_pd[pdpt_index] {
+                    e if !(*e).is_present() => {
                         if pd_index == 0 && page_count >= 512 * 512 {
-                            *e = PdptEntry::leaf(PdptLeafEntry::new(flags.into(), p_addr) | flags.into());
+                            e.write(PdptEntry::leaf(PdptLeafEntry::new(flags.into(), p_addr) | flags.into()));
                             p_addr = p_addr.byte_add(512 * 512 * PAGE_SIZE);
                             v_addr = v_addr.byte_add(512 * 512 * PAGE_SIZE);
                             page_count -= 512 * 512;
                             continue
                         } else {
-                            *e = PdptEntry::node(NodeEntry::new(
+                            e.write(PdptEntry::node(NodeEntry::new(
                                 Entry::WRITABLE,
                                 self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
-                            ))
+                            )))
                         }
                     }
-                    e if let UnionEntry::Leaf(e) = e.kind() => {
+                    e if let UnionEntry::Leaf(e) = (*e).kind() => {
                         return Err(VirtualMapError::AlreadyMapped {
                             p_addr,
                             v_addr,
@@ -235,22 +238,22 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
                     _ => {}
                 }
 
-                match &mut self.mapper.pd(pml4_index, pdpt_index).pd_to_pt[pd_index] {
-                    e if !e.is_present() => {
+                match &raw mut (*self.mapper.pd(pml4_index, pdpt_index)).pd_to_pt[pd_index] {
+                    e if !(*e).is_present() => {
                         if pt_index == 0 && page_count >= 512 {
-                            *e = PdEntry::leaf(PdLeafEntry::new(flags.into(), p_addr) | flags.into());
+                            e.write(PdEntry::leaf(PdLeafEntry::new(flags.into(), p_addr) | flags.into()));
                             p_addr = p_addr.byte_add(512 * PAGE_SIZE);
                             v_addr = v_addr.byte_add(512 * PAGE_SIZE);
                             page_count -= 512;
                             continue
                         } else {
-                            *e = PdEntry::node(NodeEntry::new(
+                            e.write(PdEntry::node(NodeEntry::new(
                                 Entry::WRITABLE,
                                 self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
-                            ))
+                            )))
                         }
                     }
-                    e if let UnionEntry::Leaf(e) = e.kind() => {
+                    e if let UnionEntry::Leaf(e) = (*e).kind() => {
                         return Err(VirtualMapError::AlreadyMapped {
                             p_addr,
                             v_addr,
@@ -260,20 +263,19 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
                     _ => {}
                 }
 
-                match &mut self.mapper.pt(pml4_index, pdpt_index, pd_index).phys_pages[pt_index] {
-                    e if e.is_present() => {
+                match &raw mut (*self.mapper.pt(pml4_index, pdpt_index, pd_index)).phys_pages[pt_index] {
+                    e if (*e).is_present() => {
                         return Err(VirtualMapError::AlreadyMapped {
                             p_addr,
                             v_addr,
-                            p_addr_existing: e.addr(),
+                            p_addr_existing: (*e).addr(),
                         })
                     }
                     e => {
-                        *e = PtEntry::new(flags.into(), p_addr) | flags.into();
+                        e.write(PtEntry::new(flags.into(), p_addr) | flags.into());
                         p_addr = p_addr.byte_add(PAGE_SIZE);
                         v_addr = v_addr.byte_add(PAGE_SIZE);
                         page_count -= 1;
-                        continue
                     }
                 }
             }
@@ -293,21 +295,21 @@ mod sealed {
     pub unsafe trait VirtualMapper {
         fn new_page_table(&self) -> Option<PAddr>;
 
-        unsafe fn pml4(&self) -> &mut Pml4Table;
+        fn pml4(&self) -> *mut Pml4Table;
 
         /// # Safety
-        /// - [`pml4_index`] must be within `0..512` (exclusive).
-        unsafe fn pdpt(&self, pml4_index: usize) -> &mut PdptTable;
+        /// - `pml4_index` must be within `0..512` (exclusive).
+        unsafe fn pdpt(&self, pml4_index: usize) -> *mut PdptTable;
 
         /// # Safety:
         /// - [`Self::pdpt()`] to the given indices must return a node entry, not leaf.
-        /// - [`pml4_index`] and [`pdpt_index`] must be within `0..512` (exclusive).
-        unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable;
+        /// - `pml4_index` and `pdpt_index` must be within `0..512` (exclusive).
+        unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> *mut PdTable;
 
         /// # Safety:
         /// - [`Self::pd()`] to the given indices must return a node entry, not leaf.
-        /// - [`pml4_index`], [`pdpt_index`], and [`pd_index`] must be within `0..512` (exclusive).
-        unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable;
+        /// - `pml4_index`, `pdpt_index`, and `pd_index` must be within `0..512` (exclusive).
+        unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> *mut PtTable;
     }
 
     #[derive(Debug)]
@@ -334,40 +336,34 @@ mod sealed {
         }
 
         #[inline]
-        unsafe fn pml4(&self) -> &mut Pml4Table {
-            unsafe { self.pml4.as_mut_unchecked() }
+        fn pml4(&self) -> *mut Pml4Table {
+            self.pml4
         }
 
         #[inline]
-        unsafe fn pdpt(&self, pml4_index: usize) -> &mut PdptTable {
+        unsafe fn pdpt(&self, pml4_index: usize) -> *mut PdptTable {
+            unsafe { phys_to_virt((*self.pml4()).pml4_to_pdpt.get_unchecked_mut(pml4_index).child_addr()).ptr_mut() }
+        }
+
+        #[inline]
+        unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> *mut PdTable {
             unsafe {
-                phys_to_virt(self.pml4().pml4_to_pdpt.get_unchecked_mut(pml4_index).child_addr())
-                    .ptr_mut::<PdptTable>()
-                    .as_mut_unchecked()
+                phys_to_virt(match (*self.pdpt(pml4_index)).pdpt_to_pd.get_unchecked_mut(pdpt_index).kind() {
+                    UnionEntry::Leaf(..) => unreachable_unchecked(),
+                    UnionEntry::Node(e) => e.child_addr(),
+                })
+                .ptr_mut()
             }
         }
 
         #[inline]
-        unsafe fn pd(&self, pml4_index: usize, pdpt_index: usize) -> &mut PdTable {
+        unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> *mut PtTable {
             unsafe {
-                phys_to_virt(match self.pdpt(pml4_index).pdpt_to_pd.get_unchecked_mut(pdpt_index).kind() {
+                phys_to_virt(match (*self.pd(pml4_index, pdpt_index)).pd_to_pt.get_unchecked_mut(pd_index).kind() {
                     UnionEntry::Leaf(..) => unreachable_unchecked(),
                     UnionEntry::Node(e) => e.child_addr(),
                 })
-                .ptr_mut::<PdTable>()
-                .as_mut_unchecked()
-            }
-        }
-
-        #[inline]
-        unsafe fn pt(&self, pml4_index: usize, pdpt_index: usize, pd_index: usize) -> &mut PtTable {
-            unsafe {
-                phys_to_virt(match self.pd(pml4_index, pdpt_index).pd_to_pt.get_unchecked_mut(pd_index).kind() {
-                    UnionEntry::Leaf(..) => unreachable_unchecked(),
-                    UnionEntry::Node(e) => e.child_addr(),
-                })
-                .ptr_mut::<PtTable>()
-                .as_mut_unchecked()
+                .ptr_mut()
             }
         }
     }
