@@ -141,26 +141,28 @@ pub unsafe fn init_gdt(cpu: &'static CpuContext) {
         };
 
         asm!(
-            "lgdt [{ptr}]",
+            "lgdt ({ptr})",
             // TSS selector at 0x28
-            "mov ax, 0x28",
-            "ltr ax",
+            "movw $0x28, %ax",
+            "ltr %ax",
 
             // `KERNEL_DATA` selector is 0x10
-            "mov ax, 0x10",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov ss, ax",
+            "movw $0x10, %ax",
+            "movw %ax, %ds",
+            "movw %ax, %es",
+            "movw %ax, %ss",
             // `KERNEL_CODE` selector is 0x08
-            "push 0x08",
+            "push $0x08",
             // Perform a long jump, loading the GDT entries
-            "lea rax, [rip + 2f]",
-            "push rax",
-            "retfq",
+            "leaq 2f(%rip), %rax",
+            "push %rax",
+            "lretq",
             "2:",
 
             ptr = in(reg) &ptr,
             out("rax") _,
+
+            options(att_syntax),
         );
     }
 }
@@ -258,52 +260,52 @@ macro_rules! interrupt {
             naked_asm!(
                 r#"
                 cld
-                push rax
-                push rcx
-                push rdx
-                push rsi
-                push rdi
-                push r8
-                push r9
-                push r10
-                push r11
-                push rbx
-                push rbp
-                push r12
-                push r13
-                push r14
-                push r15
+                push %rax
+                push %rcx
+                push %rdx
+                push %rsi
+                push %rdi
+                push %r8
+                push %r9
+                push %r10
+                push %r11
+                push %rbx
+                push %rbp
+                push %r12
+                push %r13
+                push %r14
+                push %r15
 
-                test qword ptr [rsp + {cs}], 3
+                testq $3, {cs}(%rsp)
                 jz 2f
                 swapgs
                 2:
 
-                lea rdi, [rsp]
-                sub rsp, {rsp_adj}
-                call {handle}
-                add rsp, {rsp_adj}
+                leaq (%rsp), %rdi
+                subq {rsp_adj}, %rsp
+                callq {handle}
+                addq {rsp_adj}, %rsp
 
-                test qword ptr [rsp + {cs}], 3
+                testq $3, {cs}(%rsp)
                 jz 3f
                 swapgs
                 3:
 
-                pop r15
-                pop r14
-                pop r13
-                pop r12
-                pop rbp
-                pop rbx
-                pop r11
-                pop r10
-                pop r9
-                pop r8
-                pop rdi
-                pop rsi
-                pop rdx
-                pop rcx
-                pop rax
+                pop %r15
+                pop %r14
+                pop %r13
+                pop %r12
+                pop %rbp
+                pop %rbx
+                pop %r11
+                pop %r10
+                pop %r9
+                pop %r8
+                pop %rdi
+                pop %rsi
+                pop %rdx
+                pop %rcx
+                pop %rax
                 "#,
 
                 interrupt!(clear => #[$($has_error)*]),
@@ -316,6 +318,8 @@ macro_rules! interrupt {
                 cs = const offset_of!(interrupt!(type => #[$($has_error)*]), cs),
                 rsp_adj = const interrupt!(rsp_adj => #[$($has_error)*]),
                 handle = sym $handle,
+
+                options(att_syntax),
             )
         }
     };
@@ -332,7 +336,7 @@ macro_rules! interrupt {
         0
     };
     (clear => #[error]) => {
-        "add rsp, 8"
+        "addq $8, %rsp"
     };
     (clear => #[not(error)]) => {
         ""
@@ -429,44 +433,44 @@ pub unsafe fn init_syscalls() {
         pub unsafe extern "sysv64" fn syscall() -> ! {
             naked_asm!(
                 // `rax` is the `syscall` entry, immediately bail if invalid
-                "cmp rax, {max_entries}",
+                "cmpq {max_entries}, %rax",
                 "jae 2f",
 
                 // `rax` is now address of the handler, bail if not set (null)
-                "lea r12, [rip + {entries}]",
-                "mov rax, [r12 + rax * {entry_size}]",
-                "test rax, rax",
+                "leaq ({entries})(%rip), %r12",
+                "movq (%r12, %rax, {entry_size}), %rax",
+                "testq %rax, %rax",
                 "jz 2f",
 
                 // Switch to kernel stack
                 "swapgs",
-                "mov r12, rsp",
-                "mov rsp, gs:[{kernel_stack}]",
-                "and rsp, -16",
+                "movq %rsp, %r12",
+                "movq %gs:[{kernel_stack}], %rsp",
+                "andq $-16, %rsp",
 
-                "push r12",
-                "push r11",
-                "push rcx",
-                "sub rsp, 8",
+                "push %r12",
+                "push %r11",
+                "push %rcx",
+                "subq $8, %rsp",
                 "sti",
 
                 // User uses `r10` instead of `rcx`, but Sys V expects `rcx` to be 4th arg
-                "mov rcx, r10",
+                "movq %r10, %rcx",
                 // After this, `rax` is now the return value of the handler
-                "call rax",
+                "callq *%rax",
 
                 "cli",
-                "add rsp, 8",
-                "pop rcx",
-                "pop r11",
+                "addq $8, %rsp",
+                "pop %rcx",
+                "pop %r11",
                 // Switch back to user stack
-                "pop rsp",
+                "pop %rsp",
                 "swapgs",
 
                 "sysretq",
 
                 "2:",
-                "mov rax, {invalid}",
+                "movq {invalid}, %rax",
                 "sysretq",
 
                 max_entries = const Syscall::MAX_ENTRIES,
@@ -474,6 +478,8 @@ pub unsafe fn init_syscalls() {
                 entry_size = const size_of::<SyscallEntry>(),
                 kernel_stack = const offset_of!(CpuContext, tss.rsp0),
                 invalid = const Syscall::INVALID,
+
+                options(att_syntax),
             )
         }
     }
@@ -506,8 +512,10 @@ pub unsafe fn init_interrupts(cpu: &'static CpuContext) {
         };
 
         asm!(
-            "lidt [{ptr}]",
+            "lidt ({ptr})",
             ptr = in(reg) &ptr,
+
+            options(att_syntax),
         );
 
         init_syscalls();
