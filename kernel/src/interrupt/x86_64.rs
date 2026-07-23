@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use core::{
     arch::{asm, naked_asm},
-    cell::Cell,
+    cell::UnsafeCell,
     mem::{self, offset_of, size_of_val_raw},
 };
 
@@ -19,11 +19,11 @@ use crate::{
 pub struct Tss {
     reserved0: u32,
     /// Switch to this stack only when intercepting an interrupt from Ring 3.
-    pub rsp0: Cell<u64>,
-    pub rsp1: Cell<u64>,
-    pub rsp2: Cell<u64>,
+    pub rsp0: UnsafeCell<u64>,
+    pub rsp1: UnsafeCell<u64>,
+    pub rsp2: UnsafeCell<u64>,
     reserved1: u64,
-    pub ist: Cell<[u64; 7]>,
+    pub ist: UnsafeCell<[u64; 7]>,
     reserved2: u64,
     reserved3: u16,
     iopb_offset: u16,
@@ -34,11 +34,11 @@ impl Tss {
     pub const fn new() -> Self {
         Self {
             reserved0: 0,
-            rsp0: Cell::new(0),
-            rsp1: Cell::new(0),
-            rsp2: Cell::new(0),
+            rsp0: UnsafeCell::new(0),
+            rsp1: UnsafeCell::new(0),
+            rsp2: UnsafeCell::new(0),
             reserved1: 0,
-            ist: Cell::new([0; 7]),
+            ist: UnsafeCell::new([0; 7]),
             reserved2: 0,
             reserved3: 0,
             iopb_offset: 0xffff,

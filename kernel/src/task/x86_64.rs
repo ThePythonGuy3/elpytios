@@ -2,7 +2,7 @@ use alloc::{
     alloc::{alloc, handle_alloc_error},
     boxed::Box,
 };
-use core::{alloc::Layout, arch::asm, mem::offset_of, ptr};
+use core::{alloc::Layout, arch::asm, cell::UnsafeCell, mem::offset_of, ptr};
 
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
 use elpytios_elf::{
@@ -171,13 +171,14 @@ impl Task {
     }
 }
 
-pub unsafe fn schedule_init(task: Box<Task>) -> ! {
+pub unsafe fn schedule_init(mut task: Box<Task>) -> ! {
     let cpu = CpuContext::get();
     unsafe {
-        let task = &mut **(*cpu.current_task.get()).insert(task);
+        let task_ptr = Box::as_mut_ptr(&mut task);
+        cpu.current_task.get().write(Some(task));
 
         // Restore all extended registers (via xrstor64)
-        cpu.registers.load(task.register_mask, &task.registers);
+        cpu.registers.load((*task_ptr).register_mask, &(*task_ptr).registers);
         asm!(
             // Setup kernel stack
             "movq %rsp, (%rcx)",
@@ -212,9 +213,9 @@ pub unsafe fn schedule_init(task: Box<Task>) -> ! {
             "swapgs",
             "iretq",
 
-            in("rax") &raw const task.frame,
-            in("rcx") (&raw const cpu.tss.rsp0).cast_mut(),
-            in("rdx") task.virtual_map_phys.addr(),
+            in("rax") &raw const (*task_ptr).frame,
+            in("rcx") UnsafeCell::raw_get(&raw const cpu.tss.rsp0),
+            in("rdx") (*task_ptr).virtual_map_phys.addr(),
 
             r15 = const offset_of!(InterruptFrame, r15),
             r14 = const offset_of!(InterruptFrame, r14),
