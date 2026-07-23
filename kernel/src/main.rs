@@ -425,15 +425,6 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
 fn main(core_count: u32) -> ! {
     if CpuContext::get().is_bootstrap {
         info!("Hello, world! Kernel is now up and running on {core_count} logical processors!");
-
-        use elpytios_elf::Elf;
-        use elpytios_kernel::task::{Task, schedule_init};
-
-        let shell = include_bytes!("../../target/x86_64-unknown-elpytios/release/elpytios-shell");
-        let Elf::N64(elf) = Elf::from_bytes(shell).unwrap();
-
-        let task = Task::from_elf(elf).unwrap();
-        unsafe { schedule_init(task) }
     }
 
     {
@@ -470,5 +461,17 @@ fn main(core_count: u32) -> ! {
         }
     }
 
-    loop {}
+    // TODO scheduler
+    if CpuContext::get().is_bootstrap {
+        use elpytios_elf::Elf;
+        use elpytios_kernel::task::{Task, schedule_init};
+
+        let shell = include_bytes!("../../target/x86_64-unknown-elpytios/release/elpytios-shell");
+        let Elf::N64(elf) = Elf::from_bytes(shell).unwrap();
+
+        let task = Task::from_elf(elf).unwrap();
+        unsafe { schedule_init(task) }
+    } else {
+        loop {}
+    }
 }
