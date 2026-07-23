@@ -15,9 +15,21 @@
     "os": "elpytios",
     "executables": true,
     "emit-debug-gdb-scripts": false,
+    "relocation-model": "pic",
+    "position-independent-executables": true,
     "entry-abi": "sysv64",
     "target-pointer-width": 64,
     "linker-flavor": "ld.lld",
     "linker": "rust-lld",
-    "panic-strategy": "abort"
+    "panic-strategy": "abort",
+    "pre-link-args": {
+        "ld.lld": [
+            "-z",
+            "max-page-size=4096",
+            "-z",
+            "common-page-size=4096",
+            "-z",
+            "separate-loadable-segments"
+        ]
+    }
 }

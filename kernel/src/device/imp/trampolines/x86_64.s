@@ -8,7 +8,7 @@ __ap_trampoline_start:
 ap_entry_16:
     # Clear interrupts and zero out segments
     cli
-    xorl %ax, %ax
+    xorw %ax, %ax
     mov %ax, %ds
     mov %ax, %es
     mov %ax, %ss

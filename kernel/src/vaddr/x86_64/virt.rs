@@ -289,20 +289,23 @@ impl VirtualMap<sealed::OffsetMapper> {
     /// # Safety
     /// - [`map`](Self::map) must not be called for higher-half addresses on the returned mapper
     /// - [`map`](Self::map) must not be called for lower-half addresses on the `self` mapper.
-    pub unsafe fn for_userspace(&self) -> Self {
+    pub unsafe fn for_userspace(&self) -> (Self, PAddr) {
         use sealed::VirtualMapper;
 
-        let pml4 = self
+        let pml4_phys = self
             .mapper
             .new_page_table()
             .expect("Couldn't allocate a new page for userspace virtual map");
-        let pml4 = phys_to_virt(pml4).ptr_mut::<Pml4Table>();
+        let pml4 = phys_to_virt(pml4_phys).ptr_mut::<Pml4Table>();
 
         unsafe {
             pml4.write(self.mapper.pml4().read());
-            Self {
-                mapper: sealed::OffsetMapper::new(pml4),
-            }
+            (
+                Self {
+                    mapper: sealed::OffsetMapper::new(pml4),
+                },
+                pml4_phys,
+            )
         }
     }
 }

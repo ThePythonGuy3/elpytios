@@ -216,6 +216,7 @@ pub enum IdtIndex {
     // Hard-coded by CPU
     DoubleFault = 8,
     PageFault = 14,
+    Timer = 32,
 }
 
 mod sealed {
@@ -253,6 +254,7 @@ pub struct InterruptFrame<Error: sealed::InterruptError = ()> {
     pub ss: u64,
 }
 
+#[macro_export]
 macro_rules! interrupt {
     (#[$($has_error:tt)*] $handle:ident) => {
         {

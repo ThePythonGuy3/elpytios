@@ -298,7 +298,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
                 base.byte_add(pages * PAGE_SIZE)
             );
 
-            let usable_start = base.addr();
+            let mut usable_start = base.addr();
             let mut usable_end = usable_start + pages * PAGE_SIZE;
 
             // Trees need to be aligned to `PHYS_ALLOC_ALIGNMENT`, so round down and manually fill "ghost" pages
@@ -365,6 +365,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
 
                 unsafe { phys_alloc.push_tree(PAddr::new(tree_start), tree) }
                 tree_start += layout.node_count() * PAGE_SIZE;
+                usable_start = tree_start;
                 tree_end = usable_end & !(PHYS_ALLOC_ALIGNMENT.as_usize() - 1);
             }
         }
@@ -424,6 +425,15 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
 fn main(core_count: u32) -> ! {
     if CpuContext::get().is_bootstrap {
         info!("Hello, world! Kernel is now up and running on {core_count} logical processors!");
+
+        use elpytios_elf::Elf;
+        use elpytios_kernel::task::{Task, schedule_init};
+
+        let shell = include_bytes!("../../target/x86_64-unknown-elpytios/release/elpytios-shell");
+        let Elf::N64(elf) = Elf::from_bytes(shell).unwrap();
+
+        let task = Task::from_elf(elf).unwrap();
+        unsafe { schedule_init(task) }
     }
 
     {

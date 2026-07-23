@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use core::{
     arch::{asm, global_asm, x86_64::__cpuid_count},
+    cell::UnsafeCell,
     hint::spin_loop,
     mem::ManuallyDrop,
     ptr::{self, NonNull},
@@ -20,6 +21,7 @@ use crate::{
     device::acpi::{LocalApicFlags, Madt, Pic},
     interrupt::{init_interrupts, x86_64::Tss},
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt},
+    task::Task,
     vaddr::{VAddr, VFlags},
 };
 
@@ -100,6 +102,7 @@ pub struct CpuContext {
     pub is_bootstrap: bool,
     pub apic_id: u32,
     pub cpu_id: u32,
+    pub current_task: UnsafeCell<Option<Box<Task>>>,
     // x86_64-specific fields
     pub registers: ExtendedRegisters,
     /// Task state segment
@@ -118,6 +121,7 @@ impl CpuContext {
             is_bootstrap,
             apic_id,
             cpu_id,
+            current_task: UnsafeCell::new(None),
             registers: unsafe { ExtendedRegisters::new() },
             tss: Tss::new(),
         }));

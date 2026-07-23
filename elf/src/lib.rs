@@ -49,7 +49,7 @@ use sys::{ElfHeader64, ElfHeaderPrologue, ElfProgramFlags, ElfProgramHeader64};
 
 use crate::sys::{ElfDt64, ElfDyn64, ElfSectionHeader64};
 
-#[derive(Debug, Clone, Copy, PanicFmt)]
+#[derive(Clone, Copy, PanicFmt)]
 pub enum ElfError {
     InvalidMagic([u8; 4]),
     InvalidArch(u8),
@@ -59,6 +59,27 @@ pub enum ElfError {
     MissingStringTable,
     MalformedDynHeader(&'static str),
     Eof,
+}
+
+impl fmt::Debug for ElfError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for ElfError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidMagic(..) => write!(f, "Invalid ELF magic number"),
+            Self::InvalidArch(..) => write!(f, "Invalid ELF architecture"),
+            Self::InvalidEndian(..) => write!(f, "Invalid ELF endianness"),
+            Self::InvalidSegmentType(..) => write!(f, "Invalid ELF segment type"),
+            Self::IntDoesntFit => write!(f, "Elf integer doesn't fit"),
+            Self::MissingStringTable => write!(f, "Missing ELF string table"),
+            Self::MalformedDynHeader(_) => write!(f, "Malformed ELF DYN header"),
+            Self::Eof => write!(f, "End-of-File while parsing ELF"),
+        }
+    }
 }
 
 #[inline]

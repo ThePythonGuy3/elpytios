@@ -5,7 +5,7 @@ use core::{
         x86_64::{__cpuid_count, _xrstor64, _xsave64, _xsavec64, _xsetbv},
     },
     hint::spin_loop,
-    mem::Alignment,
+    mem::{Alignment, MaybeUninit},
     time::Duration,
 };
 
@@ -184,7 +184,7 @@ impl !Send for ExtendedRegisters {}
 impl !Sync for ExtendedRegisters {}
 
 #[repr(C, align(64))]
-pub struct ExtendedRegisterBuffer([u8]);
+pub struct ExtendedRegisterBuffer([MaybeUninit<u8>]);
 
 impl ExtendedRegisters {
     pub const ALIGNMENT: Alignment = unsafe { Alignment::new_unchecked(1 << 6) };
@@ -240,13 +240,13 @@ impl ExtendedRegisters {
         self.mask
     }
 
-    #[inline]
+    #[inline(always)]
     pub unsafe fn save(&self, mask: ExtendedRegisterMask, to: &mut ExtendedRegisterBuffer) {
-        unsafe { (self.save)(to.0.as_mut_ptr(), mask.0) }
+        unsafe { (self.save)(to.0.as_mut_ptr().cast(), mask.0) }
     }
 
-    #[inline]
+    #[inline(always)]
     pub unsafe fn load(&self, mask: ExtendedRegisterMask, from: &ExtendedRegisterBuffer) {
-        unsafe { _xrstor64(from.0.as_ptr(), mask.0) }
+        unsafe { _xrstor64(from.0.as_ptr().cast(), mask.0) }
     }
 }
