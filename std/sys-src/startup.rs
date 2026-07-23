@@ -10,7 +10,7 @@ pub fn abort_internal() -> ! {
     crate::intrinsics::abort()
 }
 
-unsafe extern "sysv64" {
+unsafe extern "C" {
     fn main(argc: i32, argv: *const *const u8) -> i32;
 }
 
@@ -20,11 +20,13 @@ cfg_select! {
         #[unsafe(no_mangle)]
         pub unsafe extern "sysv64" fn _start() -> ! {
             naked_asm!(
-                "mov rsi, 0",
-                "mov rdi, 0",
+                "movq $0, %rdi",
+                "movq %rsp, %rsi",
                 "jmp {main}",
 
                 main = sym main,
+
+                options(att_syntax),
             )
         }
     }

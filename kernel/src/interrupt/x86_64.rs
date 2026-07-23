@@ -220,10 +220,17 @@ pub enum IdtIndex {
 }
 
 mod sealed {
-    pub trait InterruptError: Sized {}
+    pub trait InterruptError: Sized {
+        const STACK_ADJUST: usize;
+    }
 
-    impl InterruptError for () {}
-    impl InterruptError for u64 {}
+    impl InterruptError for () {
+        const STACK_ADJUST: usize = 0;
+    }
+
+    impl InterruptError for u64 {
+        const STACK_ADJUST: usize = 8;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -254,6 +261,10 @@ pub struct InterruptFrame<Error: sealed::InterruptError = ()> {
     pub ss: u64,
 }
 
+impl<Error: sealed::InterruptError> InterruptFrame<Error> {
+    pub const STACK_ADJUST: usize = Error::STACK_ADJUST;
+}
+
 #[macro_export]
 macro_rules! interrupt {
     (#[$($has_error:tt)*] $handle:ident) => {
@@ -262,6 +273,7 @@ macro_rules! interrupt {
             naked_asm!(
                 r#"
                 cld
+
                 push %rax
                 push %rcx
                 push %rdx
@@ -283,10 +295,10 @@ macro_rules! interrupt {
                 swapgs
                 2:
 
-                leaq (%rsp), %rdi
-                subq {rsp_adj}, %rsp
+                movq %rsp, %rdi
+                subq ${rsp_adj}, %rsp
                 callq {handle}
-                addq {rsp_adj}, %rsp
+                addq ${rsp_adj}, %rsp
 
                 testq $3, {cs}(%rsp)
                 jz 3f
@@ -318,7 +330,7 @@ macro_rules! interrupt {
                 "#,
 
                 cs = const offset_of!(interrupt!(type => #[$($has_error)*]), cs),
-                rsp_adj = const interrupt!(rsp_adj => #[$($has_error)*]),
+                rsp_adj = const <interrupt!(type => #[$($has_error)*])>::STACK_ADJUST,
                 handle = sym $handle,
 
                 options(att_syntax),
@@ -330,12 +342,6 @@ macro_rules! interrupt {
     };
     (type => #[not(error)]) => {
         InterruptFrame<()>
-    };
-    (rsp_adj => #[error]) => {
-        8
-    };
-    (rsp_adj => #[not(error)]) => {
-        0
     };
     (clear => #[error]) => {
         "addq $8, %rsp"
@@ -401,6 +407,7 @@ pub unsafe extern "sysv64" fn page_fault() -> ! {
 
 #[allow(unused, reason = "Unimplemented")]
 pub unsafe extern "sysv64" fn syscall_write(file: usize, buffer: usize, len: usize) -> usize {
+    log::info!("SYSCALL WRITE {file} {buffer} {len}");
     Syscall::INVALID
 }
 
@@ -435,11 +442,11 @@ pub unsafe fn init_syscalls() {
         pub unsafe extern "sysv64" fn syscall() -> ! {
             naked_asm!(
                 // `rax` is the `syscall` entry, immediately bail if invalid
-                "cmpq {max_entries}, %rax",
+                "cmpq ${max_entries}, %rax",
                 "jae 2f",
 
                 // `rax` is now address of the handler, bail if not set (null)
-                "leaq ({entries})(%rip), %r12",
+                "leaq {entries}(%rip), %r12",
                 "movq (%r12, %rax, {entry_size}), %rax",
                 "testq %rax, %rax",
                 "jz 2f",
@@ -472,7 +479,7 @@ pub unsafe fn init_syscalls() {
                 "sysretq",
 
                 "2:",
-                "movq {invalid}, %rax",
+                "movq ${invalid}, %rax",
                 "sysretq",
 
                 max_entries = const Syscall::MAX_ENTRIES,

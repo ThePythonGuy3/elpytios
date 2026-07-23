@@ -4,7 +4,6 @@ use alloc::{
 };
 use core::{alloc::Layout, arch::asm, mem::offset_of, ptr};
 
-use arrayvec::ArrayVec;
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
 use elpytios_elf::{
     Elf64, ElfSegmentType,
@@ -33,6 +32,26 @@ pub struct Task {
 }
 
 impl Task {
+    #[inline]
+    fn new() -> *mut Self {
+        let register_layout = CpuContext::get().registers.layout();
+
+        let layout = Layout::new::<InterruptFrame>(); // `frame`
+        let (layout, ..) = layout.extend(Layout::new::<usize>()).unwrap(); // `executable`
+        let (layout, ..) = layout.extend(Layout::new::<usize>()).unwrap(); // `stack`
+        let (layout, ..) = layout.extend(Layout::new::<VirtualMap>()).unwrap(); // `virtual_map`
+        let (layout, ..) = layout.extend(Layout::new::<PAddr>()).unwrap(); // `virtual_map_phys`
+        let (layout, ..) = layout.extend(Layout::new::<ExtendedRegisterMask>()).unwrap(); // `register_mask`
+        let (layout, ..) = layout.extend(register_layout).unwrap(); // `registers`
+
+        let ptr = unsafe { alloc(layout.pad_to_align()) };
+        if ptr.is_null() {
+            handle_alloc_error(layout)
+        }
+
+        ptr::from_raw_parts_mut(ptr, register_layout.size())
+    }
+
     pub fn from_elf(elf: Elf64) -> Result<Box<Self>, TaskCreateError> {
         if !matches!(elf.prologue().elf_type, ElfType::DYNAMIC) {
             return Err(TaskCreateError::NonRelocatable)
@@ -63,19 +82,16 @@ impl Task {
             unsafe {
                 let offset = (segment.virtual_address - base) as usize;
                 exec_ptr.byte_add(offset).copy_from_nonoverlapping(slice.as_ptr(), slice.len());
-
-                log::debug!(
-                    "virt {:p} -> phys {:p}",
-                    LOWER_HALF_ADDRESSES.start.byte_add(offset),
-                    exec_addr.byte_add(offset)
-                );
+                exec_ptr
+                    .byte_add(offset + slice.len())
+                    .write_bytes(0, segment.memory_size as usize - slice.len());
 
                 virtual_map.map(
                     exec_addr.byte_add(offset),
                     LOWER_HALF_ADDRESSES.start.byte_add(offset),
                     (segment.memory_size as usize).div_ceil(PAGE_SIZE),
                     {
-                        let mut flags = VFlags::empty();
+                        let mut flags = VFlags::USER_MODE;
                         if !segment.flags.contains(ElfProgramFlags::EXECUTABLE) {
                             flags |= VFlags::EXECUTE_DISABLE;
                         }
@@ -85,8 +101,6 @@ impl Task {
                         flags
                     },
                 )?;
-
-                log::debug!("done");
             }
         }
 
@@ -110,37 +124,19 @@ impl Task {
 
         let stack_addr = get_phys_alloc().lock().alloc(16u32.ilog2())?;
         unsafe {
-            log::debug!(
-                "virt {:p} -> phys {:p}",
-                LOWER_HALF_ADDRESSES.start.byte_add(((top - base) as usize).next_multiple_of(PAGE_SIZE)),
-                stack_addr
-            );
-
             virtual_map.map(
-                stack_addr,
-                LOWER_HALF_ADDRESSES.start.byte_add(((top - base) as usize).next_multiple_of(PAGE_SIZE)),
-                16,
-                VFlags::WRITABLE,
+                stack_addr.byte_add(PAGE_SIZE),
+                LOWER_HALF_ADDRESSES
+                    .start
+                    .byte_add(((top - base) as usize).next_multiple_of(PAGE_SIZE) + PAGE_SIZE),
+                15,
+                VFlags::USER_MODE | VFlags::WRITABLE,
             )?;
-
-            log::debug!("done");
         };
 
         let entry = elf.program_entry() - base;
-        let register_layout = CpuContext::get().registers.layout();
-
-        let layout = Layout::new::<InterruptFrame>();
-        let (layout, ..) = layout.extend(Layout::new::<ArrayVec<usize, 11>>()).unwrap();
-        let (layout, ..) = layout.extend(register_layout).unwrap();
-        let layout = layout.pad_to_align();
-
         unsafe {
-            let ptr = alloc(layout);
-            if ptr.is_null() {
-                handle_alloc_error(layout);
-            }
-
-            let this = ptr::from_raw_parts_mut(ptr, register_layout.size()) as *mut Self;
+            let this = Self::new();
             (&raw mut (*this).frame).write(InterruptFrame {
                 r15: 0,
                 r14: 0,
@@ -160,7 +156,7 @@ impl Task {
                 error: (),
                 rip: LOWER_HALF_ADDRESSES.start.addr() as u64 + entry,
                 cs: 0x20 + 3,
-                rflags: 0,
+                rflags: 0x202,
                 rsp: LOWER_HALF_ADDRESSES.start.addr() as u64 + (top - base).next_multiple_of(PAGE_SIZE as u64) + 16 * PAGE_SIZE as u64,
                 ss: 0x18 + 3,
             });

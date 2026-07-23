@@ -1,4 +1,4 @@
-use core::fmt;
+use core::{fmt, hint::assert_unchecked};
 
 use bytemuck::Zeroable;
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
@@ -192,9 +192,20 @@ pub struct VirtualMap<T: sealed::VirtualMapper = sealed::OffsetMapper> {
 
 impl<T: sealed::VirtualMapper> VirtualMap<T> {
     /// # Safety
-    /// There must never be concurrent (multithreaded) calls to this method that have the same
-    /// virtual page occupied by `v_addr`.
+    /// - Both addresses must be page-aligned.
+    /// - There must never be concurrent (multithreaded) calls to this method that have the same
+    ///   virtual page occupied by `v_addr`.
     pub unsafe fn map(&self, mut p_addr: PAddr, mut v_addr: VAddr, mut page_count: usize, flags: VFlags) -> Result<(), VirtualMapError> {
+        unsafe {
+            assert_unchecked(p_addr.addr().is_multiple_of(PAGE_SIZE));
+            assert_unchecked(v_addr.addr().is_multiple_of(PAGE_SIZE));
+        }
+
+        let mut node_entry = Entry::WRITABLE;
+        if flags.contains(VFlags::USER_MODE) {
+            node_entry |= Entry::USER_MODE;
+        }
+
         while page_count > 0 {
             let VAddrInfo {
                 pt_index,
@@ -207,7 +218,7 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
             unsafe {
                 match &raw mut (*self.mapper.pml4()).pml4_to_pdpt[pml4_index] {
                     e if !(*e).is_present() => e.write(NodeEntry::new(
-                        Entry::WRITABLE,
+                        node_entry,
                         self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
                     )),
                     _ => {}
@@ -223,7 +234,7 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
                             continue
                         } else {
                             e.write(PdptEntry::node(NodeEntry::new(
-                                Entry::WRITABLE,
+                                node_entry,
                                 self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
                             )))
                         }
@@ -248,7 +259,7 @@ impl<T: sealed::VirtualMapper> VirtualMap<T> {
                             continue
                         } else {
                             e.write(PdEntry::node(NodeEntry::new(
-                                Entry::WRITABLE,
+                                node_entry,
                                 self.mapper.new_page_table().ok_or(VirtualMapError::PageTable)?,
                             )))
                         }

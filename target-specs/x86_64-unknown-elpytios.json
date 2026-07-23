@@ -17,7 +17,6 @@
     "emit-debug-gdb-scripts": false,
     "relocation-model": "pic",
     "position-independent-executables": true,
-    "entry-abi": "sysv64",
     "target-pointer-width": 64,
     "linker-flavor": "ld.lld",
     "linker": "rust-lld",
