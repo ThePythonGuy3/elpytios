@@ -4,6 +4,7 @@ use bytemuck::Zeroable;
 use elpytios_bootinfo::{PAGE_SIZE, paddr::PAddr};
 
 use crate::{
+    HIGHER_HALF_ADDRESSES,
     statics::phys_to_virt,
     vaddr::{
         Entry, NodeEntry, PdEntry, PdLeafEntry, PdTable, PdptEntry, PdptLeafEntry, PdptTable, Pml4Table, PtEntry, PtTable, UnionEntry, VFlags,
@@ -310,7 +311,11 @@ impl VirtualMap<sealed::OffsetMapper> {
         let pml4 = phys_to_virt(pml4_phys).ptr_mut::<Pml4Table>();
 
         unsafe {
-            pml4.write(self.mapper.pml4().read());
+            let kernel_pml4 = self.mapper.pml4();
+            for i in HIGHER_HALF_ADDRESSES.start.info().pml4_index..=HIGHER_HALF_ADDRESSES.end.info().pml4_index {
+                (*pml4).pml4_to_pdpt[i] = (*kernel_pml4).pml4_to_pdpt[i];
+            }
+
             (
                 Self {
                     mapper: sealed::OffsetMapper::new(pml4),

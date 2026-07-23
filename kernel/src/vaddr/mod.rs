@@ -48,7 +48,7 @@ impl fmt::Debug for VirtualMapError {
 
 impl fmt::Display for VirtualMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match *self {
             Self::PageTable => writeln!(f, "Couldn't allocate a page table"),
             Self::AlreadyMapped {
                 p_addr,
