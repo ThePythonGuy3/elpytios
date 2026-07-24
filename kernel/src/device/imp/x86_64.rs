@@ -17,7 +17,7 @@ use log::{debug, error, info};
 
 use crate::{
     ScratchPages,
-    arch::x86_64::{ExtendedRegisters, Msr, pit_delay, rdmsr, wrmsr},
+    arch::x86_64::{ExtendedRegisters, Msr, rdmsr, wrmsr},
     device::acpi::{LocalApicFlags, Madt, Pic},
     interrupt::{
         init_interrupts,
@@ -59,7 +59,7 @@ impl ApicDriver {
     }
 
     #[inline]
-    pub unsafe fn end_of_interrupt(&self) {
+    pub unsafe fn end_of_interrupt(self) {
         match self {
             Self::XApic { .. } => unimplemented!("Sending End-of-Interrupts via legacy xAPIC isn't implemented yet"),
             Self::X2Apic => unsafe { wrmsr(Msr::Ia32X2ApicEoi, 0) },
@@ -67,7 +67,7 @@ impl ApicDriver {
     }
 
     #[inline]
-    fn init_timers(&self, timer: &Timer) {
+    fn init_timers(self, timer: &Timer) {
         match self {
             Self::XApic { .. } => unimplemented!("Initializing timers via legacy xAPIC isn't implemented yet"),
             Self::X2Apic => unsafe {
@@ -100,7 +100,7 @@ impl ApicDriver {
     }
 
     #[inline]
-    unsafe fn startup_core(self, send_init: bool, trampoline_phys: PAddr, apic_id: u32) {
+    unsafe fn startup_core(self, scratch_timer: &Timer, send_init: bool, trampoline_phys: PAddr, apic_id: u32) {
         match self {
             Self::XApic { .. } => unimplemented!("Waking up cores via legacy xAPIC isn't implemented yet"),
             Self::X2Apic => unsafe {
@@ -114,7 +114,7 @@ impl ApicDriver {
 
                 if send_init {
                     self.init_core(apic_id);
-                    pit_delay(Duration::from_millis(10));
+                    scratch_timer.busy_wait(Duration::from_millis(10));
                 }
 
                 wrmsr(
@@ -273,6 +273,7 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
         let bsp_id = driver.apic_id();
         let mut cpu_id = 0;
 
+        let scratch_timer = Timer::new();
         let mut init_cpu = |apic_id: u32| {
             if bsp_id == apic_id {
                 CpuContext::install(driver, true, apic_id, cpu_id);
@@ -297,10 +298,10 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
                 trampoline.copy_from_nonoverlapping(&raw const __ap_trampoline_start, __ap_trampoline_size);
 
                 AP_INIT.store(false, Release);
-                driver.startup_core(true, trampoline_phys, apic_id);
+                driver.startup_core(&scratch_timer, true, trampoline_phys, apic_id);
 
                 for i in 0..2 {
-                    pit_delay(Duration::from_millis(10));
+                    scratch_timer.busy_wait(Duration::from_millis(1));
                     match AP_INIT.compare_exchange(true, false, AcqRel, Relaxed) {
                         Ok(..) => {
                             cpu_id += 1;
@@ -309,7 +310,7 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
                         }
                         Err(..) => {
                             if i == 0 {
-                                driver.startup_core(false, trampoline_phys, apic_id);
+                                driver.startup_core(&scratch_timer, false, trampoline_phys, apic_id);
                                 error!("\tCouldn't start up AP core {apic_id}, retrying one more time");
                             } else {
                                 // Send one last INIT IPI to ensure the AP core isn't doing anything
@@ -317,7 +318,7 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
                                 error!("\tCouldn't start up AP core {apic_id} even after retrying, giving up");
 
                                 // Wait 10 milliseconds just to absolutely ensure the AP core isn't running
-                                pit_delay(Duration::from_millis(10));
+                                scratch_timer.busy_wait(Duration::from_millis(10));
                             }
                         }
                     }

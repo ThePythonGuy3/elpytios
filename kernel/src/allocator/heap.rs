@@ -12,7 +12,6 @@ use core::{
 };
 
 use elpytios_bootinfo::PAGE_SIZE;
-use log::debug;
 
 use crate::{
     allocator::PHYS_ALLOC_ALIGNMENT,
@@ -74,8 +73,6 @@ impl<const N: usize> Segment<N> {
                 available: UnsafeCell::new(available),
                 offset,
             });
-
-            debug!("New segment for size class {size_class}: Available={available}, Offset={offset}");
         }
 
         this

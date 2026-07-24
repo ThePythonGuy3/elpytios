@@ -430,8 +430,7 @@ pub unsafe extern "sysv64" fn spurious() -> ! {
     naked_asm!("iretq", options(att_syntax))
 }
 
-pub unsafe extern "sysv64" fn syscall_write(file: usize, buffer: usize, len: usize) -> usize {
-    log::debug!("SYSCALL WRITE: file={file}, buffer={buffer}, len={len}");
+pub unsafe extern "sysv64" fn syscall_write(_file: usize, _buffer: usize, _len: usize) -> usize {
     Syscall::INVALID
 }
 
