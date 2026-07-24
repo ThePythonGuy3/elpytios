@@ -171,10 +171,10 @@ impl Task {
     }
 }
 
-pub unsafe fn schedule_init(mut task: Box<Task>) -> ! {
+pub unsafe fn schedule_init(task: Box<Task>) -> ! {
     let cpu = CpuContext::get();
     unsafe {
-        let task_ptr = Box::as_mut_ptr(&mut task);
+        let task_ptr = Box::as_ptr(&task);
         cpu.current_task.get().write(Some(task));
 
         // Restore all extended registers (via xrstor64)

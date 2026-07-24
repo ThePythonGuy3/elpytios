@@ -109,6 +109,9 @@ pub enum Msr {
     /// - Bit 10: Direction flag (`cld`).
     /// - Bit 18: Alignment check.
     Ia32Fmask = 0xc000_0084,
+    /// - Read-write register.
+    /// - Bit 0-63: TSC timestamp for timer tick.
+    Ia32TscDeadline = 0x6e0,
     /// - Read-only register.
     /// - Bit 0-31: Unique 32-bit physical hardware ID.
     Ia32X2ApicId = 0x802,
@@ -127,11 +130,11 @@ pub enum Msr {
     /// - Bit 0-7: Vector.
     /// - Bit 8-10: Delivery mode (100=NMI, 101=Init, 110=Startup).
     /// - Bit 14: Assert flag.
-    /// - Bit 32-63: Target core destination APIC ID (as specified in [`Self::X2ApicId`]).
+    /// - Bit 32-63: Target core destination APIC ID (as specified in [`Self::Ia32X2ApicId`]).
     Ia32X2ApicIcr = 0x830,
     /// - Read-write register.
     /// - Bit 0-7: Vector.
-    /// - Bit 17-18: Mode (00=One-shot, 01=Periodic).
+    /// - Bit 17-18: Mode (0=One-shot, 1=Periodic, 2=TSC-deadline, 3=Reserved).
     Ia32X2ApicLvtTimer = 0x832,
 }
 

@@ -2,7 +2,7 @@ use core::{
     hint::{cold_path, spin_loop, unreachable_unchecked},
     sync::atomic::{
         AtomicU8,
-        Ordering::{Acquire, Relaxed, Release},
+        Ordering::{Acquire, Release},
     },
 };
 
@@ -21,7 +21,7 @@ impl SpinOnce {
     #[inline]
     pub fn call_once<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
         loop {
-            match self.0.compare_exchange_weak(Self::UNINIT, Self::LOCKED, Acquire, Relaxed) {
+            match self.0.compare_exchange_weak(Self::UNINIT, Self::LOCKED, Acquire, Acquire) {
                 Ok(..) => {
                     cold_path();
                     let result = f();

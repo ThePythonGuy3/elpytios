@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use core::{
     arch::{asm, global_asm, x86_64::__cpuid_count},
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     hint::spin_loop,
     mem::ManuallyDrop,
     ptr::{self, NonNull},
@@ -19,9 +19,13 @@ use crate::{
     ScratchPages,
     arch::x86_64::{ExtendedRegisters, Msr, pit_delay, rdmsr, wrmsr},
     device::acpi::{LocalApicFlags, Madt, Pic},
-    interrupt::{init_interrupts, x86_64::Tss},
+    interrupt::{
+        init_interrupts,
+        x86_64::{IdtIndex, InterruptFrame, Tss},
+    },
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt},
     task::Task,
+    timer::{Timer, TimerX86_64},
     vaddr::{VAddr, VFlags},
 };
 
@@ -40,14 +44,14 @@ unsafe extern "sysv64" {
 }
 
 #[derive(Clone, Copy)]
-enum ApicDriver {
+pub enum ApicDriver {
     XApic { mmr: NonNull<u32> },
     X2Apic,
 }
 
 impl ApicDriver {
     #[inline]
-    fn apic_id(self) -> u32 {
+    pub fn apic_id(self) -> u32 {
         match self {
             Self::XApic { mmr } => unsafe { (mmr.byte_add(0x20).read_volatile() >> 24) & 0xff },
             Self::X2Apic => unsafe { rdmsr(Msr::Ia32X2ApicId) as u32 },
@@ -55,7 +59,35 @@ impl ApicDriver {
     }
 
     #[inline]
-    unsafe fn init(self, apic_id: u32) {
+    pub unsafe fn end_of_interrupt(&self) {
+        match self {
+            Self::XApic { .. } => unimplemented!("Sending End-of-Interrupts via legacy xAPIC isn't implemented yet"),
+            Self::X2Apic => unsafe { wrmsr(Msr::Ia32X2ApicEoi, 0) },
+        }
+    }
+
+    #[inline]
+    fn init_timers(&self, timer: &Timer) {
+        match self {
+            Self::XApic { .. } => unimplemented!("Initializing timers via legacy xAPIC isn't implemented yet"),
+            Self::X2Apic => unsafe {
+                // - Bit 0-7: Set fallback handler vector
+                // - Bit 8: APIC enable in software
+                wrmsr(Msr::Ia32X2ApicSivr, IdtIndex::Spurious as u64 | (1 << 8));
+
+                match timer.inner {
+                    TimerX86_64::Tsc { .. } => {
+                        // - Bit 0-7: Vector
+                        // - Bit 17-18: Mode (0=One-shot, 1=Periodic, 2=TSC-deadline, 3=Reserved)
+                        wrmsr(Msr::Ia32X2ApicLvtTimer, IdtIndex::ScheduleTimer as u64 | (2 << 17));
+                    }
+                }
+            },
+        }
+    }
+
+    #[inline]
+    unsafe fn init_core(self, apic_id: u32) {
         match self {
             Self::XApic { .. } => unimplemented!("Waking up cores via legacy xAPIC isn't implemented yet"),
             Self::X2Apic => unsafe {
@@ -68,7 +100,7 @@ impl ApicDriver {
     }
 
     #[inline]
-    unsafe fn startup(self, send_init: bool, trampoline_phys: PAddr, apic_id: u32) {
+    unsafe fn startup_core(self, send_init: bool, trampoline_phys: PAddr, apic_id: u32) {
         match self {
             Self::XApic { .. } => unimplemented!("Waking up cores via legacy xAPIC isn't implemented yet"),
             Self::X2Apic => unsafe {
@@ -81,7 +113,7 @@ impl ApicDriver {
                 let assert = 1 << 14;
 
                 if send_init {
-                    self.init(apic_id);
+                    self.init_core(apic_id);
                     pit_delay(Duration::from_millis(10));
                 }
 
@@ -98,12 +130,14 @@ impl ApicDriver {
 pub struct CpuContext {
     // Common fields across all architectures
     this: *const Self,
-    apic: ApicDriver,
     pub is_bootstrap: bool,
     pub apic_id: u32,
     pub cpu_id: u32,
+    pub timer: Timer,
     pub current_task: UnsafeCell<Option<Box<Task>>>,
     // x86_64-specific fields
+    apic: ApicDriver,
+    pub timer_callback: Cell<Option<fn(&mut InterruptFrame)>>,
     pub registers: ExtendedRegisters,
     /// Task state segment
     pub tss: Tss,
@@ -115,13 +149,18 @@ impl CpuContext {
             unsafe { wrmsr(Msr::Ia32ApicBase, rdmsr(Msr::Ia32ApicBase) | (1 << 10) | (1 << 11)) }
         }
 
+        let timer = Timer::new();
+        apic.init_timers(&timer);
+
         let this = Box::into_raw(Box::new(Self {
             this: ptr::null(),
-            apic,
             is_bootstrap,
             apic_id,
             cpu_id,
+            timer,
             current_task: UnsafeCell::new(None),
+            apic,
+            timer_callback: Cell::new(None),
             registers: unsafe { ExtendedRegisters::new() },
             tss: Tss::new(),
         }));
@@ -146,6 +185,11 @@ impl CpuContext {
             );
             ptr.as_ref_unchecked()
         }
+    }
+
+    #[inline]
+    pub unsafe fn end_of_interrupt(&self) {
+        unsafe { self.apic.end_of_interrupt() }
     }
 }
 
@@ -253,10 +297,10 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
                 trampoline.copy_from_nonoverlapping(&raw const __ap_trampoline_start, __ap_trampoline_size);
 
                 AP_INIT.store(false, Release);
-                driver.startup(true, trampoline_phys, apic_id);
+                driver.startup_core(true, trampoline_phys, apic_id);
 
                 for i in 0..2 {
-                    pit_delay(Duration::from_micros(500));
+                    pit_delay(Duration::from_millis(10));
                     match AP_INIT.compare_exchange(true, false, AcqRel, Relaxed) {
                         Ok(..) => {
                             cpu_id += 1;
@@ -265,11 +309,11 @@ pub unsafe fn init_device_tree<F: FnOnce(u32) -> ! + Clone + Send>(scratch_pages
                         }
                         Err(..) => {
                             if i == 0 {
-                                driver.startup(false, trampoline_phys, apic_id);
+                                driver.startup_core(false, trampoline_phys, apic_id);
                                 error!("\tCouldn't start up AP core {apic_id}, retrying one more time");
                             } else {
                                 // Send one last INIT IPI to ensure the AP core isn't doing anything
-                                driver.init(apic_id);
+                                driver.init_core(apic_id);
                                 error!("\tCouldn't start up AP core {apic_id} even after retrying, giving up");
 
                                 // Wait 10 milliseconds just to absolutely ensure the AP core isn't running

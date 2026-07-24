@@ -211,12 +211,15 @@ bitflags! {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[repr(usize)]
+#[repr(u8)]
 pub enum IdtIndex {
     // Hard-coded by CPU
-    DoubleFault = 8,
-    PageFault = 14,
-    Timer = 32,
+    DoubleFault = 0x08,
+    PageFault = 0x0e,
+    // Programmable interrupts; must send End-of-Interrupt before returning
+    ScheduleTimer = 0x20,
+    // Spurious vector
+    Spurious = 0xff,
 }
 
 mod sealed {
@@ -405,13 +408,34 @@ pub unsafe extern "sysv64" fn page_fault() -> ! {
     )
 }
 
-#[allow(unused, reason = "Unimplemented")]
+#[unsafe(naked)]
+pub unsafe extern "sysv64" fn schedule_timer() -> ! {
+    unsafe extern "sysv64" fn handle(frame: &mut InterruptFrame) {
+        let cpu = CpuContext::get();
+        if let Some(func) = cpu.timer_callback.take() {
+            func(frame)
+        }
+
+        unsafe { cpu.end_of_interrupt() }
+    }
+
+    interrupt!(
+        #[not(error)]
+        handle
+    )
+}
+
+#[unsafe(naked)]
+pub unsafe extern "sysv64" fn spurious() -> ! {
+    naked_asm!("iretq", options(att_syntax))
+}
+
 pub unsafe extern "sysv64" fn syscall_write(file: usize, buffer: usize, len: usize) -> usize {
+    log::debug!("SYSCALL WRITE: file={file}, buffer={buffer}, len={len}");
     Syscall::INVALID
 }
 
-#[allow(unused, reason = "Unimplemented")]
-pub unsafe extern "sysv64" fn syscall_read(file: usize, buffer: usize, len: usize) -> usize {
+pub unsafe extern "sysv64" fn syscall_read(_file: usize, _buffer: usize, _len: usize) -> usize {
     Syscall::INVALID
 }
 
@@ -432,9 +456,9 @@ pub unsafe fn init_syscalls() {
         // 0x10 + 16 = 0x20: USER_CODE
         wrmsr(Msr::Ia32Star, (0x08 << 32) | (0x10 << 48));
         wrmsr(Msr::Ia32Lstar, syscall as *const () as u64);
-        // - Bit 9: Interrupt flag (`cli`)
-        // - Bit 10: Direction flag (`cld`)
-        // - Bit 18: Alignment check
+        // Bit 9: Interrupt flag (`cli`)
+        // Bit 10: Direction flag (`cld`)
+        // Bit 18: Alignment check
         wrmsr(Msr::Ia32Fmask, (1 << 9) | (1 << 10) | (1 << 18));
 
         #[unsafe(naked)]
@@ -502,6 +526,9 @@ pub unsafe fn init_interrupts(cpu: &'static CpuContext) {
     IDT_INIT.call_once(|| unsafe {
         IDT_ENTRIES[IdtIndex::DoubleFault as usize] = IdtEntry::new(double_fault);
         IDT_ENTRIES[IdtIndex::PageFault as usize] = IdtEntry::new(page_fault);
+
+        IDT_ENTRIES[IdtIndex::ScheduleTimer as usize] = IdtEntry::new(schedule_timer);
+        IDT_ENTRIES[IdtIndex::Spurious as usize] = IdtEntry::new(spurious);
     });
 
     #[repr(C, packed)]

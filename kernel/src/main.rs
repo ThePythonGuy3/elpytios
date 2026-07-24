@@ -423,7 +423,8 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
 ///   function.
 /// - This function must be able to be run in parallel with itself on other threads
 fn main(core_count: u32) -> ! {
-    if CpuContext::get().is_bootstrap {
+    let ctx = CpuContext::get();
+    if ctx.is_bootstrap {
         info!("Hello, world! Kernel is now up and running on {core_count} logical processors!");
     }
 
@@ -433,7 +434,7 @@ fn main(core_count: u32) -> ! {
 
         let fbo = get_frame_buffer();
         let fbo_div = fbo.height.div_ceil(core_count as usize);
-        let cpu_id = CpuContext::get().cpu_id as usize;
+        let cpu_id = ctx.cpu_id as usize;
 
         match fbo.format {
             fmt @ (PixelFormat::RGB_8_BIT | PixelFormat::BGR_8_BIT) => {
@@ -461,8 +462,7 @@ fn main(core_count: u32) -> ! {
         }
     }
 
-    // TODO scheduler
-    if CpuContext::get().is_bootstrap {
+    if ctx.is_bootstrap {
         use elpytios_elf::Elf;
         use elpytios_kernel::task::{Task, schedule_init};
 
@@ -471,7 +471,7 @@ fn main(core_count: u32) -> ! {
 
         let task = Task::from_elf(elf).unwrap();
         unsafe { schedule_init(task) }
-    } else {
-        loop {}
     }
+
+    loop {}
 }
