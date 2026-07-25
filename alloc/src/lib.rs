@@ -1,8 +1,17 @@
+#![feature(
+    arbitrary_self_types_pointers,
+    atomic_ptr_null,
+    const_trait_impl,
+    pointer_is_aligned_to,
+    ptr_alignment_type
+)]
+#![no_std]
+
 use core::{
-    self,
     alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
     hint::{cold_path, spin_loop, unreachable_unchecked},
+    marker::PhantomData,
     mem::Alignment,
     ptr,
     sync::atomic::{
@@ -11,48 +20,53 @@ use core::{
     },
 };
 
-use elpytios_bootinfo::PAGE_SIZE;
+use elpytios_abi::{ALLOC_ALIGNMENT, PAGE_SIZE};
 
-use crate::{
-    allocator::PHYS_ALLOC_ALIGNMENT,
-    statics::{get_phys_alloc, phys_to_virt, virt_to_phys},
-};
+/// # Safety
+/// - Allocations of sizes up to [`ALLOC_ALIGNMENT`] must be aligned to the nearest power of two of
+///   that size.
+pub unsafe trait PageAllocator {
+    fn alloc(&self, order: u32) -> Option<*mut u8>;
+
+    unsafe fn dealloc(&self, ptr: *mut u8, order: u32);
+}
 
 const MICRO_SIZES: [usize; 8] = [8, 16, 24, 32, 48, 64, 96, 128];
 const SMALL_SIZES: [usize; 8] = [192, 256, 384, 512, 768, 1024, 1536, 2048];
 const MEDIUM_SIZES: [usize; 4] = [3072, 4096, 6144, 8192];
 const LARGE_SIZES: [usize; 4] = [12288, 16384, 24576, 32768];
 
-pub struct HeapAllocator {
-    micro_bins: [AtomicPtr<MicroSegment>; MICRO_SIZES.len()],
-    small_bins: [AtomicPtr<SmallSegment>; SMALL_SIZES.len()],
-    medium_bins: [AtomicPtr<MediumSegment>; MEDIUM_SIZES.len()],
-    large_bins: [AtomicPtr<LargeSegment>; LARGE_SIZES.len()],
+pub struct HeapAllocator<T: PageAllocator> {
+    page_alloc: T,
+    micro_bins: [AtomicPtr<MicroSegment<T>>; MICRO_SIZES.len()],
+    small_bins: [AtomicPtr<SmallSegment<T>>; SMALL_SIZES.len()],
+    medium_bins: [AtomicPtr<MediumSegment<T>>; MEDIUM_SIZES.len()],
+    large_bins: [AtomicPtr<LargeSegment<T>>; LARGE_SIZES.len()],
 }
 
 #[repr(C, align(4096))]
-struct Segment<const N: usize> {
+struct Segment<T: PageAllocator, const N: usize> {
     data: UnsafeCell<[u8; N]>,
     meta: SegmentMeta,
+    _marker: PhantomData<*const T>,
 }
 
-impl<const N: usize> Segment<N> {
+impl<T: PageAllocator, const N: usize> Segment<T, N> {
     const LOCK: usize = 1 << (usize::BITS - 1);
     const MASK: usize = !Self::LOCK;
 
     #[inline]
-    fn new(size_class: usize) -> *mut Self {
+    fn new(page_alloc: &T, size_class: usize) -> *mut Self {
         // Ensure that segment allocations are always aligned
         _ = const {
             assert!(size_of::<Self>().is_power_of_two());
-            assert!(PHYS_ALLOC_ALIGNMENT.as_usize().is_multiple_of(size_of::<Self>()));
+            assert!(ALLOC_ALIGNMENT.as_usize().is_multiple_of(size_of::<Self>()));
         };
 
-        let addr = get_phys_alloc()
-            .lock()
+        let this = page_alloc
             .alloc(size_of::<Self>().ilog2())
-            .expect("Couldn't allocate pages for heap allocator");
-        let this = phys_to_virt(addr).ptr_mut::<Self>();
+            .expect("Couldn't allocate pages for heap allocator")
+            .cast::<Self>();
         debug_assert!(
             this.is_aligned_to(size_of::<Self>()),
             "Physical page allocator didn't allocate an aligned heap"
@@ -171,22 +185,22 @@ struct SegmentMeta {
     offset: usize,
 }
 
-type MicroSegment = Segment<{ PAGE_SIZE - size_of::<SegmentMeta>() }>;
-type SmallSegment = Segment<{ (4 * PAGE_SIZE) - size_of::<SegmentMeta>() }>;
-type MediumSegment = Segment<{ (16 * PAGE_SIZE) - size_of::<SegmentMeta>() }>;
-type LargeSegment = Segment<{ (32 * PAGE_SIZE) - size_of::<SegmentMeta>() }>;
+type MicroSegment<T> = Segment<T, { PAGE_SIZE - size_of::<SegmentMeta>() }>;
+type SmallSegment<T> = Segment<T, { (4 * PAGE_SIZE) - size_of::<SegmentMeta>() }>;
+type MediumSegment<T> = Segment<T, { (16 * PAGE_SIZE) - size_of::<SegmentMeta>() }>;
+type LargeSegment<T> = Segment<T, { (32 * PAGE_SIZE) - size_of::<SegmentMeta>() }>;
 
-enum SizeClassify<'a> {
-    Micro(&'a AtomicPtr<MicroSegment>, usize),
-    Small(&'a AtomicPtr<SmallSegment>, usize),
-    Medium(&'a AtomicPtr<MediumSegment>, usize),
-    Large(&'a AtomicPtr<LargeSegment>, usize),
+enum SizeClassify<'a, T: PageAllocator> {
+    Micro(&'a AtomicPtr<MicroSegment<T>>, usize),
+    Small(&'a AtomicPtr<SmallSegment<T>>, usize),
+    Medium(&'a AtomicPtr<MediumSegment<T>>, usize),
+    Large(&'a AtomicPtr<LargeSegment<T>>, usize),
     Huge,
 }
 
-impl<'a> SizeClassify<'a> {
+impl<'a, T: PageAllocator> SizeClassify<'a, T> {
     #[inline]
-    unsafe fn new(alloc: &'a HeapAllocator, size: usize) -> Self {
+    unsafe fn new(alloc: &'a HeapAllocator<T>, size: usize) -> Self {
         #[inline]
         unsafe fn get<'a, const N: usize, T, R>(
             ptrs: &'a [AtomicPtr<T>],
@@ -225,9 +239,10 @@ impl<'a> SizeClassify<'a> {
     }
 }
 
-impl HeapAllocator {
-    pub const fn new() -> Self {
+impl<T: PageAllocator> HeapAllocator<T> {
+    pub const fn new(page_alloc: T) -> Self {
         Self {
+            page_alloc,
             micro_bins: [const { AtomicPtr::null() }; _],
             small_bins: [const { AtomicPtr::null() }; _],
             medium_bins: [const { AtomicPtr::null() }; _],
@@ -235,7 +250,7 @@ impl HeapAllocator {
         }
     }
 
-    fn alloc<const N: usize>(head: &AtomicPtr<Segment<N>>, size_class: usize) -> *mut u8 {
+    fn alloc<const N: usize>(page_alloc: &T, head: &AtomicPtr<Segment<T, N>>, size_class: usize) -> *mut u8 {
         let mut head_ptr = head.load(Relaxed);
         loop {
             // HEAD is locked (least-significant bit is set)
@@ -251,7 +266,7 @@ impl HeapAllocator {
             if head_ptr.is_null() {
                 match head.compare_exchange(head_ptr, head_ptr.wrapping_byte_add(1), Acquire, Relaxed) {
                     Ok(..) => {
-                        let new = Segment::new(size_class);
+                        let new = Segment::new(page_alloc, size_class);
                         head.store(new, Release);
 
                         head_ptr = new;
@@ -299,8 +314,8 @@ impl HeapAllocator {
         }
     }
 
-    fn dealloc<const N: usize>(head: &AtomicPtr<Segment<N>>, size_class: usize, at: *mut u8) {
-        let segment_ptr = (at as usize & !(size_of::<Segment<N>>() - 1)) as *mut Segment<N>;
+    fn dealloc<const N: usize>(head: &AtomicPtr<Segment<T, N>>, size_class: usize, at: *mut u8) {
+        let segment_ptr = (at as usize & !(size_of::<Segment<T, N>>() - 1)) as *mut Segment<T, N>;
         unsafe {
             segment_ptr.dealloc(size_class, at, || {
                 let mut head_ptr = head.load(Relaxed);
@@ -347,12 +362,10 @@ impl HeapAllocator {
     }
 
     #[cold]
-    fn alloc_huge(size: usize) -> *mut u8 {
-        if size <= PHYS_ALLOC_ALIGNMENT.as_usize() {
-            get_phys_alloc()
-                .lock()
-                .alloc(usize::BITS - (size - 1).leading_zeros())
-                .map(|addr| phys_to_virt(addr).ptr_mut())
+    fn alloc_huge(page_alloc: &T, layout: Layout) -> *mut u8 {
+        if layout.alignment() <= ALLOC_ALIGNMENT {
+            page_alloc
+                .alloc(usize::BITS - (layout.size() - 1).leading_zeros())
                 .unwrap_or(ptr::null_mut())
         } else {
             cold_path();
@@ -361,45 +374,43 @@ impl HeapAllocator {
     }
 
     #[cold]
-    unsafe fn dealloc_huge(size: usize, at: *mut u8) {
-        unsafe {
-            get_phys_alloc()
-                .lock()
-                .dealloc(virt_to_phys(at.into()), usize::BITS - (size - 1).leading_zeros())
-        }
+    unsafe fn dealloc_huge(page_alloc: &T, layout: Layout, at: *mut u8) {
+        unsafe { page_alloc.dealloc(at, usize::BITS - (layout.size() - 1).leading_zeros()) }
     }
 
     #[inline]
-    const fn unionize(layout: Layout) -> Layout {
+    fn unionize(layout: Layout) -> Layout {
         let new_size = layout.size().next_multiple_of(size_of::<u16>());
         let new_align = layout.alignment().max(Alignment::of::<u16>());
         unsafe { Layout::from_size_alignment_unchecked(new_size, new_align).pad_to_align() }
     }
 }
 
-unsafe impl Sync for HeapAllocator {}
-unsafe impl GlobalAlloc for HeapAllocator {
+unsafe impl<T: PageAllocator> Sync for HeapAllocator<T> {}
+unsafe impl<T: PageAllocator> GlobalAlloc for HeapAllocator<T> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let layout = Self::unionize(layout);
-        match unsafe { SizeClassify::new(self, layout.size()) } {
-            SizeClassify::Micro(ptr, size_class) => Self::alloc(ptr, size_class),
-            SizeClassify::Small(ptr, size_class) => Self::alloc(ptr, size_class),
+        let page_alloc = &self.page_alloc;
+        let layout_padded = Self::unionize(layout);
+
+        match unsafe { SizeClassify::new(self, layout_padded.size()) } {
+            SizeClassify::Micro(ptr, size_class) => Self::alloc(page_alloc, ptr, size_class),
+            SizeClassify::Small(ptr, size_class) => Self::alloc(page_alloc, ptr, size_class),
             SizeClassify::Medium(ptr, size_class) => {
                 cold_path();
-                Self::alloc(ptr, size_class)
+                Self::alloc(page_alloc, ptr, size_class)
             }
             SizeClassify::Large(ptr, size_class) => {
                 cold_path();
-                Self::alloc(ptr, size_class)
+                Self::alloc(page_alloc, ptr, size_class)
             }
-            SizeClassify::Huge => Self::alloc_huge(layout.size()),
+            SizeClassify::Huge => Self::alloc_huge(page_alloc, layout),
         }
     }
 
     unsafe fn dealloc(&self, at: *mut u8, layout: Layout) {
-        let layout = Self::unionize(layout);
+        let layout_padded = Self::unionize(layout);
         unsafe {
-            match SizeClassify::new(self, layout.size()) {
+            match SizeClassify::new(self, layout_padded.size()) {
                 SizeClassify::Micro(ptr, size_class) => Self::dealloc(ptr, size_class, at),
                 SizeClassify::Small(ptr, size_class) => Self::dealloc(ptr, size_class, at),
                 SizeClassify::Medium(ptr, size_class) => {
@@ -410,7 +421,7 @@ unsafe impl GlobalAlloc for HeapAllocator {
                     cold_path();
                     Self::dealloc(ptr, size_class, at)
                 }
-                SizeClassify::Huge => Self::dealloc_huge(layout.size(), at),
+                SizeClassify::Huge => Self::dealloc_huge(&self.page_alloc, layout, at),
             }
         }
     }

@@ -2,8 +2,6 @@
 #![feature(
     anonymous_lifetime_in_impl_trait,
     arbitrary_self_types_pointers,
-    atomic_ptr_null,
-    const_cmp,
     const_trait_impl,
     const_try,
     debug_closure_helpers,
@@ -11,7 +9,6 @@
     layout_for_ptr,
     negative_impls,
     never_type,
-    pointer_is_aligned_to,
     ptr_alignment_type,
     ptr_metadata,
     slice_ptr_get,
@@ -35,13 +32,14 @@ pub mod vaddr;
 
 use core::{mem::MaybeUninit, ops::Range};
 
-use allocator::{HeapAllocator, PhysicalPageAllocator};
+use allocator::{KernelPageAllocator, PhysicalPageAllocator};
+use elpytios_alloc::HeapAllocator;
 use elpytios_bootinfo::paddr::PAddr;
 use framebuffer::FrameBuffer;
 use spin_sync::SpinMutex;
 use vaddr::{VAddr, VirtualMap};
 
-pub const LOWER_HALF_ADDRESSES: Range<VAddr> = VAddr::new(0x0000_0000_0040_0000)..VAddr::new(0x0000_8000_0000_0000);
+pub const LOWER_HALF_ADDRESSES: Range<VAddr> = VAddr::new(0x0000_0000_0000_1000)..VAddr::new(0x0000_8000_0000_0000);
 pub const HIGHER_HALF_ADDRESSES: Range<VAddr> = VAddr::new(0xffff_8000_0000_0000)..VAddr::new(0xffff_ffff_ffff_ffff);
 
 #[repr(transparent)]
@@ -77,7 +75,7 @@ pub mod statics {
     static mut FRAME_BUFFER: MaybeUninit<FrameBuffer> = MaybeUninit::uninit();
 
     #[global_allocator]
-    static ALLOC: HeapAllocator = HeapAllocator::new();
+    static ALLOC: HeapAllocator<KernelPageAllocator> = HeapAllocator::new(KernelPageAllocator);
 
     #[inline]
     pub unsafe fn set_direct_map_offset(offset: usize) {

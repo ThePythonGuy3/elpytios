@@ -21,6 +21,7 @@ from pathlib import Path
 root = Path(__file__).resolve().parent
 
 elpytios_abi_root = root / "abi"
+elpytios_alloc_root = root / "alloc"
 elpytios_std_root = root / "std"
 library_dst_root = elpytios_std_root / "rust-src"
 
@@ -184,6 +185,10 @@ def fetch_std(_args):
     # Manually add OS-specific dependencies after filtering
     packages["std"].manifest["dependencies"]["elpytios-abi"] = {
         "path": str(elpytios_abi_root),
+        "features": ["sysroot-dep"],
+    }
+    packages["std"].manifest["dependencies"]["elpytios-alloc"] = {
+        "path": str(elpytios_alloc_root),
         "features": ["sysroot-dep"],
     }
 

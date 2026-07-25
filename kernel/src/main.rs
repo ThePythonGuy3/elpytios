@@ -10,13 +10,15 @@ use core::{
     fmt::Write,
     iter::once,
     panic::PanicInfo,
+    slice,
 };
 
+use elpytios_abi::ALLOC_ALIGNMENT;
 use elpytios_bootinfo::{BootInfo, IdentityMapFlags, MemoryRegion, PAGE_SIZE, Reloc, paddr::PAddr};
 use elpytios_elf::sys::{ElfRela64, ElfRela64Type};
 use elpytios_kernel::{
     HIGHER_HALF_ADDRESSES, ScratchPages,
-    allocator::{AllocTree, PHYS_ALLOC_ALIGNMENT, PhysicalPageAllocator},
+    allocator::{AllocTree, PhysicalPageAllocator},
     device::{CpuContext, init_device_tree},
     framebuffer::FrameBuffer,
     serial::{Com, Serial, serial_init},
@@ -197,8 +199,9 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
             setup_virtual_mapped = in(reg) setup_virtual_mapped,
             in("rdi") (info as *const BootInfo).byte_add(v_slide),
             in("rsi") &regions.into_inner(),
-            in("rdx") &mut scratch_pages,
-            in("rcx") kernel_base.addr(),
+            in("rdx") scratch_pages.pages.as_ptr(),
+            in("rcx") scratch_pages.pages.len(),
+            in("r8") kernel_base.addr(),
 
             options(att_syntax, noreturn),
         )
@@ -208,9 +211,14 @@ unsafe extern "sysv64" fn setup_identity_mapped(info: &'static BootInfo) -> ! {
 unsafe extern "sysv64" fn setup_virtual_mapped(
     info: &'static BootInfo,
     regions: &MemoryRegions,
-    scratch_pages: &mut ScratchPages,
+    scratch_pages_ptr: *const PAddr,
+    scratch_pages_len: usize,
     kernel_base: PAddr,
 ) -> ! {
+    let mut scratch_pages = ScratchPages {
+        pages: unsafe { slice::from_raw_parts(scratch_pages_ptr, scratch_pages_len) },
+    };
+
     // Relocate all symbols to higher-half addressing
     // Identity-mapping is still present at this point, so it is okay to cast `PAddr` into pointers
     let kernel_ptr = info.kernel_elf_base;
@@ -302,8 +310,8 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
             let mut usable_end = usable_start + pages * PAGE_SIZE;
 
             // Trees need to be aligned to `PHYS_ALLOC_ALIGNMENT`, so round down and manually fill "ghost" pages
-            let mut tree_start = usable_start & !(PHYS_ALLOC_ALIGNMENT.as_usize() - 1);
-            let mut tree_end = usable_end & !(PHYS_ALLOC_ALIGNMENT.as_usize() - 1);
+            let mut tree_start = usable_start & !(ALLOC_ALIGNMENT.as_usize() - 1);
+            let mut tree_end = usable_end & !(ALLOC_ALIGNMENT.as_usize() - 1);
 
             while tree_start < tree_end {
                 let layout = AllocTree::layout((tree_end - tree_start) / PAGE_SIZE).expect("`AllocTree` layout error");
@@ -366,7 +374,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
                 unsafe { phys_alloc.push_tree(PAddr::new(tree_start), tree) }
                 tree_start += layout.node_count() * PAGE_SIZE;
                 usable_start = tree_start;
-                tree_end = usable_end & !(PHYS_ALLOC_ALIGNMENT.as_usize() - 1);
+                tree_end = usable_end & !(ALLOC_ALIGNMENT.as_usize() - 1);
             }
         }
 
@@ -415,7 +423,7 @@ unsafe extern "sysv64" fn setup_virtual_mapped(
 
     // Setup device tree, which includes waking up all AP and setting up interrupt handlers
     // This calls the closure once for every CPU cores locally
-    unsafe { init_device_tree(info.device_tree, scratch_pages, main) }
+    unsafe { init_device_tree(info.device_tree, &mut scratch_pages, main) }
 }
 
 /// # Safety

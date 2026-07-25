@@ -10,6 +10,7 @@ forced-target = "x86_64-unknown-none"
 
 [dependencies]
 elpytios-abi = { path = "../abi" }
+elpytios-alloc = { path = "../alloc" }
 elpytios-bootinfo = { path = "../bootinfo" }
 elpytios-elf = { path = "../elf" }
 
