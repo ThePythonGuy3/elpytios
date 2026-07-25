@@ -438,6 +438,10 @@ pub unsafe extern "sysv64" fn syscall_read(_file: usize, _buffer: usize, _len: u
     Syscall::INVALID
 }
 
+pub unsafe extern "sysv64" fn syscall_mem_map(file: usize, offset: usize, page_count: usize, flags: usize) -> usize {
+    unsafe { super::mem_map(file, offset, page_count, flags) as usize }
+}
+
 pub unsafe fn init_syscalls() {
     static mut SYSCALL_ENTRIES: [SyscallEntry; Syscall::MAX_ENTRIES] = [SyscallEntry::MISSING; Syscall::MAX_ENTRIES];
     static SYSCALL_INIT: SpinOnce = SpinOnce::new();
@@ -445,6 +449,8 @@ pub unsafe fn init_syscalls() {
     SYSCALL_INIT.call_once(|| unsafe {
         SYSCALL_ENTRIES[Syscall::Write as usize] = SyscallEntry { write: syscall_write };
         SYSCALL_ENTRIES[Syscall::Read as usize] = SyscallEntry { read: syscall_read };
+
+        SYSCALL_ENTRIES[Syscall::MemMap as usize] = SyscallEntry { mem_map: syscall_mem_map };
     });
 
     unsafe {
@@ -468,6 +474,7 @@ pub unsafe fn init_syscalls() {
                 "jae 2f",
 
                 // `rax` is now address of the handler, bail if not set (null)
+                // `r12` is supposed to be treated as caller-saved (breaking the traditional Sys V, but it's not a strict requirement anyway)
                 "leaq {entries}(%rip), %r12",
                 "movq (%r12, %rax, {entry_size}), %rax",
                 "testq %rax, %rax",

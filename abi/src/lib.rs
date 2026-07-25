@@ -14,9 +14,12 @@ pub const ALLOC_ALIGNMENT: Alignment = unsafe { Alignment::new_unchecked(1 << (3
 #[max_entries(4096)]
 pub enum Syscall {
     #[args(file, buffer, len)]
-    Write = 0,
+    Write = 0x000,
     #[args(file, buffer, len)]
-    Read = 1,
+    Read = 0x001,
+
+    #[args(file, offset, page_count, flags)]
+    MemMap = 0x010,
 }
 
 #[expect(unused, reason = "Not all parameters are used yet")]

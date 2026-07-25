@@ -1,19 +1,21 @@
 #![feature(
+    allocator_api,
     arbitrary_self_types_pointers,
     atomic_ptr_null,
     const_trait_impl,
     pointer_is_aligned_to,
-    ptr_alignment_type
+    ptr_alignment_type,
+    slice_ptr_get
 )]
 #![no_std]
 
 use core::{
-    alloc::{GlobalAlloc, Layout},
+    alloc::{AllocError, Allocator, GlobalAlloc, Layout},
     cell::UnsafeCell,
     hint::{cold_path, spin_loop, unreachable_unchecked},
     marker::PhantomData,
     mem::Alignment,
-    ptr,
+    ptr::{self, NonNull},
     sync::atomic::{
         AtomicPtr, AtomicUsize,
         Ordering::{Acquire, Relaxed, Release},
@@ -26,9 +28,9 @@ use elpytios_abi::{ALLOC_ALIGNMENT, PAGE_SIZE};
 /// - Allocations of sizes up to [`ALLOC_ALIGNMENT`] must be aligned to the nearest power of two of
 ///   that size.
 pub unsafe trait PageAllocator {
-    fn alloc(&self, order: u32) -> Option<*mut u8>;
+    fn alloc(&self, order: u32) -> Option<NonNull<u8>>;
 
-    unsafe fn dealloc(&self, ptr: *mut u8, order: u32);
+    unsafe fn dealloc(&self, ptr: NonNull<u8>, order: u32);
 }
 
 const MICRO_SIZES: [usize; 8] = [8, 16, 24, 32, 48, 64, 96, 128];
@@ -66,7 +68,9 @@ impl<T: PageAllocator, const N: usize> Segment<T, N> {
         let this = page_alloc
             .alloc(size_of::<Self>().ilog2())
             .expect("Couldn't allocate pages for heap allocator")
-            .cast::<Self>();
+            .cast::<Self>()
+            .as_ptr();
+
         debug_assert!(
             this.is_aligned_to(size_of::<Self>()),
             "Physical page allocator didn't allocate an aligned heap"
@@ -137,13 +141,13 @@ impl<T: PageAllocator, const N: usize> Segment<T, N> {
     }
 
     // `resurrect()` is called while this segment is still locked
-    unsafe fn dealloc(self: *mut Self, size_class: usize, at: *mut u8, resurrect: impl FnOnce()) {
+    unsafe fn dealloc(self: *mut Self, size_class: usize, at: NonNull<u8>, resurrect: impl FnOnce()) {
         unsafe {
             let meta = &(*self).meta;
             let mut curr_head = meta.head_and_lock.load(Relaxed) & Self::MASK;
 
             let base = UnsafeCell::raw_get(&raw const (*self).data).cast::<u8>().byte_add(meta.offset);
-            let at_index = at.byte_offset_from_unsigned(base) / size_class;
+            let at_index = at.as_ptr().byte_offset_from_unsigned(base) / size_class;
 
             loop {
                 match meta
@@ -250,7 +254,7 @@ impl<T: PageAllocator> HeapAllocator<T> {
         }
     }
 
-    fn alloc<const N: usize>(page_alloc: &T, head: &AtomicPtr<Segment<T, N>>, size_class: usize) -> *mut u8 {
+    fn alloc<const N: usize>(page_alloc: &T, head: &AtomicPtr<Segment<T, N>>, size_class: usize) -> NonNull<u8> {
         let mut head_ptr = head.load(Relaxed);
         loop {
             // HEAD is locked (least-significant bit is set)
@@ -281,7 +285,7 @@ impl<T: PageAllocator> HeapAllocator<T> {
             }
 
             unsafe {
-                break match head_ptr.alloc(size_class, |next| {
+                break match NonNull::new(head_ptr.alloc(size_class, |next| {
                     loop {
                         // Invariant:
                         // - HEAD is always `head_ptr`, either locked or unlocked
@@ -302,9 +306,9 @@ impl<T: PageAllocator> HeapAllocator<T> {
                             Err(..) => spin_loop(),
                         }
                     }
-                }) {
-                    at if !at.is_null() => at,
-                    _ => {
+                })) {
+                    Some(at) => at,
+                    None => {
                         spin_loop();
                         head_ptr = head.load(Relaxed);
                         continue
@@ -314,8 +318,8 @@ impl<T: PageAllocator> HeapAllocator<T> {
         }
     }
 
-    fn dealloc<const N: usize>(head: &AtomicPtr<Segment<T, N>>, size_class: usize, at: *mut u8) {
-        let segment_ptr = (at as usize & !(size_of::<Segment<T, N>>() - 1)) as *mut Segment<T, N>;
+    fn dealloc<const N: usize>(head: &AtomicPtr<Segment<T, N>>, size_class: usize, at: NonNull<u8>) {
+        let segment_ptr = (at.as_ptr() as usize & !(size_of::<Segment<T, N>>() - 1)) as *mut Segment<T, N>;
         unsafe {
             segment_ptr.dealloc(size_class, at, || {
                 let mut head_ptr = head.load(Relaxed);
@@ -362,19 +366,17 @@ impl<T: PageAllocator> HeapAllocator<T> {
     }
 
     #[cold]
-    fn alloc_huge(page_alloc: &T, layout: Layout) -> *mut u8 {
+    fn alloc_huge(page_alloc: &T, layout: Layout) -> Option<NonNull<u8>> {
         if layout.alignment() <= ALLOC_ALIGNMENT {
-            page_alloc
-                .alloc(usize::BITS - (layout.size() - 1).leading_zeros())
-                .unwrap_or(ptr::null_mut())
+            page_alloc.alloc(usize::BITS - (layout.size() - 1).leading_zeros())
         } else {
             cold_path();
-            ptr::null_mut()
+            None
         }
     }
 
     #[cold]
-    unsafe fn dealloc_huge(page_alloc: &T, layout: Layout, at: *mut u8) {
+    unsafe fn dealloc_huge(page_alloc: &T, layout: Layout, at: NonNull<u8>) {
         unsafe { page_alloc.dealloc(at, usize::BITS - (layout.size() - 1).leading_zeros()) }
     }
 
@@ -387,27 +389,35 @@ impl<T: PageAllocator> HeapAllocator<T> {
 }
 
 unsafe impl<T: PageAllocator> Sync for HeapAllocator<T> {}
-unsafe impl<T: PageAllocator> GlobalAlloc for HeapAllocator<T> {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+unsafe impl<T: PageAllocator> Allocator for HeapAllocator<T> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        if layout.size() == 0 {
+            cold_path();
+            return Err(AllocError)
+        }
+
         let page_alloc = &self.page_alloc;
         let layout_padded = Self::unionize(layout);
 
-        match unsafe { SizeClassify::new(self, layout_padded.size()) } {
-            SizeClassify::Micro(ptr, size_class) => Self::alloc(page_alloc, ptr, size_class),
-            SizeClassify::Small(ptr, size_class) => Self::alloc(page_alloc, ptr, size_class),
-            SizeClassify::Medium(ptr, size_class) => {
-                cold_path();
-                Self::alloc(page_alloc, ptr, size_class)
-            }
-            SizeClassify::Large(ptr, size_class) => {
-                cold_path();
-                Self::alloc(page_alloc, ptr, size_class)
-            }
-            SizeClassify::Huge => Self::alloc_huge(page_alloc, layout),
-        }
+        Ok(NonNull::slice_from_raw_parts(
+            match unsafe { SizeClassify::new(self, layout_padded.size()) } {
+                SizeClassify::Micro(ptr, size_class) => Self::alloc(page_alloc, ptr, size_class),
+                SizeClassify::Small(ptr, size_class) => Self::alloc(page_alloc, ptr, size_class),
+                SizeClassify::Medium(ptr, size_class) => {
+                    cold_path();
+                    Self::alloc(page_alloc, ptr, size_class)
+                }
+                SizeClassify::Large(ptr, size_class) => {
+                    cold_path();
+                    Self::alloc(page_alloc, ptr, size_class)
+                }
+                SizeClassify::Huge => Self::alloc_huge(page_alloc, layout).ok_or(AllocError)?,
+            },
+            layout.size(),
+        ))
     }
 
-    unsafe fn dealloc(&self, at: *mut u8, layout: Layout) {
+    unsafe fn deallocate(&self, at: NonNull<u8>, layout: Layout) {
         let layout_padded = Self::unionize(layout);
         unsafe {
             match SizeClassify::new(self, layout_padded.size()) {
@@ -424,5 +434,17 @@ unsafe impl<T: PageAllocator> GlobalAlloc for HeapAllocator<T> {
                 SizeClassify::Huge => Self::dealloc_huge(&self.page_alloc, layout, at),
             }
         }
+    }
+}
+
+unsafe impl<T: PageAllocator> GlobalAlloc for HeapAllocator<T> {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe { self.allocate(layout).unwrap_unchecked() }.as_non_null_ptr().as_ptr()
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { self.deallocate(NonNull::new_unchecked(ptr), layout) }
     }
 }

@@ -26,3 +26,14 @@ unsafe fn page_fault(
          Inst fetch\t: {instruction_fetch_violation}"
     )
 }
+
+#[inline]
+unsafe fn mem_map(file: usize, offset: usize, page_count: usize, flags: usize) -> *mut u8 {
+    panic!(
+        "SYSCALL mem_map\n\
+         File\t: {file}\n\
+         Offset\t: {offset}\n\
+         Count\t: {page_count}\n\
+         Flags\t: {flags}"
+    )
+}
