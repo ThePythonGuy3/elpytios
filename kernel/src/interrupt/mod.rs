@@ -1,3 +1,5 @@
+use elpytios_abi::FileHandle;
+
 cfg_select! {
     target_arch = "x86_64" => {
         pub mod x86_64;
@@ -28,10 +30,10 @@ unsafe fn page_fault(
 }
 
 #[inline]
-unsafe fn mem_map(file: usize, offset: usize, page_count: usize, flags: usize) -> *mut u8 {
+unsafe fn mem_map(file: FileHandle, offset: usize, page_count: usize, flags: usize) -> *mut u8 {
     panic!(
         "SYSCALL mem_map\n\
-         File\t: {file}\n\
+         File\t: {file:?}\n\
          Offset\t: {offset}\n\
          Count\t: {page_count}\n\
          Flags\t: {flags}"

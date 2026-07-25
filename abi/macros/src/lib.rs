@@ -1,7 +1,10 @@
 use heck::ToSnakeCase;
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use syn::{Fields, Ident, ItemEnum, LitInt, Token, punctuated::Punctuated};
+use syn::{
+    Fields, Ident, ItemEnum, LitInt, Token, Type, parenthesized,
+    parse::{Parse, ParseStream},
+};
 
 extern crate proc_macro;
 
@@ -12,6 +15,39 @@ pub fn derive_syscall_table(input: proc_macro::TokenStream) -> proc_macro::Token
         Err(e) => e.into_compile_error(),
     }
     .into()
+}
+
+struct Def {
+    names: Vec<Ident>,
+    types: Vec<Type>,
+    ret: Type,
+}
+
+impl Parse for Def {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let content;
+        parenthesized!(content in input);
+
+        let mut names = vec![];
+        let mut types = vec![];
+        for (name, ty) in content.parse_terminated(
+            |input| {
+                let name: Ident = input.parse()?;
+                let _colon: Token![:] = input.parse()?;
+                let ty: Type = input.parse()?;
+                Ok((name, ty))
+            },
+            Token![,],
+        )? {
+            names.push(name);
+            types.push(ty);
+        }
+
+        let _arrow: Token![=>] = input.parse()?;
+        let ret: Type = input.parse()?;
+
+        Ok(Self { names, types, ret })
+    }
 }
 
 fn execute(input: TokenStream) -> syn::Result<TokenStream> {
@@ -41,24 +77,24 @@ fn execute(input: TokenStream) -> syn::Result<TokenStream> {
 
         let mut args = None;
         for attr in &variant.attrs {
-            if attr.path().is_ident("args")
-                && args
-                    .replace(attr.parse_args_with(Punctuated::<Ident, Token![,]>::parse_terminated)?)
-                    .is_some()
-            {
+            if attr.path().is_ident("args") && args.replace(attr.parse_args::<Def>()?).is_some() {
                 return Err(syn::Error::new_spanned(&variant, "Duplicate `args(..)`!"))
             }
         }
 
-        let args = args.unwrap_or_default();
-        let [driver, fn_type] = match args.len() {
+        let Def { names, types, ret } = match args {
+            Some(args) => args,
+            None => return Err(syn::Error::new_spanned(&variant, "Missing `args(..)`!")),
+        };
+
+        let [driver, fn_type] = match names.len() {
             0 => ["syscall0", "Syscall0Fn"],
             1 => ["syscall1", "Syscall1Fn"],
             2 => ["syscall2", "Syscall2Fn"],
             3 => ["syscall3", "Syscall3Fn"],
             4 => ["syscall4", "Syscall4Fn"],
             5 => ["syscall5", "Syscall5Fn"],
-            n => return Err(syn::Error::new_spanned(args, format!("Too many arguments ({n}); maximum is 5!"))),
+            n => return Err(syn::Error::new_spanned(variant, format!("Too many arguments ({n}); maximum is 5!"))),
         };
         let driver = Ident::new(driver, Span::call_site());
         let fn_type = Ident::new(fn_type, Span::call_site());
@@ -66,14 +102,19 @@ fn execute(input: TokenStream) -> syn::Result<TokenStream> {
         let variant_name = &variant.ident;
         let driver_name = Ident::new(&variant.ident.to_string().to_snake_case(), Span::call_site());
 
-        let args = args.into_iter().collect::<Vec<_>>();
         entries.push(quote! {
-            pub #driver_name: crate::kernel::#fn_type
+            pub #driver_name: crate::kernel::#fn_type::<#(#types,)* #ret>
         });
         userspace_functions.push(quote! {
             #[inline(always)]
-            pub unsafe fn #driver_name(#(#args: usize),*) -> usize {
-                crate::userspace::#driver(Self::#variant_name as usize, #(#args),*)
+            pub unsafe fn #driver_name(#(#names: #types),*) -> usize {
+                const {
+                    #(__assert_is_arg::<#types>();)*
+                }
+
+                unsafe {
+                    crate::userspace::#driver(Self::#variant_name as usize, #(::core::mem::transmute::<#types, usize>(#names)),*)
+                }
             }
         });
     }
@@ -85,6 +126,8 @@ fn execute(input: TokenStream) -> syn::Result<TokenStream> {
         const _: () = {
             #(#test_discriminants)*
         };
+
+        const fn __assert_is_arg<T: crate::SyscallArg>() {}
 
         impl #data_name {
             pub const MAX_ENTRIES: usize = #max_entries;

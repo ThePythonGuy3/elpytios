@@ -13,13 +13,86 @@ pub const ALLOC_ALIGNMENT: Alignment = unsafe { Alignment::new_unchecked(1 << (3
 #[derive(Debug, Copy, Clone, PartialEq, Eq, SyscallTable)]
 #[max_entries(4096)]
 pub enum Syscall {
-    #[args(file, buffer, len)]
+    #[args((file: FileHandle, buffer: *const u8, len: usize) => usize)]
     Write = 0x000,
-    #[args(file, buffer, len)]
+    #[args((file: FileHandle, buffer: *mut u8, len: usize) => usize)]
     Read = 0x001,
 
-    #[args(file, offset, page_count, flags)]
+    #[args((file: FileHandle, offset: usize, page_count: usize, flags: usize) => *mut u8)]
     MemMap = 0x010,
+}
+
+pub trait SyscallArg {
+    fn into_usize(self) -> usize;
+
+    fn from_usize(value: usize) -> Self;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct FileHandle(usize);
+impl FileHandle {
+    pub const STDOUT: Self = Self(0);
+    pub const STDIN: Self = Self(1);
+
+    pub const NONE: Self = Self(usize::MAX);
+}
+
+macro_rules! impl_syscall_arg {
+    ($(impl $target:ty { get!($get:ident => $($getter:tt)*), set!($set:ident => $($setter:tt)*) })*) => {
+        $(impl SyscallArg for $target {
+            #[inline(always)]
+            fn into_usize(self) -> usize {
+                let $get = self;
+                $($getter)*
+            }
+
+            #[inline(always)]
+            fn from_usize($set: usize) -> Self {
+                $($setter)*
+            }
+        })*
+    };
+}
+
+impl_syscall_arg! {
+    impl FileHandle { get!(this => this.0), set!(id => Self(id)) }
+}
+
+impl SyscallArg for usize {
+    #[inline(always)]
+    fn into_usize(self) -> usize {
+        self
+    }
+
+    #[inline(always)]
+    fn from_usize(value: usize) -> Self {
+        value
+    }
+}
+
+impl<T> SyscallArg for *const T {
+    #[inline(always)]
+    fn into_usize(self) -> usize {
+        self as usize
+    }
+
+    #[inline(always)]
+    fn from_usize(value: usize) -> Self {
+        value as Self
+    }
+}
+
+impl<T> SyscallArg for *mut T {
+    #[inline(always)]
+    fn into_usize(self) -> usize {
+        self as usize
+    }
+
+    #[inline(always)]
+    fn from_usize(value: usize) -> Self {
+        value as Self
+    }
 }
 
 #[expect(unused, reason = "Not all parameters are used yet")]

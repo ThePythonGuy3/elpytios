@@ -7,7 +7,7 @@ use core::{
 
 use bitflags::bitflags;
 use bytemuck::Zeroable;
-use elpytios_abi::{Syscall, SyscallEntry};
+use elpytios_abi::{FileHandle, Syscall, SyscallEntry};
 
 use crate::{
     arch::x86_64::{Msr, rdmsr, wrmsr},
@@ -430,16 +430,16 @@ pub unsafe extern "sysv64" fn spurious() -> ! {
     naked_asm!("iretq", options(att_syntax))
 }
 
-pub unsafe extern "sysv64" fn syscall_write(_file: usize, _buffer: usize, _len: usize) -> usize {
+pub unsafe extern "sysv64" fn syscall_write(_file: FileHandle, _buffer: *const u8, _len: usize) -> usize {
     Syscall::INVALID
 }
 
-pub unsafe extern "sysv64" fn syscall_read(_file: usize, _buffer: usize, _len: usize) -> usize {
+pub unsafe extern "sysv64" fn syscall_read(_file: FileHandle, _buffer: *mut u8, _len: usize) -> usize {
     Syscall::INVALID
 }
 
-pub unsafe extern "sysv64" fn syscall_mem_map(file: usize, offset: usize, page_count: usize, flags: usize) -> usize {
-    unsafe { super::mem_map(file, offset, page_count, flags) as usize }
+pub unsafe extern "sysv64" fn syscall_mem_map(file: FileHandle, offset: usize, page_count: usize, flags: usize) -> *mut u8 {
+    unsafe { super::mem_map(file, offset, page_count, flags) }
 }
 
 pub unsafe fn init_syscalls() {
