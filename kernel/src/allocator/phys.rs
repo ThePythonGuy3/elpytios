@@ -13,6 +13,9 @@ pub struct PhysicalPageAllocator {
     trees: ArrayVec<Entry, { PAGE_SIZE / size_of::<Entry>() }>,
 }
 
+unsafe impl Send for PhysicalPageAllocator {}
+unsafe impl Sync for PhysicalPageAllocator {}
+
 impl PhysicalPageAllocator {
     /// # Safety
     /// [`Self::sort_tree`] must be called before allocating.
@@ -20,7 +23,7 @@ impl PhysicalPageAllocator {
     pub unsafe fn new() -> PhysicalPageAllocator {
         static CREATED: AtomicBool = AtomicBool::new(false);
 
-        if CREATED.swap(true, Relaxed) {
+        if CREATED.compare_exchange(false, true, Relaxed, Relaxed).is_err() {
             panic!("Only one `PhysicalPageAllocator` instance may be created")
         }
 
@@ -36,7 +39,7 @@ impl PhysicalPageAllocator {
 
     /// # Safety
     /// The resulting tree's allocations must be aligned to
-    /// [`PHYS_ALLOC_ALIGNMENT`](super::PHYS_ALLOC_ALIGNMENT).
+    /// [`ALLOC_ALIGNMENT`](elpytios_abi::ALLOC_ALIGNMENT).
     #[inline]
     pub unsafe fn push_tree(&mut self, base: PAddr, tree: *mut AllocTree) {
         self.trees.push(Entry { base, tree });
@@ -66,13 +69,8 @@ impl PhysicalPageAllocator {
     pub unsafe fn dealloc(&mut self, addr: PAddr, order: u32) {
         let tree_index = match self.trees.binary_search_by_key(&addr, |e| e.base) {
             Ok(i) => i,
-            Err(i) => match i.checked_sub(1) {
-                Some(i) => i,
-                None => {
-                    cold_path();
-                    panic!("`PhysicalPageAllocator` has absolutely no trees");
-                }
-            },
+            Err(0) => return,
+            Err(i) => i - 1,
         };
 
         unsafe {
@@ -84,12 +82,12 @@ impl PhysicalPageAllocator {
             // But in the case that they do, callers must ensure the safety invariants
             if index < tree.node_count() {
                 tree.dealloc(index, order);
+            } else {
+                cold_path();
             }
         }
     }
 }
-
-unsafe impl Sync for PhysicalPageAllocator {}
 
 #[derive(Debug, Clone, Copy)]
 struct Entry {

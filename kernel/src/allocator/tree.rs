@@ -38,6 +38,9 @@ pub struct AllocTree {
     data: AllocTreeData,
 }
 
+unsafe impl Send for AllocTree {}
+unsafe impl Sync for AllocTree {}
+
 struct AllocTreeFields<'a> {
     max_order: u32,
     free_lists: FreeLists<'a>,
