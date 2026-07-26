@@ -25,7 +25,7 @@ pub enum Syscall {
 pub trait SyscallArg {
     fn into_usize(self) -> usize;
 
-    fn from_usize(value: usize) -> Self;
+    unsafe fn from_usize(value: usize) -> Self;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -48,7 +48,7 @@ macro_rules! impl_syscall_arg {
             }
 
             #[inline(always)]
-            fn from_usize($set: usize) -> Self {
+            unsafe fn from_usize($set: usize) -> Self {
                 $($setter)*
             }
         })*
@@ -66,7 +66,7 @@ impl SyscallArg for usize {
     }
 
     #[inline(always)]
-    fn from_usize(value: usize) -> Self {
+    unsafe fn from_usize(value: usize) -> Self {
         value
     }
 }
@@ -78,7 +78,7 @@ impl<T> SyscallArg for *const T {
     }
 
     #[inline(always)]
-    fn from_usize(value: usize) -> Self {
+    unsafe fn from_usize(value: usize) -> Self {
         value as Self
     }
 }
@@ -90,7 +90,7 @@ impl<T> SyscallArg for *mut T {
     }
 
     #[inline(always)]
-    fn from_usize(value: usize) -> Self {
+    unsafe fn from_usize(value: usize) -> Self {
         value as Self
     }
 }

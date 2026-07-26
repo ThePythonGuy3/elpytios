@@ -113,7 +113,8 @@ fn execute(input: TokenStream) -> syn::Result<TokenStream> {
                 }
 
                 unsafe {
-                    crate::userspace::#driver(Self::#variant_name as usize, #(::core::mem::transmute::<#types, usize>(#names)),*)
+                    let ret = crate::userspace::#driver(Self::#variant_name as usize, #(crate::SyscallArg::into_usize(#names)),*);
+                    crate::SyscallArg::from_usize(ret)
                 }
             }
         });
