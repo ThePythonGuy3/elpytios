@@ -471,10 +471,13 @@ fn main(core_count: u32) -> ! {
     }
 
     if ctx.is_bootstrap {
-        use core::{cell::UnsafeCell, time::Duration};
+        use core::time::Duration;
 
         use elpytios_elf::Elf;
-        use elpytios_kernel::task::{Process, TASK_QUEUE, schedule};
+        use elpytios_kernel::{
+            interrupt::x86_64::InterruptStack,
+            task::{Process, TASK_QUEUE, schedule},
+        };
 
         {
             let shell = include_bytes!("../../target/x86_64-unknown-elpytios/release/elpytios-shell");
@@ -488,10 +491,10 @@ fn main(core_count: u32) -> ! {
         const SCHED_TIMER: Duration = Duration::from_millis(10);
         unsafe {
             asm!(
-                "movq %rsp, {rsp0}",
+                "movq %rsp, ({stack})",
                 "jmp {schedule}",
 
-                rsp0 = in(reg) UnsafeCell::raw_get(&raw const ctx.tss.rsp0),
+                stack = in(reg) ctx.tss.stack_ptr(InterruptStack::DoubleFault),
                 schedule = label {
                     ctx.timer_callback.set(Some(|| {
                         CpuContext::get().timer.schedule(SCHED_TIMER);
