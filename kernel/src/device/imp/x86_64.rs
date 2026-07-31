@@ -17,7 +17,7 @@ use log::{debug, error, info};
 
 use crate::{
     ScratchPages,
-    arch::x86_64::{ExtendedRegisters, Msr, rdmsr, wrmsr},
+    arch::x86_64::{ExtendedRegisterLayout, Msr, rdmsr, wrmsr},
     device::acpi::{LocalApicFlags, Madt, Pic},
     interrupt::{
         init_interrupts,
@@ -29,7 +29,7 @@ use crate::{
     vaddr::{VAddr, VFlags},
 };
 
-global_asm!(include_str!("trampolines/x86_64.s"), options(att_syntax));
+global_asm!(include_str!("trampolines/x86_64.s"), options(att_syntax, raw));
 unsafe extern "sysv64" {
     static __ap_trampoline_start: u8;
     static __ap_trampoline_size: usize;
@@ -134,11 +134,11 @@ pub struct CpuContext {
     pub apic_id: u32,
     pub cpu_id: u32,
     pub timer: Timer,
-    pub current_task: UnsafeCell<Option<Box<Task>>>,
+    pub current_task: UnsafeCell<Option<Task>>,
     // x86_64-specific fields
     apic: ApicDriver,
     pub timer_callback: Cell<Option<fn(&mut InterruptFrame)>>,
-    pub registers: ExtendedRegisters,
+    pub registers: ExtendedRegisterLayout,
     /// Task state segment
     pub tss: Tss,
 }
@@ -161,7 +161,7 @@ impl CpuContext {
             current_task: UnsafeCell::new(None),
             apic,
             timer_callback: Cell::new(None),
-            registers: unsafe { ExtendedRegisters::new() },
+            registers: unsafe { ExtendedRegisterLayout::new() },
             tss: Tss::new(),
         }));
 

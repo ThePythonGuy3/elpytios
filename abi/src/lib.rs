@@ -1,17 +1,20 @@
 #![feature(ptr_alignment_type)]
 #![no_std]
 
-use core::mem::Alignment;
+use core::{alloc::Layout, mem::Alignment};
 
 use elpytios_abi_macros::SyscallTable;
 
 pub const PAGE_SIZE: usize = 4096;
+pub const PAGE_ALIGN: Alignment = unsafe { Alignment::new_unchecked(4096) };
+pub const PAGE_LAYOUT: Layout = unsafe { Layout::from_size_alignment_unchecked(PAGE_SIZE, PAGE_ALIGN) };
+
 /// Physical allocators are aligned to 32 pages (128 KiB).
 /// This means pointers of allocations up to 32 pages are guaranteed to be aligned.
 pub const ALLOC_ALIGNMENT: Alignment = unsafe { Alignment::new_unchecked(1 << (32 * PAGE_SIZE).ilog2()) };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, SyscallTable)]
-#[max_entries(4096)]
+#[max_entries(0x1000)]
 pub enum Syscall {
     #[args((file: FileHandle, buffer: *const u8, len: usize) => usize)]
     Write = 0x000,

@@ -472,13 +472,16 @@ fn main(core_count: u32) -> ! {
 
     if ctx.is_bootstrap {
         use elpytios_elf::Elf;
-        use elpytios_kernel::task::{Task, schedule_init};
+        use elpytios_kernel::task::{Process, TASK_QUEUE, schedule};
 
         let shell = include_bytes!("../../target/x86_64-unknown-elpytios/release/elpytios-shell");
         let Elf::N64(elf) = Elf::from_bytes(shell).unwrap();
 
-        let task = Task::from_elf(elf).unwrap();
-        unsafe { schedule_init(task) }
+        let (process, task) = Process::from_elf(elf).unwrap();
+        TASK_QUEUE.push_back(task);
+        core::mem::forget(process);
+
+        schedule();
     }
 
     loop {}

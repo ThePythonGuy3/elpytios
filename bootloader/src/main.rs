@@ -196,6 +196,7 @@ fn setup_uefi_and_exit() -> UefiInfo {
                 unsafe {
                     let rela = kernel_ptr.cast::<ElfRela64>().byte_add(offset - virtual_base).add(i).read_unaligned();
                     match rela.info.kind {
+                        ElfRela64Type::X86_64_NONE => {}
                         ElfRela64Type::X86_64_RELATIVE => {
                             let slide = kernel_ptr.addr() as i64 - virtual_base as i64;
                             let patch_addr = kernel_ptr.add(rela.offset as usize - virtual_base);

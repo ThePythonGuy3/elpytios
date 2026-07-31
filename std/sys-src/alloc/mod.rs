@@ -3,7 +3,7 @@ use elpytios_alloc::{HeapAllocator, PageAllocator};
 
 use crate::{
     alloc::{GlobalAlloc, Layout},
-    ptr::{NonNull, with_exposed_provenance_mut},
+    ptr::NonNull,
 };
 
 #[global_allocator]
@@ -13,7 +13,7 @@ struct StdPageAllocator;
 unsafe impl PageAllocator for StdPageAllocator {
     #[inline]
     fn alloc(&self, order: u32) -> Option<NonNull<u8>> {
-        unsafe { NonNull::new(with_exposed_provenance_mut(Syscall::mem_map(FileHandle::NONE, 0, 1 << order, 0))) }
+        unsafe { NonNull::new(Syscall::mem_map(FileHandle::NONE, 0, 1 << order, 0)) }
     }
 
     // TODO unmap syscall

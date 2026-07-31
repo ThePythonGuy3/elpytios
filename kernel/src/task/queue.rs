@@ -1,10 +1,10 @@
-use alloc::{boxed::Box, collections::vec_deque::VecDeque};
+use alloc::collections::vec_deque::VecDeque;
 
 use crate::{spin_sync::SpinMutex, task::Task};
 
 // TODO create a lock-free structure for this
 pub struct TaskQueue {
-    inner: SpinMutex<VecDeque<Box<Task>>>,
+    inner: SpinMutex<VecDeque<Task>>,
 }
 
 unsafe impl Sync for TaskQueue {}
@@ -18,12 +18,12 @@ impl TaskQueue {
     }
 
     #[inline]
-    pub fn pop_front(&self) -> Option<Box<Task>> {
+    pub fn pop_front(&self) -> Option<Task> {
         self.inner.lock().pop_front()
     }
 
     #[inline]
-    pub fn push_back(&self, task: Box<Task>) {
+    pub fn push_back(&self, task: Task) {
         self.inner.lock().push_back(task)
     }
 }

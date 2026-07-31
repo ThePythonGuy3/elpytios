@@ -39,5 +39,6 @@ pub struct ElfRela64Info {
 #[repr(transparent)]
 pub struct ElfRela64Type(pub u32);
 impl ElfRela64Type {
+    pub const X86_64_NONE: Self = Self(0);
     pub const X86_64_RELATIVE: Self = Self(8);
 }

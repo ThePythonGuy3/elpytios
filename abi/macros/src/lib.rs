@@ -103,18 +103,18 @@ fn execute(input: TokenStream) -> syn::Result<TokenStream> {
         let driver_name = Ident::new(&variant.ident.to_string().to_snake_case(), Span::call_site());
 
         entries.push(quote! {
-            pub #driver_name: crate::kernel::#fn_type::<#(#types,)* #ret>
+            pub #driver_name: crate::kernel::#fn_type::<#(#types,)*>
         });
         userspace_functions.push(quote! {
             #[inline(always)]
-            pub unsafe fn #driver_name(#(#names: #types),*) -> usize {
+            pub unsafe fn #driver_name(#(#names: #types),*) -> #ret {
                 const {
                     #(__assert_is_arg::<#types>();)*
                 }
 
                 unsafe {
                     let ret = crate::userspace::#driver(Self::#variant_name as usize, #(crate::SyscallArg::into_usize(#names)),*);
-                    crate::SyscallArg::from_usize(ret)
+                    <#ret as crate::SyscallArg>::from_usize(ret)
                 }
             }
         });
