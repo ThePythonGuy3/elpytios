@@ -64,7 +64,8 @@ impl<Error: sealed::InterruptError> InterruptFrame<Error> {
     /// - Invoke this function with `call` instruction directly.
     /// - `%rsp` must point to [`Self::error`] before the `call` instruction, which is guaranteed
     ///   inside interrupt handlers.
-    /// - After this function returns, `%rsp` is now a 16 bytes-aligned address.
+    /// - After this function returns, `%rsp` is now a 16 bytes-aligned address, and `%rdi` is now a
+    ///   pointer to [`InterruptFrame`].
     #[unsafe(naked)]
     pub unsafe extern "sysv64" fn save() -> ! {
         naked_asm!(
@@ -92,6 +93,7 @@ impl<Error: sealed::InterruptError> InterruptFrame<Error> {
             "swapgs",
 
             "2:",
+            "leaq {adj}(%rsp), %rdi",
             "jmpq *%rax",
 
             adj = const Error::STACK_ADJUST,

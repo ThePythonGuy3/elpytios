@@ -1,6 +1,6 @@
 use core::{
     arch::{asm, naked_asm},
-    mem::{offset_of, size_of_val_raw},
+    mem::size_of_val_raw,
 };
 
 use bitflags::bitflags;
@@ -73,66 +73,18 @@ pub enum IdtIndex {
 macro_rules! interrupt {
     (#[$($has_error:tt)*] $handle:ident) => {
         {
-            const _: unsafe extern "sysv64" fn(&mut interrupt!(type => #[$($has_error)*])) = $handle;
+            const _: unsafe extern "sysv64" fn(&interrupt!(type => #[$($has_error)*])) = $handle;
             naked_asm!(
                 r#"
-                cld
-
-                push %rax
-                push %rcx
-                push %rdx
-                push %rsi
-                push %rdi
-                push %r8
-                push %r9
-                push %r10
-                push %r11
-                push %rbx
-                push %rbp
-                push %r12
-                push %r13
-                push %r14
-                push %r15
-
-                testq $3, {cs}(%rsp)
-                jz 2f
-                swapgs
-                2:
-
-                movq %rsp, %rdi
-                subq ${rsp_adj}, %rsp
+                callq {save}
                 callq {handle}
-                addq ${rsp_adj}, %rsp
-
-                testq $3, {cs}(%rsp)
-                jz 3f
-                swapgs
-                3:
-
-                pop %r15
-                pop %r14
-                pop %r13
-                pop %r12
-                pop %rbp
-                pop %rbx
-                pop %r11
-                pop %r10
-                pop %r9
-                pop %r8
-                pop %rdi
-                pop %rsi
-                pop %rdx
-                pop %rcx
-                pop %rax
+                callq {load}
+                iretq
                 "#,
 
-                interrupt!(clear => #[$($has_error)*]),
-
-                "iretq",
-
-                cs = const offset_of!(interrupt!(type => #[$($has_error)*]), cs),
-                rsp_adj = const <interrupt!(type => #[$($has_error)*])>::STACK_ADJUST,
+                save = sym <interrupt!(type => #[$($has_error)*])>::save,
                 handle = sym $handle,
+                load = sym <interrupt!(type => #[$($has_error)*])>::load,
 
                 options(att_syntax),
             )
@@ -144,17 +96,11 @@ macro_rules! interrupt {
     (type => #[not(error)]) => {
         InterruptFrame<()>
     };
-    (clear => #[error]) => {
-        "addq $8, %rsp"
-    };
-    (clear => #[not(error)]) => {
-        ""
-    };
 }
 
 #[unsafe(naked)]
 pub unsafe extern "sysv64" fn int_double_fault() -> ! {
-    unsafe extern "sysv64" fn handle(frame: &mut InterruptFrame<u64>) {
+    unsafe extern "sysv64" fn handle(frame: &InterruptFrame<u64>) {
         panic!("Double-fault caught (Hardware error code: {})", frame.error)
     }
 
@@ -183,7 +129,7 @@ pub unsafe extern "sysv64" fn int_page_fault() -> ! {
         }
     }
 
-    unsafe extern "sysv64" fn handle(frame: &mut InterruptFrame<u64>) {
+    unsafe extern "sysv64" fn handle(frame: &InterruptFrame<u64>) {
         unsafe {
             let ptr: *mut ();
             asm!("mov {ptr}, cr2", ptr = out(reg) ptr);
@@ -208,7 +154,7 @@ pub unsafe extern "sysv64" fn int_page_fault() -> ! {
 
 #[unsafe(naked)]
 pub unsafe extern "sysv64" fn schedule_timer() -> ! {
-    unsafe extern "sysv64" fn handle() {
+    unsafe extern "sysv64" fn handle(_frame: &InterruptFrame) {
         let cpu = CpuContext::get();
         if let Some(func) = cpu.timer_callback.get() {
             func()
@@ -217,17 +163,9 @@ pub unsafe extern "sysv64" fn schedule_timer() -> ! {
         unsafe { cpu.end_of_interrupt() }
     }
 
-    naked_asm!(
-        "callq {save}",
-        "callq {handle}",
-        "callq {load}",
-        "iretq",
-
-        save = sym InterruptFrame::<()>::save,
-        handle = sym handle,
-        load = sym InterruptFrame::<()>::load,
-
-        options(att_syntax)
+    interrupt!(
+        #[not(error)]
+        handle
     )
 }
 
