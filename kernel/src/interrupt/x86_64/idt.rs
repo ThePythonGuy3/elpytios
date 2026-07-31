@@ -153,7 +153,7 @@ pub unsafe extern "sysv64" fn int_page_fault() -> ! {
 }
 
 #[unsafe(naked)]
-pub unsafe extern "sysv64" fn schedule_timer() -> ! {
+pub unsafe extern "sysv64" fn int_timer() -> ! {
     unsafe extern "sysv64" fn handle(_frame: &InterruptFrame) {
         let cpu = CpuContext::get();
         if let Some(func) = cpu.timer_callback.get() {
@@ -170,7 +170,7 @@ pub unsafe extern "sysv64" fn schedule_timer() -> ! {
 }
 
 #[unsafe(naked)]
-pub unsafe extern "sysv64" fn spurious() -> ! {
+pub unsafe extern "sysv64" fn int_spurious() -> ! {
     naked_asm!("iretq", options(att_syntax))
 }
 
@@ -182,8 +182,8 @@ pub unsafe fn init_idt() {
         IDT_ENTRIES[IdtIndex::DoubleFault as usize] = IdtEntry::new(int_double_fault, InterruptStack::DoubleFault);
         IDT_ENTRIES[IdtIndex::PageFault as usize] = IdtEntry::new(int_page_fault, InterruptStack::Task);
 
-        IDT_ENTRIES[IdtIndex::ScheduleTimer as usize] = IdtEntry::new(schedule_timer, InterruptStack::Task);
-        IDT_ENTRIES[IdtIndex::Spurious as usize] = IdtEntry::new(spurious, InterruptStack::Task);
+        IDT_ENTRIES[IdtIndex::ScheduleTimer as usize] = IdtEntry::new(int_timer, InterruptStack::Task);
+        IDT_ENTRIES[IdtIndex::Spurious as usize] = IdtEntry::new(int_spurious, InterruptStack::Task);
     });
 
     #[repr(C, packed)]
