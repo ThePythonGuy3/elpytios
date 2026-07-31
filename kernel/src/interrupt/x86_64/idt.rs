@@ -208,18 +208,26 @@ pub unsafe extern "sysv64" fn int_page_fault() -> ! {
 
 #[unsafe(naked)]
 pub unsafe extern "sysv64" fn schedule_timer() -> ! {
-    unsafe extern "sysv64" fn handle(frame: &mut InterruptFrame) {
+    unsafe extern "sysv64" fn handle() {
         let cpu = CpuContext::get();
-        if let Some(func) = cpu.timer_callback.take() {
-            func(frame)
+        if let Some(func) = cpu.timer_callback.get() {
+            func()
         }
 
         unsafe { cpu.end_of_interrupt() }
     }
 
-    interrupt!(
-        #[not(error)]
-        handle
+    naked_asm!(
+        "callq {save}",
+        "callq {handle}",
+        "callq {load}",
+        "iretq",
+
+        save = sym InterruptFrame::<()>::save,
+        handle = sym handle,
+        load = sym InterruptFrame::<()>::load,
+
+        options(att_syntax)
     )
 }
 
@@ -233,11 +241,11 @@ pub unsafe fn init_idt() {
     static IDT_INIT: SpinOnce = SpinOnce::new();
 
     IDT_INIT.call_once(|| unsafe {
-        IDT_ENTRIES[IdtIndex::DoubleFault as usize] = IdtEntry::new(int_double_fault, InterruptStack::None);
-        IDT_ENTRIES[IdtIndex::PageFault as usize] = IdtEntry::new(int_page_fault, InterruptStack::None);
+        IDT_ENTRIES[IdtIndex::DoubleFault as usize] = IdtEntry::new(int_double_fault, InterruptStack::DoubleFault);
+        IDT_ENTRIES[IdtIndex::PageFault as usize] = IdtEntry::new(int_page_fault, InterruptStack::Task);
 
         IDT_ENTRIES[IdtIndex::ScheduleTimer as usize] = IdtEntry::new(schedule_timer, InterruptStack::Task);
-        IDT_ENTRIES[IdtIndex::Spurious as usize] = IdtEntry::new(spurious, InterruptStack::None);
+        IDT_ENTRIES[IdtIndex::Spurious as usize] = IdtEntry::new(spurious, InterruptStack::Task);
     });
 
     #[repr(C, packed)]

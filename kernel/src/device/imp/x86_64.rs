@@ -3,7 +3,7 @@ use core::{
     arch::{asm, global_asm, x86_64::__cpuid_count},
     cell::{Cell, UnsafeCell},
     hint::spin_loop,
-    mem::ManuallyDrop,
+    mem::{ManuallyDrop, offset_of},
     ptr::{self, NonNull},
     sync::atomic::{
         AtomicBool, AtomicU32,
@@ -21,7 +21,7 @@ use crate::{
     device::acpi::{LocalApicFlags, Madt, Pic},
     interrupt::{
         init_interrupts,
-        x86_64::{IdtIndex, InterruptFrame, Tss},
+        x86_64::{IdtIndex, InterruptStack, Tss},
     },
     statics::{get_phys_alloc, get_virtual_map, phys_to_virt},
     task::Task,
@@ -137,7 +137,7 @@ pub struct CpuContext {
     pub current_task: UnsafeCell<Option<Task>>,
     // x86_64-specific fields
     apic: ApicDriver,
-    pub timer_callback: Cell<Option<fn(&mut InterruptFrame)>>,
+    pub timer_callback: Cell<Option<fn()>>,
     pub registers: ExtendedRegisterLayout,
     /// Task state segment
     pub tss: Tss,
@@ -190,6 +190,11 @@ impl CpuContext {
     #[inline]
     pub unsafe fn end_of_interrupt(&self) {
         unsafe { self.apic.end_of_interrupt() }
+    }
+
+    #[inline]
+    pub const fn stack_addr(index: InterruptStack) -> usize {
+        offset_of!(Self, tss) + Tss::stack_addr(index)
     }
 }
 

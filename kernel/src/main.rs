@@ -471,17 +471,40 @@ fn main(core_count: u32) -> ! {
     }
 
     if ctx.is_bootstrap {
+        use core::{cell::UnsafeCell, time::Duration};
+
         use elpytios_elf::Elf;
         use elpytios_kernel::task::{Process, TASK_QUEUE, schedule};
 
-        let shell = include_bytes!("../../target/x86_64-unknown-elpytios/release/elpytios-shell");
-        let Elf::N64(elf) = Elf::from_bytes(shell).unwrap();
+        {
+            let shell = include_bytes!("../../target/x86_64-unknown-elpytios/release/elpytios-shell");
+            let Elf::N64(elf) = Elf::from_bytes(shell).unwrap();
 
-        let (process, task) = Process::from_elf(elf).unwrap();
-        TASK_QUEUE.push_back(task);
-        core::mem::forget(process);
+            let (process, task) = Process::from_elf(elf).unwrap();
+            core::mem::forget(process);
+            TASK_QUEUE.push_back(task);
+        }
 
-        schedule();
+        const SCHED_TIMER: Duration = Duration::from_millis(10);
+        unsafe {
+            asm!(
+                "movq %rsp, {rsp0}",
+                "jmp {schedule}",
+
+                rsp0 = in(reg) UnsafeCell::raw_get(&raw const ctx.tss.rsp0),
+                schedule = label {
+                    ctx.timer_callback.set(Some(|| {
+                        CpuContext::get().timer.schedule(SCHED_TIMER);
+                        schedule();
+                    }));
+
+                    ctx.timer.schedule(SCHED_TIMER);
+                    schedule();
+                },
+
+                options(att_syntax, noreturn)
+            )
+        }
     }
 
     loop {}

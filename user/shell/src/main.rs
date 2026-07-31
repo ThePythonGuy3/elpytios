@@ -1,3 +1,5 @@
 fn main() {
-    loop {}
+    loop {
+        std::thread::yield_now();
+    }
 }

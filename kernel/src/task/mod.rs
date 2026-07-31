@@ -1,4 +1,4 @@
-use alloc::alloc::{alloc, handle_alloc_error};
+use alloc::alloc::{alloc, dealloc, handle_alloc_error};
 use core::{alloc::LayoutError, fmt};
 
 use elpytios_abi::{PAGE_LAYOUT, PAGE_SIZE};
@@ -97,7 +97,7 @@ impl Task {
             let user_stack_lower = next_addr(Self::USER_STACK_PAGES);
             virtual_map.map(
                 virt_to_phys(VAddr::new(user_stack.addr() + PAGE_SIZE)),
-                user_stack_lower,
+                user_stack_lower.byte_add(PAGE_SIZE),
                 Self::USER_STACK_PAGES,
                 VFlags::USER_MODE | VFlags::WRITABLE,
             )?;
@@ -116,6 +116,18 @@ impl Task {
                 virtual_map_phys,
                 inner,
             })
+        }
+    }
+}
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        unsafe {
+            dealloc(self.user_stack, PAGE_LAYOUT.repeat_packed(Self::USER_STACK_PAGES + 1).unwrap_unchecked());
+            dealloc(
+                self.kernel_stack,
+                PAGE_LAYOUT.repeat_packed(Self::KERNEL_STACK_PAGES + 1).unwrap_unchecked(),
+            );
         }
     }
 }

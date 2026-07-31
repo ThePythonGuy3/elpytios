@@ -9,9 +9,9 @@ use super::GdtEntry;
 #[repr(u8)]
 pub enum InterruptStack {
     /// Use [`Tss::rsp0`].
-    None = 0,
+    Task = 0,
     /// Use [`Tss::ist`]`[0]`.
-    Task = 1,
+    DoubleFault = 1,
 }
 
 #[repr(C, packed)]
@@ -47,13 +47,18 @@ impl Tss {
 
     #[inline]
     pub const fn set_stack(&self, index: InterruptStack, addr: u64) {
-        unsafe { UnsafeCell::raw_get(&raw const self.ist[Self::ist_addr(index)]).write_unaligned(addr) }
+        unsafe { self.stack_ptr(index).write_unaligned(addr) }
     }
 
     #[inline]
-    pub const fn ist_addr(index: InterruptStack) -> usize {
+    pub const fn stack_ptr(&self, index: InterruptStack) -> *mut u64 {
+        UnsafeCell::raw_get(unsafe { (self as *const Self).cast::<UnsafeCell<u64>>().byte_add(Self::stack_addr(index)) })
+    }
+
+    #[inline]
+    pub const fn stack_addr(index: InterruptStack) -> usize {
         match (index as usize).checked_sub(1) {
-            None => panic!("Can't use `InterruptStack::None` for IST!"),
+            None => offset_of!(Self, rsp0),
             Some(i) => offset_of!(Self, ist) + i * size_of::<u64>(),
         }
     }

@@ -351,7 +351,7 @@ def run_qemu(args):
             "-serial", "file:platform.log",
             "-serial", "null",
             "-serial", "stdio",
-            "-d", "int,cpu,guest_errors", "-no-reboot", "-no-shutdown", "-D", "qemu_except.log",
+            "-d", "int,cpu_reset,guest_errors", "-no-reboot", "-no-shutdown", "-D", "qemu_except.log",
             *(["-s"] if args.debug else []),
         ],
         stdout=None,

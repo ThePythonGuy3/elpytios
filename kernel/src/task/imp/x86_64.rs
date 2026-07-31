@@ -96,7 +96,6 @@ pub fn schedule() {
                 let next_register_mask = next.inner.register_mask;
                 let next_registers_ptr = Box::as_ptr(&next.inner.registers);
 
-                cpu.registers.load(next_register_mask, UnsafeCell::raw_get(next_registers_ptr));
                 if let Some(mut curr) = cpu.current_task.get().replace(Some(next)) {
                     cpu.registers.save(curr.inner.register_mask, curr.inner.registers.get_mut());
                     asm!(
@@ -112,10 +111,9 @@ pub fn schedule() {
 
                         options(att_syntax, nostack)
                     );
-
-                    TASK_QUEUE.push_back(curr);
                 }
 
+                cpu.registers.load(next_register_mask, UnsafeCell::raw_get(next_registers_ptr));
                 asm!(
                     "movq {v_map}, %cr3",
                     "movq {stack}, %rsp",
@@ -128,7 +126,7 @@ pub fn schedule() {
                     options(att_syntax)
                 )
             }
-            None => asm!("hlt", options(att_syntax, nomem, nostack, preserves_flags)),
+            None => return,
         }
     }
 }

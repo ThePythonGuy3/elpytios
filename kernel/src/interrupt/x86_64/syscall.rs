@@ -1,10 +1,11 @@
-use core::{arch::naked_asm, mem::offset_of};
+use core::arch::naked_asm;
 
 use elpytios_abi::{FileHandle, Syscall, SyscallArg, SyscallEntry};
 
 use crate::{
     arch::x86_64::{Msr, rdmsr, wrmsr},
     device::CpuContext,
+    interrupt::x86_64::InterruptStack,
     spin_sync::SpinOnce,
 };
 
@@ -20,6 +21,11 @@ pub unsafe extern "sysv64" fn mem_map(file: FileHandle, offset: usize, page_coun
     unsafe { super::super::mem_map(file, offset, page_count, flags) }.into_usize()
 }
 
+pub unsafe extern "sysv64" fn yield_now() -> usize {
+    crate::task::schedule();
+    0
+}
+
 pub unsafe fn init_syscalls() {
     static mut SYSCALL_ENTRIES: [SyscallEntry; Syscall::MAX_ENTRIES] = [SyscallEntry::MISSING; Syscall::MAX_ENTRIES];
     static SYSCALL_INIT: SpinOnce = SpinOnce::new();
@@ -29,6 +35,8 @@ pub unsafe fn init_syscalls() {
         SYSCALL_ENTRIES[Syscall::Read as usize] = SyscallEntry { read };
 
         SYSCALL_ENTRIES[Syscall::MemMap as usize] = SyscallEntry { mem_map };
+
+        SYSCALL_ENTRIES[Syscall::YieldNow as usize] = SyscallEntry { yield_now };
     });
 
     unsafe {
@@ -54,28 +62,25 @@ pub unsafe fn init_syscalls() {
                 // `rax` is now address of the handler, bail if not set (null)
                 // `r12` is supposed to be treated as caller-saved (breaking the traditional Sys V, but it's not a strict requirement anyway)
                 "leaq {entries}(%rip), %r12",
-                "movq (%r12, %rax, {entry_size}), %rax",
+                "movq (%r12, %rax, 8), %rax",
                 "testq %rax, %rax",
                 "jz 2f",
 
                 // Switch to kernel stack
                 "swapgs",
                 "movq %rsp, %r12",
-                "movq %gs:{kernel_stack}, %rsp",
-                "andq $-16, %rsp",
+                "movq %gs:{stack}, %rsp",
 
                 "push %r12",
                 "push %r11",
                 "push %rcx",
                 "subq $8, %rsp",
-                "sti",
 
                 // User uses `r10` instead of `rcx`, but Sys V expects `rcx` to be 4th arg
                 "movq %r10, %rcx",
                 // After this, `rax` is now the return value of the handler
                 "callq *%rax",
 
-                "cli",
                 "addq $8, %rsp",
                 "pop %rcx",
                 "pop %r11",
@@ -91,8 +96,7 @@ pub unsafe fn init_syscalls() {
 
                 max_entries = const Syscall::MAX_ENTRIES,
                 entries = sym SYSCALL_ENTRIES,
-                entry_size = const size_of::<SyscallEntry>(),
-                kernel_stack = const offset_of!(CpuContext, tss.rsp0),
+                stack = const CpuContext::stack_addr(InterruptStack::Task),
                 invalid = const Syscall::INVALID,
 
                 options(att_syntax),

@@ -58,6 +58,8 @@ impl<Error: sealed::InterruptError> InterruptFrame<Error> {
 }
 
 impl<Error: sealed::InterruptError> InterruptFrame<Error> {
+    pub const INTERRUPT_BUFFER_SIZE: usize = size_of::<Self>() - offset_of!(Self, error);
+
     /// # Safety
     /// - Invoke this function with `call` instruction directly.
     /// - `%rsp` must point to [`Self::error`] before the `call` instruction, which is guaranteed
@@ -85,6 +87,11 @@ impl<Error: sealed::InterruptError> InterruptFrame<Error> {
             "movq %r14, ({adj} + {r14})(%rsp)",
             "movq %r15, ({adj} + {r15})(%rsp)",
 
+            "testq $3, ({adj} + {cs})(%rsp)",
+            "jz 2f",
+            "swapgs",
+
+            "2:",
             "jmpq *%rax",
 
             adj = const Error::STACK_ADJUST,
@@ -105,6 +112,7 @@ impl<Error: sealed::InterruptError> InterruptFrame<Error> {
             r14 = const offset_of!(Self, r14),
             r15 = const offset_of!(Self, r15),
             error = const offset_of!(Self, error),
+            cs = const offset_of!(Self, cs),
 
             options(att_syntax),
         )
@@ -137,10 +145,19 @@ impl<Error: sealed::InterruptError> InterruptFrame<Error> {
             "movq ({adj} + {r14})(%rsp), %r14",
             "movq ({adj} + {r15})(%rsp), %r15",
 
-            "addq $({error} - {rax} + {adj}), %rsp",
-            "jmpq *-({error} - {rax} + {adj} + 8)(%rsp)",
+            "testq $3, ({adj} + {cs})(%rsp)",
+            "jz 2f",
+            "movq %rsp, %gs:{stack}",
+            "addq $({adj} + {error} - {rax} + {frame}), %gs:{stack}",
+            "swapgs",
+
+            "2:",
+            "addq $({adj} + {rip} - {rax}), %rsp",
+            "jmpq *-({adj} + {rip} - {rax} + 8)(%rsp)",
 
             adj = const Error::STACK_ADJUST,
+            stack = const CpuContext::stack_addr(InterruptStack::Task),
+            frame = const Self::INTERRUPT_BUFFER_SIZE,
 
             rax = const offset_of!(Self, rax),
             rcx = const offset_of!(Self, rcx),
@@ -158,6 +175,8 @@ impl<Error: sealed::InterruptError> InterruptFrame<Error> {
             r14 = const offset_of!(Self, r14),
             r15 = const offset_of!(Self, r15),
             error = const offset_of!(Self, error),
+            rip = const offset_of!(Self, rip),
+            cs = const offset_of!(Self, cs),
 
             options(att_syntax),
         )

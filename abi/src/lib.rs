@@ -23,6 +23,9 @@ pub enum Syscall {
 
     #[args((file: FileHandle, offset: usize, page_count: usize, flags: usize) => *mut u8)]
     MemMap = 0x010,
+
+    #[args(() => usize)]
+    YieldNow = 0x100,
 }
 
 pub trait SyscallArg {
