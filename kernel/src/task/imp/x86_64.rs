@@ -1,5 +1,5 @@
 use alloc::{
-    alloc::{alloc, handle_alloc_error},
+    alloc::{alloc_zeroed, handle_alloc_error},
     boxed::Box,
 };
 use core::{
@@ -27,7 +27,7 @@ impl Task {
     pub unsafe fn new(entry: VAddr, _user_stack_top: *mut u8, user_stack_lower_top: VAddr, kernel_stack_top: *mut u8) -> Self {
         let cpu = CpuContext::get();
         unsafe {
-            let registers = alloc(cpu.registers.layout());
+            let registers = alloc_zeroed(cpu.registers.layout());
             if registers.is_null() {
                 handle_alloc_error(cpu.registers.layout())
             }
@@ -96,6 +96,7 @@ pub fn schedule() {
                 let next_register_mask = next.inner.register_mask;
                 let next_registers_ptr = Box::as_ptr(&next.inner.registers);
 
+                // Note: `None` means `schedule()` is *just* called, so `%rsp` still points to the bootstrap stack
                 if let Some(mut curr) = cpu.current_task.get().replace(Some(next)) {
                     cpu.registers.save(curr.inner.register_mask, curr.inner.registers.get_mut());
                     asm!(
