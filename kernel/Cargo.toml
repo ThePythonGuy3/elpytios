@@ -10,4 +10,12 @@ forced-target = "x86_64-unknown-none"
 
 [dependencies]
 elpytios-abi = { path = "../abi" }
+elpytios-alloc = { path = "../alloc" }
 elpytios-bootinfo = { path = "../bootinfo" }
+elpytios-elf = { path = "../elf" }
+
+arrayvec = { version = "0.7", default-features = false }
+bitflags = "2"
+bytemuck = { version = "1", features = ["derive", "latest_stable_rust"] }
+log = "*"
+nonmax = { version = "0.5", default-features = false }

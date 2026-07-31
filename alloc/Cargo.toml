@@ -1,0 +1,16 @@
+[package]
+name = "elpytios-alloc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+
+[dependencies]
+elpytios-abi = { path = "../abi" }
+
+compiler_builtins = { path = "../std/rust-src/compiler-builtins/compiler-builtins", features = [
+    "compiler-builtins",
+], optional = true }
+core = { path = "../std/rust-src/core", optional = true }
+
+[features]
+sysroot-dep = ["dep:compiler_builtins", "dep:core"]

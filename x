@@ -21,6 +21,7 @@ from pathlib import Path
 root = Path(__file__).resolve().parent
 
 elpytios_abi_root = root / "abi"
+elpytios_alloc_root = root / "alloc"
 elpytios_std_root = root / "std"
 library_dst_root = elpytios_std_root / "rust-src"
 
@@ -186,6 +187,10 @@ def fetch_std(_args):
         "path": str(elpytios_abi_root),
         "features": ["sysroot-dep"],
     }
+    packages["std"].manifest["dependencies"]["elpytios-alloc"] = {
+        "path": str(elpytios_alloc_root),
+        "features": ["sysroot-dep"],
+    }
 
     for package in packages.values():
         package.file.write_text(package.manifest.as_string(), encoding="utf-8")
@@ -283,15 +288,7 @@ def create_file_qemu(_args):
 
     runner_esp.mkdir(parents=True, exist_ok=True)
 
-def run_qemu(args):
-    if not runner_fs.exists():
-        create_file_qemu(args)
-
-    accel = "tcg"
-    match sys.platform:
-        case "win32": accel = "whpx"
-        case "linux": accel = "kvm"
-
+def build_boot(args):
     profile = "bootloader_debug" if args.debug else "bootloader"
     subprocess.run(
         [
@@ -321,6 +318,18 @@ def run_qemu(args):
         check=True
     )
 
+def run_qemu(args):
+    profile = "bootloader_debug" if args.debug else "bootloader"
+    if not runner_fs.exists():
+        create_file_qemu(args)
+
+    build_boot(args)
+
+    accel = "tcg"
+    match sys.platform:
+        case "win32": accel = "whpx"
+        case "linux": accel = "kvm"
+
     runner_boot_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(root / "target" / "x86_64-unknown-uefi" / profile / "elpytios-bootloader.efi", runner_boot_file)
 
@@ -328,6 +337,8 @@ def run_qemu(args):
         [
             f"qemu-system-{platform.machine().replace("AMD64", "x86_64")}",
             "-accel", accel,
+            "-cpu", "host,migratable=off",
+            # "-smp", "cores=4,threads=2,sockets=1",
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_CODE.4m.fd"}",
             "-drive", f"if=pflash,format=raw,readonly=on,file={runner_ovmf / "OVMF_VARS.4m.fd"}",
             "-drive", f"format=raw,file=fat:rw:{runner_esp}",
@@ -336,11 +347,15 @@ def run_qemu(args):
             "-m", "4G",
             "-device", "virtio-vga",
             "-vga", "virtio",
-            "-monitor", "stdio",
+            # Using `COM3` is the cleanest for the kernel, for some reason.
+            "-serial", "file:platform.log",
+            "-serial", "null",
+            "-serial", "stdio",
+            "-d", "int,cpu_reset,guest_errors", "-no-reboot", "-no-shutdown", "-D", "qemu_except.log",
             *(["-s"] if args.debug else []),
         ],
         stdout=None,
-        stderr=None,
+        stderr=open("qemu_stderr.log", "w"),
         check=True
     )
 
@@ -369,6 +384,14 @@ def main():
     std_sub.add_parser("fetch").set_defaults(func=fetch_std)
     std_sub.add_parser("build").set_defaults(func=build_std)
     std_sub.add_parser("clean").set_defaults(func=clean_std)
+
+    # `x boot`
+    boot = sub.add_parser("boot")
+    boot_sub = boot.add_subparsers(dest="boot_cmd")
+
+    boot_build = boot_sub.add_parser("build")
+    boot_build.set_defaults(func=build_boot)
+    boot_build.add_argument("--debug", action="store_true")
 
     # `x qemu`
     qemu = sub.add_parser("qemu")

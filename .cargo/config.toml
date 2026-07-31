@@ -8,12 +8,21 @@ target = "target-specs/x86_64-unknown-elpytios.json"
 
 [profile.bootloader]
 inherits = "release"
-lto = "thin"
+lto = "on"
 
 [profile.bootloader_debug]
 inherits = "bootloader"
+strip = "none"
 debug-assertions = true
 debug = "full"
+lto = "off"
 
 [target.x86_64-unknown-none]
-rustflags = ["-C", "code-model=kernel", "-C", "relocation-model=static"]
+rustflags = [
+    "-C",
+    "no-redzone=yes",
+    "-C",
+    "relocation-model=pie",
+    "-C",
+    "linker-flavor=ld.lld",
+]

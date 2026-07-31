@@ -11,7 +11,3 @@ mod kernel_copy;
 pub use error::{decode_error_kind, errno, error_string, is_interrupted};
 pub use is_terminal::is_terminal;
 pub use kernel_copy::{CopyState, kernel_copy};
-
-// Bare metal platforms usually have very small amounts of RAM
-// (in the order of hundreds of KB)
-pub const DEFAULT_BUF_SIZE: usize = 8 * 1024;

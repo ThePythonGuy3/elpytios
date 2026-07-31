@@ -1,3 +1,5 @@
+use elpytios_abi::Syscall;
+
 use crate::{
     ffi::CStr,
     io,
@@ -35,8 +37,11 @@ pub fn current_os_id() -> Option<u64> {
     None
 }
 
+#[inline]
 pub fn yield_now() {
-    // do nothing
+    unsafe {
+        Syscall::yield_now();
+    }
 }
 
 pub fn set_name(_name: &CStr) {

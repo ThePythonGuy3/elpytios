@@ -1,20 +1,140 @@
-#![feature(custom_inner_attributes)]
-#![rustfmt::skip]
-
+#![forbid(unfulfilled_lint_expectations)]
+#![feature(
+    anonymous_lifetime_in_impl_trait,
+    arbitrary_self_types_pointers,
+    const_trait_impl,
+    const_try,
+    debug_closure_helpers,
+    impl_trait_in_assoc_type,
+    layout_for_ptr,
+    negative_impls,
+    never_type,
+    ptr_alignment_type,
+    ptr_metadata,
+    slice_ptr_get,
+    sync_unsafe_cell
+)]
 #![no_std]
 
-pub mod page_alloc;
-pub mod page_alloc_tree;
+extern crate alloc;
+
+pub mod allocator;
+pub mod arch;
+pub mod device;
+pub mod framebuffer;
+pub mod interrupt;
 pub mod rendering;
+pub mod serial;
+pub mod spin_sync;
+pub mod task;
+pub mod timer;
+pub mod vaddr;
 
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, ops::Range};
 
-use elpytios_bootinfo::BootInfo;
+use allocator::{KernelPageAllocator, PhysicalPageAllocator};
+use elpytios_alloc::HeapAllocator;
+use elpytios_bootinfo::paddr::PAddr;
+use framebuffer::FrameBuffer;
+use spin_sync::SpinMutex;
+use vaddr::{VAddr, VirtualMap};
 
-#[unsafe(link_section = ".bootinfo")]
-#[used]
-static mut BOOT_INFO: MaybeUninit<BootInfo> = MaybeUninit::uninit();
+pub const LOWER_HALF_ADDRESSES: Range<VAddr> = VAddr::new(0x0000_0000_0000_1000)..VAddr::new(0x0000_8000_0000_0000);
+pub const HIGHER_HALF_ADDRESSES: Range<VAddr> = VAddr::new(0xffff_8000_0000_0000)..VAddr::new(0xffff_ffff_ffff_ffff);
 
-pub fn boot_info() -> &'static BootInfo {
-    unsafe { (&raw const BOOT_INFO as *const BootInfo).as_ref_unchecked() }
+#[repr(transparent)]
+pub struct ScratchPages<'a> {
+    pub pages: &'a [PAddr],
+}
+
+impl ScratchPages<'_> {
+    pub fn take(&mut self) -> Option<PAddr> {
+        loop {
+            match self.pages.split_at_checked(1) {
+                Some((&[next], pages)) => {
+                    self.pages = pages;
+                    if next.addr() == 0 { continue } else { break Some(next) }
+                }
+                _ => break None,
+            }
+        }
+    }
+}
+
+/// # Safety
+/// Every single one of these statics must be set by their corresponding `set_*` functions below in
+/// the setup-phase of the kernel.
+///
+/// See `main.rs`.
+pub mod statics {
+    use super::*;
+
+    static mut DIRECT_MAP_OFFSET: MaybeUninit<usize> = MaybeUninit::uninit();
+    static mut VIRTUAL_MAP: MaybeUninit<VirtualMap> = MaybeUninit::uninit();
+    static mut PHYS_ALLOC: MaybeUninit<SpinMutex<PhysicalPageAllocator>> = MaybeUninit::uninit();
+    static mut FRAME_BUFFER: MaybeUninit<FrameBuffer> = MaybeUninit::uninit();
+
+    #[global_allocator]
+    static ALLOC: HeapAllocator<KernelPageAllocator> = HeapAllocator::new(KernelPageAllocator);
+
+    #[inline]
+    pub unsafe fn set_direct_map_offset(offset: usize) {
+        unsafe {
+            DIRECT_MAP_OFFSET = MaybeUninit::new(offset);
+        }
+    }
+
+    #[inline]
+    pub unsafe fn set_virtual_map(virtual_map: VirtualMap) {
+        unsafe {
+            VIRTUAL_MAP = MaybeUninit::new(virtual_map);
+        }
+    }
+
+    #[inline]
+    pub unsafe fn set_phys_alloc(phys_alloc: PhysicalPageAllocator) {
+        unsafe {
+            PHYS_ALLOC = MaybeUninit::new(SpinMutex::new(phys_alloc));
+        }
+    }
+
+    #[inline]
+    pub unsafe fn set_frame_buffer(frame_buffer: FrameBuffer) {
+        unsafe {
+            FRAME_BUFFER = MaybeUninit::new(frame_buffer);
+        }
+    }
+
+    #[inline]
+    pub fn phys_to_virt(p_addr: PAddr) -> VAddr {
+        VAddr::new(
+            p_addr
+                .addr()
+                .wrapping_add(unsafe { (&raw const DIRECT_MAP_OFFSET as *const usize).read() }),
+        )
+    }
+
+    #[inline]
+    pub fn virt_to_phys(v_addr: VAddr) -> PAddr {
+        PAddr::new(
+            v_addr
+                .addr()
+                .wrapping_sub(unsafe { (&raw const DIRECT_MAP_OFFSET as *const usize).read() }),
+        )
+    }
+
+    #[inline]
+    pub fn get_virtual_map() -> &'static VirtualMap {
+        unsafe { (&raw const VIRTUAL_MAP as *const VirtualMap).as_ref_unchecked() }
+    }
+
+    #[inline]
+    pub fn get_phys_alloc() -> &'static SpinMutex<PhysicalPageAllocator> {
+        unsafe { (&raw const PHYS_ALLOC as *const SpinMutex<PhysicalPageAllocator>).as_ref_unchecked() }
+    }
+
+    #[inline]
+    pub fn get_frame_buffer() -> &'static FrameBuffer {
+        unsafe { (&raw const FRAME_BUFFER as *const FrameBuffer).as_ref_unchecked() }
+    }
 }

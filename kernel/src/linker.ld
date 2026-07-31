@@ -2,15 +2,16 @@ ENTRY(_start)
 
 PHDRS
 {
-    text PT_LOAD FLAGS(5);
-    rodata PT_LOAD FLAGS(4);
-    data PT_LOAD FLAGS(6);
+    text    PT_LOAD    FLAGS(5);
+    rodata  PT_LOAD    FLAGS(4);
+    data    PT_LOAD    FLAGS(6);
+    dynamic PT_DYNAMIC FLAGS(4);
 }
 
 SECTIONS
 {
     __kernel_start = .;
-    . = 0xffffffff80000000;
+    . = 0;
 
     .text : ALIGN(4K)
     {
@@ -27,13 +28,6 @@ SECTIONS
         __rodata_end = .;
     } :rodata
 
-    .bootinfo (NOLOAD) : ALIGN(4K)
-    {
-        __bootinfo_start = .;
-        KEEP(*(.bootinfo))
-        __bootinfo_end = .;
-    } :rodata
-
     .data : ALIGN(4K)
     {
         __data_start = .;
@@ -48,6 +42,11 @@ SECTIONS
         *(COMMON)
         __bss_end = .;
     } :data
+
+    .dynamic : ALIGN(8)
+    {
+        *(.dynamic)
+    } :data :dynamic
 
     __kernel_end = .;
 }

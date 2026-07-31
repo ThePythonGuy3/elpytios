@@ -8,7 +8,11 @@ pub unsafe fn syscall0(sys: usize) -> usize {
             "syscall",
             inlateout("rax") sys => ret,
 
-            options(nostack, preserves_flags),
+            out("rcx") _,
+            out("r11") _,
+            out("r12") _,
+
+            options(att_syntax, nomem, nostack, preserves_flags),
         );
     }
     ret
@@ -24,7 +28,11 @@ pub unsafe fn syscall1(sys: usize, a0: usize) -> usize {
 
             in("rdi") a0,
 
-            options(nostack, preserves_flags),
+            out("rcx") _,
+            out("r11") _,
+            out("r12") _,
+
+            options(att_syntax, nomem, nostack, preserves_flags),
         );
     }
     ret
@@ -41,7 +49,11 @@ pub unsafe fn syscall2(sys: usize, a0: usize, a1: usize) -> usize {
             in("rdi") a0,
             in("rsi") a1,
 
-            options(nostack, preserves_flags),
+            out("rcx") _,
+            out("r11") _,
+            out("r12") _,
+
+            options(att_syntax, nomem, nostack, preserves_flags),
         );
     }
     ret
@@ -59,7 +71,11 @@ pub unsafe fn syscall3(sys: usize, a0: usize, a1: usize, a2: usize) -> usize {
             in("rsi") a1,
             in("rdx") a2,
 
-            options(nostack, preserves_flags),
+            out("rcx") _,
+            out("r11") _,
+            out("r12") _,
+
+            options(att_syntax, nomem, nostack, preserves_flags),
         );
     }
     ret
@@ -78,7 +94,11 @@ pub unsafe fn syscall4(sys: usize, a0: usize, a1: usize, a2: usize, a3: usize) -
             in("rdx") a2,
             in("r10") a3,
 
-            options(nostack, preserves_flags),
+            out("rcx") _,
+            out("r11") _,
+            out("r12") _,
+
+            options(att_syntax, nomem, nostack, preserves_flags),
         );
     }
     ret
@@ -98,7 +118,11 @@ pub unsafe fn syscall5(sys: usize, a0: usize, a1: usize, a2: usize, a3: usize, a
             in("r10") a3,
             in("r8")  a4,
 
-            options(nostack, preserves_flags),
+            out("rcx") _,
+            out("r11") _,
+            out("r12") _,
+
+            options(att_syntax, nomem, nostack, preserves_flags),
         );
     }
     ret
@@ -119,7 +143,11 @@ pub unsafe fn syscall6(sys: usize, a0: usize, a1: usize, a2: usize, a3: usize, a
             in("r8")  a4,
             in("r9")  a5,
 
-            options(nostack, preserves_flags),
+            out("rcx") _,
+            out("r11") _,
+            out("r12") _,
+
+            options(att_syntax, nomem, nostack, preserves_flags),
         );
     }
     ret

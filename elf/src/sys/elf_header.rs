@@ -1,7 +1,7 @@
-use bytemuck::{Pod, Zeroable};
+use bytemuck::AnyBitPattern;
 
 /// The ELF header is always found at the start of the file.
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 pub struct ElfHeaderPrologue {
     /// Magic number - 0x7F, then 'ELF' in ASCII                      0-3
@@ -15,17 +15,28 @@ pub struct ElfHeaderPrologue {
     /// OS ABI - usually 0 for System V                               7
     pub os_abi: u8,
     /// Unused/padding                                                8-15
-    pub _padding: [u8; 8],
+    _padding: [u8; 8],
     /// Type (1 = relocatable, 2 = executable, 3 = shared, 4 = core) 16-17
-    pub elf_type: u16,
+    pub elf_type: ElfType,
     /// Instruction set - see table below                            18-19
     pub instruction_set: u16,
     /// ELF Version (currently 1)                                    20-23
     pub elf_version: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AnyBitPattern)]
+#[repr(transparent)]
+pub struct ElfType(u16);
+impl ElfType {
+    pub const NONE: Self = Self(0);
+    pub const RELOCATABLE: Self = Self(1);
+    pub const EXECUTABLE: Self = Self(2);
+    pub const DYNAMIC: Self = Self(3);
+    pub const CORE_DUMP: Self = Self(4);
+}
+
 /// Continuation of [`ElfHeaderPrologue`] in 64-bit format (arch == 2).
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 pub struct ElfHeader64 {
     /// Program entry offset                                         24-31

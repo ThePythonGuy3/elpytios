@@ -1,7 +1,7 @@
 use bitflags::bitflags;
-use bytemuck::{Pod, Zeroable};
+use bytemuck::AnyBitPattern;
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, AnyBitPattern)]
 #[repr(C)]
 pub struct ElfSectionHeader64 {
     /// Offset into the section-name string table                 0-3
@@ -26,7 +26,7 @@ pub struct ElfSectionHeader64 {
     pub entry_size: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AnyBitPattern)]
 #[repr(transparent)]
 pub struct ElfSectionType(pub u32);
 impl ElfSectionType {
@@ -44,7 +44,7 @@ impl ElfSectionType {
     pub const DYNSYM: Self = Self(11);
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, AnyBitPattern)]
 #[repr(transparent)]
 pub struct ElfSectionFlags(u64);
 bitflags! {
